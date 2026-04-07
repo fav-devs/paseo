@@ -87,6 +87,7 @@ import { buildDraftStoreKey, generateDraftId } from "@/stores/draft-keys";
 import { useDraftStore } from "@/stores/draft-store";
 import { prepareWorkspaceTab } from "@/utils/workspace-navigation";
 import { usePanelStore } from "@/stores/panel-store";
+import { buildWorkspaceExplorerStateKey } from "@/hooks/use-file-explorer-actions";
 
 export type { GitActionId, GitAction, GitActions } from "@/components/git-actions-policy";
 
@@ -723,7 +724,6 @@ function DiffFileBody({
         if (wrapLines) {
           return <View style={styles.diffContent}>{contentContainer}</View>;
         }
-
         return (
           <DiffScroll
             scrollViewWidth={scrollViewWidth}
@@ -889,7 +889,25 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   });
   // Track user-initiated refresh to avoid iOS RefreshControl animation on background fetches
   const [isManualRefresh, setIsManualRefresh] = useState(false);
-  const [expandedByPath, setExpandedByPath] = useState<Record<string, boolean>>({});
+  const normalizedWorkspaceRoot = useMemo(() => cwd.trim(), [cwd]);
+  const workspaceStateKey = useMemo(
+    () =>
+      buildWorkspaceExplorerStateKey({
+        workspaceId,
+        workspaceRoot: normalizedWorkspaceRoot,
+      }),
+    [normalizedWorkspaceRoot, workspaceId],
+  );
+  const expandedPathsArray = usePanelStore((state) =>
+    workspaceStateKey ? state.diffExpandedPathsByWorkspace[workspaceStateKey] : undefined,
+  );
+  const setDiffExpandedPathsForWorkspace = usePanelStore(
+    (state) => state.setDiffExpandedPathsForWorkspace,
+  );
+  const expandedPaths = useMemo(
+    () => new Set(expandedPathsArray ?? []),
+    [expandedPathsArray],
+  );
   const diffListRef = useRef<FlatList<DiffFlatItem>>(null);
   const scrollbar = useWebScrollViewScrollbar(diffListRef, {
     enabled: showDesktopWebScrollbar,
@@ -949,7 +967,7 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
     const stickyIndices: number[] = [];
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const isExpanded = expandedByPath[file.path] ?? false;
+      const isExpanded = expandedPaths.has(file.path);
       items.push({ type: "header", file, fileIndex: i, isExpanded });
       if (isExpanded) {
         stickyIndices.push(items.length - 1);
@@ -959,7 +977,7 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
       }
     }
     return { flatItems: items, stickyHeaderIndices: stickyIndices };
-  }, [files, expandedByPath]);
+  }, [expandedPaths, files]);
 
   const handleHeaderHeightChange = useCallback((path: string, height: number) => {
     if (!Number.isFinite(height) || height <= 0) {
@@ -1005,18 +1023,21 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
           break;
         }
         offset += headerHeightByPathRef.current[file.path] ?? defaultHeaderHeight;
-        if (expandedByPath[file.path]) {
+        if (expandedPaths.has(file.path)) {
           offset += bodyHeightByPathRef.current[file.path] ?? 0;
         }
       }
       return Math.max(0, offset);
     },
-    [expandedByPath, files],
+    [expandedPaths, files],
   );
 
   const handleToggleExpanded = useCallback(
     (path: string) => {
-      const isCurrentlyExpanded = expandedByPath[path] ?? false;
+      if (!workspaceStateKey) {
+        return;
+      }
+      const isCurrentlyExpanded = expandedPaths.has(path);
       const nextExpanded = !isCurrentlyExpanded;
       const targetOffset = isCurrentlyExpanded ? computeHeaderOffset(path) : null;
       const headerHeight = headerHeightByPathRef.current[path] ?? defaultHeaderHeightRef.current;
@@ -1038,32 +1059,32 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
         });
       }
 
-      setExpandedByPath((prev) => ({
-        ...prev,
-        // Use a deterministic target value (instead of toggling from prev) so duplicate
-        // onPress events from sticky headers on Android can't flip back immediately.
-        [path]: nextExpanded,
-      }));
+      const nextPaths = nextExpanded
+        ? [...expandedPaths, path]
+        : Array.from(expandedPaths).filter((expandedPath) => expandedPath !== path);
+      setDiffExpandedPathsForWorkspace(workspaceStateKey, nextPaths);
     },
-    [computeHeaderOffset, expandedByPath],
+    [computeHeaderOffset, expandedPaths, setDiffExpandedPathsForWorkspace, workspaceStateKey],
   );
 
   const allExpanded = useMemo(() => {
     if (files.length === 0) return false;
-    return files.every((file) => expandedByPath[file.path]);
-  }, [files, expandedByPath]);
+    return files.every((file) => expandedPaths.has(file.path));
+  }, [expandedPaths, files]);
 
   const handleToggleExpandAll = useCallback(() => {
-    if (allExpanded) {
-      setExpandedByPath({});
-    } else {
-      const newExpanded: Record<string, boolean> = {};
-      for (const file of files) {
-        newExpanded[file.path] = true;
-      }
-      setExpandedByPath(newExpanded);
+    if (!workspaceStateKey) {
+      return;
     }
-  }, [allExpanded, files]);
+    if (allExpanded) {
+      setDiffExpandedPathsForWorkspace(workspaceStateKey, []);
+    } else {
+      setDiffExpandedPathsForWorkspace(
+        workspaceStateKey,
+        files.map((file) => file.path),
+      );
+    }
+  }, [allExpanded, files, setDiffExpandedPathsForWorkspace, workspaceStateKey]);
 
   // Reset manual refresh flag when fetch completes
   useEffect(() => {
@@ -1315,7 +1336,7 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
         renderItem={renderFlatItem}
         keyExtractor={flatKeyExtractor}
         stickyHeaderIndices={stickyHeaderIndices}
-        extraData={{ expandedByPath, effectiveLayout, wrapLines }}
+        extraData={{ expandedPathsArray, effectiveLayout, wrapLines }}
         style={styles.scrollView}
         contentContainerStyle={styles.contentContainer}
         testID="git-diff-scroll"
@@ -1735,20 +1756,12 @@ const styles = StyleSheet.create((theme) => ({
   diffStatusButtons: {
     flexDirection: "row",
     alignItems: "center",
-    gap: {
-      xs: theme.spacing[1],
-      sm: theme.spacing[1],
-      md: 0,
-    },
+    gap: theme.spacing[1],
     flexWrap: "wrap",
   },
   toggleButtonGroup: {
     flexDirection: "row",
     alignItems: "center",
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.base,
-    overflow: "hidden",
   },
   toggleButton: {
     alignItems: "center",
@@ -1756,7 +1769,7 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: {
       xs: 32,
       sm: 32,
-      md: 28,
+      md: 24,
     },
     height: {
       xs: 32,
@@ -1768,15 +1781,17 @@ const styles = StyleSheet.create((theme) => ({
       sm: theme.spacing[2],
       md: theme.spacing[1],
     },
-    backgroundColor: theme.colors.surface1,
   },
   toggleButtonGroupStart: {
-    borderRightWidth: 1,
-    borderRightColor: theme.colors.border,
+    borderTopLeftRadius: theme.borderRadius.base,
+    borderBottomLeftRadius: theme.borderRadius.base,
   },
-  toggleButtonGroupEnd: {},
+  toggleButtonGroupEnd: {
+    borderTopRightRadius: theme.borderRadius.base,
+    borderBottomRightRadius: theme.borderRadius.base,
+  },
   toggleButtonSelected: {
-    backgroundColor: theme.colors.surface3,
+    backgroundColor: theme.colors.surface2,
   },
   expandAllButton: {
     flexDirection: "row",
@@ -1956,6 +1971,10 @@ const styles = StyleSheet.create((theme) => ({
     borderTopColor: theme.colors.border,
     backgroundColor: theme.colors.surface1,
   },
+  diffContentRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+  },
   diffContentInner: {
     flexDirection: "column",
   },
@@ -1966,11 +1985,25 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface1,
     minWidth: 760,
   },
+  gutterColumn: {
+    backgroundColor: theme.colors.surface1,
+  },
+  gutterCell: {
+    borderRightWidth: theme.borderWidth[1],
+    borderRightColor: theme.colors.border,
+    justifyContent: "flex-start",
+  },
+  textLineContainer: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    paddingLeft: theme.spacing[2],
+  },
   splitRow: {
     flexDirection: "row",
     alignItems: "stretch",
-    width: "100%",
-    minWidth: "100%",
+  },
+  splitColumnScroll: {
+    flex: 1,
   },
   splitHeaderRow: {
     backgroundColor: theme.colors.surface2,
@@ -1979,11 +2012,11 @@ const styles = StyleSheet.create((theme) => ({
   splitCell: {
     flex: 1,
     flexBasis: 0,
-    minWidth: 0,
+    backgroundColor: theme.colors.surface2,
+  },
+  splitCellRow: {
     flexDirection: "row",
     alignItems: "stretch",
-    overflow: "hidden",
-    backgroundColor: theme.colors.surface2,
   },
   emptySplitCell: {
     backgroundColor: theme.colors.surfaceDiffEmpty,
