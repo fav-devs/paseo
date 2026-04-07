@@ -47,6 +47,11 @@ import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import { submitAgentInput } from "@/components/agent-input-submit";
+import {
+  buildComposerInsertResult,
+  markActiveChatComposer,
+  registerActiveChatComposer,
+} from "@/utils/active-chat-composer";
 
 type QueuedMessage = {
   id: string;
@@ -76,6 +81,8 @@ interface AgentInputAreaProps {
   onAddImages?: (addImages: (images: ImageAttachment[]) => void) => void;
   /** Callback to expose a focus function to parent components (desktop only). */
   onFocusInput?: (focus: () => void) => void;
+  /** Called when external insertion should activate the owning workspace tab. */
+  onActivateTab?: () => void;
   /** Optional draft context for listing commands before an agent exists. */
   commandDraftConfig?: DraftCommandConfig;
   /** Called when a message is about to be sent (any path: keyboard, dictation, queued). */
@@ -106,6 +113,7 @@ export function AgentInputArea({
   autoFocus = false,
   onAddImages,
   onFocusInput,
+  onActivateTab,
   commandDraftConfig,
   onMessageSent,
   onComposerHeightChange,
@@ -165,9 +173,14 @@ export function AgentInputArea({
   const [sendError, setSendError] = useState<string | null>(null);
   const [isMessageInputFocused, setIsMessageInputFocused] = useState(false);
   const messageInputRef = useRef<MessageInputRef>(null);
+  const composerSelectionRef = useRef({ start: 0, end: 0 });
+  const hasKnownComposerSelectionRef = useRef(false);
+  const isMessageInputFocusedRef = useRef(false);
+  const userInputRef = useRef(userInput);
   const keyboardHandlerIdRef = useRef(
     `message-input:${serverId}:${agentId}:${Math.random().toString(36).slice(2)}`,
   );
+  const composerId = `${serverId}:${agentId}`;
 
   const autocomplete = useAgentAutocomplete({
     userInput,
@@ -192,6 +205,10 @@ export function AgentInputArea({
     setCursorIndex((current) => Math.min(current, userInput.length));
   }, [userInput.length]);
 
+  useEffect(() => {
+    userInputRef.current = userInput;
+  }, [userInput]);
+
   const { pickImages } = useImageAttachmentPicker();
   const agentIdRef = useRef(agentId);
   const sendAgentMessageRef = useRef<
@@ -212,7 +229,10 @@ export function AgentInputArea({
   }, [addImages, onAddImages]);
 
   const focusInput = useCallback(() => {
-    if (Platform.OS !== "web") return;
+    if (Platform.OS !== "web") {
+      messageInputRef.current?.focus();
+      return;
+    }
     focusWithRetries({
       focus: () => messageInputRef.current?.focus(),
       isFocused: () => {
@@ -225,6 +245,59 @@ export function AgentInputArea({
   useEffect(() => {
     onFocusInput?.(focusInput);
   }, [focusInput, onFocusInput]);
+
+  const insertComposerText = useCallback(
+    (text: string): boolean => {
+      const token = text.trim();
+      if (!token) {
+        return false;
+      }
+
+      const result = buildComposerInsertResult({
+        value: userInputRef.current,
+        token,
+        selection: composerSelectionRef.current,
+        hasKnownSelection: hasKnownComposerSelectionRef.current,
+      });
+      if (result.text === userInputRef.current) {
+        return false;
+      }
+
+      composerSelectionRef.current = result.selection;
+      hasKnownComposerSelectionRef.current = true;
+      userInputRef.current = result.text;
+      setCursorIndex(result.selection.start);
+      setUserInput(result.text);
+
+      const applySelection = () => {
+        messageInputRef.current?.setSelection(result.selection);
+      };
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(applySelection);
+      } else {
+        setTimeout(applySelection, 0);
+      }
+      return true;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    return registerActiveChatComposer({
+      id: composerId,
+      handle: {
+        insertText: insertComposerText,
+        activateTab: onActivateTab,
+      },
+    });
+  }, [composerId, insertComposerText, onActivateTab]);
+
+  useEffect(() => {
+    if (!isInputActive) {
+      return;
+    }
+    markActiveChatComposer(composerId);
+  }, [composerId, isInputActive]);
 
   const submitMessage = useCallback(
     async (text: string, images?: ImageAttachment[]) => {
@@ -723,11 +796,15 @@ export function AgentInputArea({
               onSubmitLoadingPress={isAgentRunning ? handleCancelAgent : undefined}
               onKeyPress={handleCommandKeyPress}
               onSelectionChange={(selection) => {
+                composerSelectionRef.current = selection;
+                hasKnownComposerSelectionRef.current = true;
                 setCursorIndex(selection.start);
               }}
               onFocusChange={(focused) => {
+                isMessageInputFocusedRef.current = focused;
                 setIsMessageInputFocused(focused);
                 if (focused) {
+                  markActiveChatComposer(composerId);
                   onAttentionInputFocus?.();
                 }
               }}

@@ -1,4 +1,5 @@
 import type { DiffLine, ParsedDiffFile } from "@/hooks/use-checkout-diff-query";
+import { buildDiffRangeChatReference } from "./chat-reference-token";
 
 export interface SplitDiffDisplayLine {
   type: DiffLine["type"];
@@ -11,9 +12,13 @@ export type SplitDiffRow =
   | {
       kind: "header";
       content: string;
+      hunkIndex: number;
     }
   | {
       kind: "pair";
+      hunkIndex: number;
+      isFirstVisibleLineInHunk: boolean;
+      chatReference: string;
       left: SplitDiffDisplayLine | null;
       right: SplitDiffDisplayLine | null;
     };
@@ -64,24 +69,51 @@ function toDisplayLine(input: {
 export function buildSplitDiffRows(file: ParsedDiffFile): SplitDiffRow[] {
   const rows: SplitDiffRow[] = [];
 
-  for (const hunk of file.hunks) {
+  for (const [hunkIndex, hunk] of file.hunks.entries()) {
     let oldLineNo = hunk.oldStart;
     let newLineNo = hunk.newStart;
+    let hasVisibleLine = false;
     rows.push({
       kind: "header",
       content: hunk.lines[0]?.type === "header" ? hunk.lines[0].content : "@@",
+      hunkIndex,
     });
 
     let pendingRemovals: Array<{ line: DiffLine; oldLineNumber: number }> = [];
     let pendingAdditions: Array<{ line: DiffLine; newLineNumber: number }> = [];
 
+    const pushPairRow = (input: {
+      chatReference: string;
+      left: SplitDiffDisplayLine | null;
+      right: SplitDiffDisplayLine | null;
+    }) => {
+      rows.push({
+        kind: "pair",
+        hunkIndex,
+        isFirstVisibleLineInHunk: !hasVisibleLine,
+        chatReference: input.chatReference,
+        left: input.left,
+        right: input.right,
+      });
+      hasVisibleLine = true;
+    };
+
     const flushPendingRows = () => {
       const pairCount = Math.max(pendingRemovals.length, pendingAdditions.length);
+      const fallbackStart =
+        pendingAdditions[0]?.newLineNumber ?? pendingRemovals[0]?.oldLineNumber ?? hunk.newStart;
+      const chatReference = buildDiffRangeChatReference({
+        path: file.path,
+        oldStart: pendingRemovals[0]?.oldLineNumber ?? fallbackStart,
+        oldCount: pendingRemovals.length,
+        newStart: pendingAdditions[0]?.newLineNumber ?? fallbackStart,
+        newCount: pendingAdditions.length,
+      });
       for (let index = 0; index < pairCount; index += 1) {
         const removal = pendingRemovals[index] ?? null;
         const addition = pendingAdditions[index] ?? null;
-        rows.push({
-          kind: "pair",
+        pushPairRow({
+          chatReference,
           left: removal
             ? toDisplayLine({
                 line: removal.line,
@@ -120,8 +152,14 @@ export function buildSplitDiffRows(file: ParsedDiffFile): SplitDiffRow[] {
       flushPendingRows();
 
       if (line.type === "context") {
-        rows.push({
-          kind: "pair",
+        pushPairRow({
+          chatReference: buildDiffRangeChatReference({
+            path: file.path,
+            oldStart: oldLineNo,
+            oldCount: 1,
+            newStart: newLineNo,
+            newCount: 1,
+          }),
           left: toDisplayLine({
             line,
             oldLineNumber: oldLineNo,

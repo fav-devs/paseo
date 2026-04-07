@@ -37,11 +37,17 @@ describe("buildSplitDiffRows", () => {
     expect(rows).toHaveLength(3);
     expect(rows[1]).toMatchObject({
       kind: "pair",
+      hunkIndex: 0,
+      isFirstVisibleLineInHunk: true,
+      chatReference: "example.ts:10-11",
       left: { type: "remove", content: "before one", lineNumber: 10 },
       right: { type: "add", content: "after one", lineNumber: 10 },
     });
     expect(rows[2]).toMatchObject({
       kind: "pair",
+      hunkIndex: 0,
+      isFirstVisibleLineInHunk: false,
+      chatReference: "example.ts:10-11",
       left: { type: "remove", content: "before two", lineNumber: 11 },
       right: { type: "add", content: "after two", lineNumber: 11 },
     });
@@ -59,6 +65,9 @@ describe("buildSplitDiffRows", () => {
 
     expect(rows[2]).toMatchObject({
       kind: "pair",
+      hunkIndex: 0,
+      isFirstVisibleLineInHunk: false,
+      chatReference: "example.ts:10-11",
       left: null,
       right: { type: "add", content: "after two", lineNumber: 11 },
     });
@@ -74,6 +83,9 @@ describe("buildSplitDiffRows", () => {
 
     expect(rows[1]).toMatchObject({
       kind: "pair",
+      hunkIndex: 0,
+      isFirstVisibleLineInHunk: true,
+      chatReference: "example.ts:10",
       left: { type: "context", content: "same line", lineNumber: 10 },
       right: { type: "context", content: "same line", lineNumber: 10 },
     });

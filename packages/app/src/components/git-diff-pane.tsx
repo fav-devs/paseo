@@ -32,6 +32,7 @@ import {
   GitMerge,
   ListChevronsDownUp,
   ListChevronsUpDown,
+  Paperclip,
   Pilcrow,
   RefreshCcw,
   Upload,
@@ -56,7 +57,11 @@ import {
 import { WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
 import { Fonts } from "@/constants/theme";
 import { shouldAnchorHeaderBeforeCollapse } from "@/utils/git-diff-scroll";
-import { buildSplitDiffRows, type SplitDiffDisplayLine } from "@/utils/diff-layout";
+import {
+  buildSplitDiffRows,
+  type SplitDiffDisplayLine,
+  type SplitDiffRow,
+} from "@/utils/diff-layout";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -72,6 +77,16 @@ import { useWebScrollViewScrollbar } from "@/components/use-web-scrollbar";
 import { buildNewAgentRoute, resolveNewAgentWorkingDir } from "@/utils/new-agent-routing";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { GitActionsSplitButton } from "@/components/git-actions-split-button";
+import { useToast } from "@/contexts/toast-context";
+import { appendTextTokenToComposer, insertIntoActiveChatComposer } from "@/utils/active-chat-composer";
+import {
+  buildFileChatReference,
+  buildHunkLineChatReference,
+} from "@/utils/chat-reference-token";
+import { buildDraftStoreKey, generateDraftId } from "@/stores/draft-keys";
+import { useDraftStore } from "@/stores/draft-store";
+import { prepareWorkspaceTab } from "@/utils/workspace-navigation";
+import { usePanelStore } from "@/stores/panel-store";
 
 export type { GitActionId, GitAction, GitActions } from "@/components/git-actions-policy";
 
@@ -132,8 +147,140 @@ interface DiffFileSectionProps {
   file: ParsedDiffFile;
   isExpanded: boolean;
   onToggle: (path: string) => void;
+  onAddFileReference?: (file: ParsedDiffFile) => void;
   onHeaderHeightChange?: (path: string, height: number) => void;
   testID?: string;
+}
+
+interface ChatReferenceButtonProps {
+  accessibilityLabel: string;
+  tooltipLabel: string;
+  onPress: () => void;
+  testID?: string;
+}
+
+type HunkChatActionMode = "hover" | "first-line";
+
+function ChatReferenceButton({
+  accessibilityLabel,
+  tooltipLabel,
+  onPress,
+  testID,
+}: ChatReferenceButtonProps) {
+  const { theme } = useUnistyles();
+  const iconSize = Platform.OS === "web" ? 14 : 16;
+
+  return (
+    <Tooltip delayDuration={300} enabledOnDesktop enabledOnMobile={false}>
+      <TooltipTrigger asChild>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+          testID={testID}
+          onPress={onPress}
+          style={({ hovered, pressed }) => [
+            styles.chatReferenceButton,
+            (hovered || pressed) && styles.chatReferenceButtonHovered,
+          ]}
+        >
+          <Paperclip size={iconSize} color={theme.colors.foregroundMuted} />
+        </Pressable>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">
+        <Text style={styles.tooltipText}>{tooltipLabel}</Text>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function DiffHunkHeaderRow({
+  content,
+  gutterWidth,
+  testID,
+}: {
+  content: string;
+  gutterWidth?: number;
+  testID?: string;
+}) {
+  return (
+    <View style={[styles.diffLineContainer, styles.headerLineContainer]} testID={testID}>
+      {typeof gutterWidth === "number" ? (
+        <View style={[styles.lineNumberGutter, { width: gutterWidth }]} />
+      ) : null}
+      <Text style={[styles.diffLineText, styles.headerLineText, styles.hunkHeaderText]}>
+        {content}
+      </Text>
+    </View>
+  );
+}
+
+function LineNumberGutterSlot({
+  gutterWidth,
+  lineNumber,
+  visible,
+  revealOnHover = false,
+  lineType,
+  onAddReference,
+  testID,
+}: {
+  gutterWidth: number;
+  lineNumber: number | null;
+  visible: boolean;
+  revealOnHover?: boolean;
+  lineType: DiffLine["type"];
+  onAddReference?: () => void;
+  testID?: string;
+}) {
+  const { theme } = useUnistyles();
+  const [isHovered, setIsHovered] = useState(false);
+  const iconSize = Platform.OS === "web" ? 14 : 16;
+  const showAction = Boolean(onAddReference) && (visible || (revealOnHover && isHovered));
+
+  const trigger = (
+    <Pressable
+      accessibilityRole={showAction ? "button" : undefined}
+      accessibilityLabel={showAction ? "Add hunk to chat" : undefined}
+      testID={showAction ? testID : undefined}
+      onHoverIn={revealOnHover ? () => setIsHovered(true) : undefined}
+      onHoverOut={revealOnHover ? () => setIsHovered(false) : undefined}
+      onPress={showAction ? onAddReference : undefined}
+      disabled={!showAction}
+      style={({ pressed }) => [
+        styles.lineNumberGutter,
+        { width: gutterWidth },
+        showAction && pressed && styles.chatReferenceButtonHovered,
+      ]}
+    >
+      {showAction ? (
+        <View style={styles.lineNumberGutterActionContent}>
+          <Paperclip size={iconSize} color={theme.colors.foregroundMuted} />
+        </View>
+      ) : (
+        <Text
+          style={[
+            styles.lineNumberText,
+            lineType === "add" && styles.addLineNumberText,
+            lineType === "remove" && styles.removeLineNumberText,
+          ]}
+        >
+          {lineNumber != null ? String(lineNumber) : ""}
+        </Text>
+      )}
+    </Pressable>
+  );
+
+  if (!showAction) {
+    return trigger;
+  }
+
+  return (
+    <Tooltip delayDuration={300} enabledOnDesktop enabledOnMobile={false}>
+      <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+      <TooltipContent side="bottom">
+        <Text style={styles.tooltipText}>Add hunk to chat</Text>
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 function DiffLineView({
@@ -141,50 +288,77 @@ function DiffLineView({
   lineNumber,
   gutterWidth,
   wrapLines,
+  hunkActionMode,
+  isFirstVisibleLineInHunk,
+  onAddHunkReference,
+  testID,
 }: {
   line: DiffLine;
   lineNumber: number | null;
   gutterWidth: number;
   wrapLines: boolean;
+  hunkActionMode: HunkChatActionMode;
+  isFirstVisibleLineInHunk: boolean;
+  onAddHunkReference?: () => void;
+  testID?: string;
 }) {
+  if (line.type === "header") {
+    return (
+      <DiffHunkHeaderRow
+        content={line.content || " "}
+        gutterWidth={gutterWidth}
+        testID={testID}
+      />
+    );
+  }
+
   return (
-    <View
+    <Pressable
       style={[
         styles.diffLineContainer,
         line.type === "add" && styles.addLineContainer,
         line.type === "remove" && styles.removeLineContainer,
-        line.type === "header" && styles.headerLineContainer,
         line.type === "context" && styles.contextLineContainer,
       ]}
+      testID={testID}
     >
-      <View style={[styles.lineNumberGutter, { width: gutterWidth }]}>
-        <Text
-          style={[
-            styles.lineNumberText,
-            line.type === "add" && styles.addLineNumberText,
-            line.type === "remove" && styles.removeLineNumberText,
-          ]}
-        >
-          {lineNumber != null ? String(lineNumber) : ""}
-        </Text>
-      </View>
-      {line.tokens && line.type !== "header" ? (
-        <HighlightedText tokens={line.tokens} wrapLines={wrapLines} />
-      ) : (
-        <Text
-          style={[
-            styles.diffLineText,
-            getWrappedTextStyle(wrapLines),
-            line.type === "add" && styles.addLineText,
-            line.type === "remove" && styles.removeLineText,
-            line.type === "header" && styles.headerLineText,
-            line.type === "context" && styles.contextLineText,
-          ]}
-        >
-          {line.content || " "}
-        </Text>
-      )}
-    </View>
+      {({ hovered, pressed }) => {
+        const showHunkAction =
+          Boolean(onAddHunkReference) &&
+          (hunkActionMode === "first-line"
+            ? isFirstVisibleLineInHunk
+            : hovered || pressed);
+
+        return (
+          <>
+            <LineNumberGutterSlot
+              gutterWidth={gutterWidth}
+              lineNumber={lineNumber}
+              visible={showHunkAction}
+              revealOnHover={hunkActionMode === "hover"}
+              lineType={line.type}
+              onAddReference={onAddHunkReference}
+              testID={testID ? `${testID}-add-to-chat` : undefined}
+            />
+            {line.tokens ? (
+              <HighlightedText tokens={line.tokens} wrapLines={wrapLines} />
+            ) : (
+              <Text
+                style={[
+                  styles.diffLineText,
+                  getWrappedTextStyle(wrapLines),
+                  line.type === "add" && styles.addLineText,
+                  line.type === "remove" && styles.removeLineText,
+                  line.type === "context" && styles.contextLineText,
+                ]}
+              >
+                {line.content || " "}
+              </Text>
+            )}
+          </>
+        );
+      }}
+    </Pressable>
   );
 }
 
@@ -192,42 +366,39 @@ function SplitDiffCell({
   line,
   gutterWidth,
   wrapLines,
+  hunkActionMode,
+  showFirstLineAction,
+  onAddHunkReference,
   showDivider = false,
+  testID,
 }: {
   line: SplitDiffDisplayLine | null;
   gutterWidth: number;
   wrapLines: boolean;
+  hunkActionMode?: HunkChatActionMode;
+  showFirstLineAction?: boolean;
+  onAddHunkReference?: () => void;
   showDivider?: boolean;
+  testID?: string;
 }) {
-  return (
-    <View
-      style={[
-        styles.splitCell,
-        showDivider && styles.splitCellWithDivider,
-        !line && styles.emptySplitCell,
-        line?.type === "add" && styles.addLineContainer,
-        line?.type === "remove" && styles.removeLineContainer,
-        line?.type === "context" && styles.contextLineContainer,
-      ]}
-    >
-      <View style={[styles.lineNumberGutter, { width: gutterWidth }]}>
-        <Text
-          style={[
-            styles.lineNumberText,
-            line?.type === "add" && styles.addLineNumberText,
-            line?.type === "remove" && styles.removeLineNumberText,
-          ]}
-        >
-          {line?.lineNumber != null ? String(line.lineNumber) : ""}
-        </Text>
-      </View>
+  const cellContent = (showHunkAction: boolean) => (
+    <>
+      <LineNumberGutterSlot
+        gutterWidth={gutterWidth}
+        lineNumber={line?.lineNumber ?? null}
+        visible={showHunkAction}
+        revealOnHover={hunkActionMode === "hover"}
+        lineType={line?.type ?? "context"}
+        onAddReference={onAddHunkReference}
+        testID={testID ? `${testID}-add-to-chat` : undefined}
+      />
       {line?.tokens ? (
         <HighlightedText tokens={line.tokens} wrapLines={wrapLines} />
       ) : (
         <Text
           style={[
             styles.diffLineText,
-            getWrappedTextStyle(wrapLines) ,
+            getWrappedTextStyle(wrapLines),
             line?.type === "add" && styles.addLineText,
             line?.type === "remove" && styles.removeLineText,
             line?.type === "context" && styles.contextLineText,
@@ -237,6 +408,80 @@ function SplitDiffCell({
           {line?.content ?? ""}
         </Text>
       )}
+    </>
+  );
+
+  if (!line) {
+    return (
+      <View
+        style={[
+          styles.splitCell,
+          showDivider && styles.splitCellWithDivider,
+          styles.emptySplitCell,
+        ]}
+      >
+        {cellContent(false)}
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      style={[
+        styles.splitCell,
+        showDivider && styles.splitCellWithDivider,
+        line?.type === "add" && styles.addLineContainer,
+        line?.type === "remove" && styles.removeLineContainer,
+        line?.type === "context" && styles.contextLineContainer,
+      ]}
+      testID={testID}
+    >
+      {({ hovered, pressed }) =>
+        cellContent(
+          Boolean(onAddHunkReference) &&
+            (hunkActionMode === "first-line" ? Boolean(showFirstLineAction) : hovered || pressed),
+        )
+      }
+    </Pressable>
+  );
+}
+
+function SplitDiffRowView({
+  row,
+  gutterWidth,
+  wrapLines,
+  hunkActionMode,
+  onAddHunkReference,
+  testID,
+}: {
+  row: Extract<SplitDiffRow, { kind: "pair" }>;
+  gutterWidth: number;
+  wrapLines: boolean;
+  hunkActionMode: HunkChatActionMode;
+  onAddHunkReference?: () => void;
+  testID?: string;
+}) {
+  return (
+    <View style={styles.splitRow} testID={testID}>
+      <SplitDiffCell
+        line={row.left}
+        gutterWidth={gutterWidth}
+        wrapLines={wrapLines}
+        hunkActionMode={hunkActionMode}
+        showFirstLineAction={row.isFirstVisibleLineInHunk && row.left !== null}
+        onAddHunkReference={onAddHunkReference}
+        testID={testID ? `${testID}-left` : undefined}
+      />
+      <SplitDiffCell
+        line={row.right}
+        gutterWidth={gutterWidth}
+        wrapLines={wrapLines}
+        hunkActionMode={hunkActionMode}
+        showFirstLineAction={row.isFirstVisibleLineInHunk && row.left === null && row.right !== null}
+        onAddHunkReference={onAddHunkReference}
+        showDivider
+        testID={testID ? `${testID}-right` : undefined}
+      />
     </View>
   );
 }
@@ -245,6 +490,7 @@ const DiffFileHeader = memo(function DiffFileHeader({
   file,
   isExpanded,
   onToggle,
+  onAddFileReference,
   onHeaderHeightChange,
   testID,
 }: DiffFileSectionProps) {
@@ -266,60 +512,70 @@ const DiffFileHeader = memo(function DiffFileHeader({
       }}
       testID={testID}
     >
-      <Pressable
-        testID={testID ? `${testID}-toggle` : undefined}
-        style={({ pressed }) => [styles.fileHeader, pressed && styles.fileHeaderPressed]}
-        // Android: prevent parent pan/scroll gestures from canceling the tap release.
-        cancelable={false}
-        onPressIn={(event) => {
-          pressHandledRef.current = false;
-          pressInRef.current = {
-            ts: Date.now(),
-            pageX: event.nativeEvent.pageX,
-            pageY: event.nativeEvent.pageY,
-          };
-        }}
-        onPressOut={(event) => {
-          if (
-            Platform.OS !== "web" &&
-            !pressHandledRef.current &&
-            layoutYRef.current === 0 &&
-            pressInRef.current
-          ) {
-            const durationMs = Date.now() - pressInRef.current.ts;
-            const dx = event.nativeEvent.pageX - pressInRef.current.pageX;
-            const dy = event.nativeEvent.pageY - pressInRef.current.pageY;
-            const distance = Math.hypot(dx, dy);
-            // Sticky headers on Android can emit pressIn/pressOut without onPress.
-            // Treat short, low-movement interactions as taps.
-            if (durationMs <= 500 && distance <= 12) {
-              toggleExpanded();
+      <View style={styles.fileHeaderRow}>
+        <Pressable
+          testID={testID ? `${testID}-toggle` : undefined}
+          style={({ pressed }) => [styles.fileHeader, pressed && styles.fileHeaderPressed]}
+          // Android: prevent parent pan/scroll gestures from canceling the tap release.
+          cancelable={false}
+          onPressIn={(event) => {
+            pressHandledRef.current = false;
+            pressInRef.current = {
+              ts: Date.now(),
+              pageX: event.nativeEvent.pageX,
+              pageY: event.nativeEvent.pageY,
+            };
+          }}
+          onPressOut={(event) => {
+            if (
+              Platform.OS !== "web" &&
+              !pressHandledRef.current &&
+              layoutYRef.current === 0 &&
+              pressInRef.current
+            ) {
+              const durationMs = Date.now() - pressInRef.current.ts;
+              const dx = event.nativeEvent.pageX - pressInRef.current.pageX;
+              const dy = event.nativeEvent.pageY - pressInRef.current.pageY;
+              const distance = Math.hypot(dx, dy);
+              // Sticky headers on Android can emit pressIn/pressOut without onPress.
+              // Treat short, low-movement interactions as taps.
+              if (durationMs <= 500 && distance <= 12) {
+                toggleExpanded();
+              }
             }
-          }
-        }}
-        onPress={toggleExpanded}
-      >
-        <View style={styles.fileHeaderLeft}>
-          <Text style={styles.fileName}>{file.path.split("/").pop()}</Text>
-          <Text style={styles.fileDir} numberOfLines={1}>
-            {file.path.includes("/") ? ` ${file.path.slice(0, file.path.lastIndexOf("/"))}` : ""}
-          </Text>
-          {file.isNew && (
-            <View style={styles.newBadge}>
-              <Text style={styles.newBadgeText}>New</Text>
-            </View>
-          )}
-          {file.isDeleted && (
-            <View style={styles.deletedBadge}>
-              <Text style={styles.deletedBadgeText}>Deleted</Text>
-            </View>
-          )}
-        </View>
-        <View style={styles.fileHeaderRight}>
-          <Text style={styles.additions}>+{file.additions}</Text>
-          <Text style={styles.deletions}>-{file.deletions}</Text>
-        </View>
-      </Pressable>
+          }}
+          onPress={toggleExpanded}
+        >
+          <View style={styles.fileHeaderLeft}>
+            <Text style={styles.fileName}>{file.path.split("/").pop()}</Text>
+            <Text style={styles.fileDir} numberOfLines={1}>
+              {file.path.includes("/") ? ` ${file.path.slice(0, file.path.lastIndexOf("/"))}` : ""}
+            </Text>
+            {file.isNew && (
+              <View style={styles.newBadge}>
+                <Text style={styles.newBadgeText}>New</Text>
+              </View>
+            )}
+            {file.isDeleted && (
+              <View style={styles.deletedBadge}>
+                <Text style={styles.deletedBadgeText}>Deleted</Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.fileHeaderRight}>
+            <Text style={styles.additions}>+{file.additions}</Text>
+            <Text style={styles.deletions}>-{file.deletions}</Text>
+          </View>
+        </Pressable>
+        {onAddFileReference ? (
+          <ChatReferenceButton
+            accessibilityLabel="Add file to chat"
+            tooltipLabel="Add file to chat"
+            onPress={() => onAddFileReference(file)}
+            testID={testID ? `${testID}-add-to-chat` : undefined}
+          />
+        ) : null}
+      </View>
     </View>
   );
 });
@@ -328,12 +584,16 @@ function DiffFileBody({
   file,
   layout,
   wrapLines,
+  hunkActionMode,
+  onAddHunkReference,
   onBodyHeightChange,
   testID,
 }: {
   file: ParsedDiffFile;
   layout: "unified" | "split";
   wrapLines: boolean;
+  hunkActionMode: HunkChatActionMode;
+  onAddHunkReference?: (reference: string) => void;
   onBodyHeightChange?: (path: string, height: number) => void;
   testID?: string;
 }) {
@@ -372,28 +632,37 @@ function DiffFileBody({
                 if (row.kind === "header") {
                   return (
                     <View key={`header-${rowIndex}`} style={styles.splitHeaderRow}>
-                      <Text style={[styles.diffLineText, styles.headerLineText]}>{row.content}</Text>
+                      <DiffHunkHeaderRow
+                        content={row.content}
+                        testID={testID ? `${testID}-hunk-${rowIndex}` : undefined}
+                      />
                     </View>
                   );
                 }
 
                 return (
-                  <View key={`pair-${rowIndex}`} style={styles.splitRow}>
-                    <SplitDiffCell line={row.left} gutterWidth={gutterWidth} wrapLines={wrapLines} />
-                    <SplitDiffCell
-                      line={row.right}
-                      gutterWidth={gutterWidth}
-                      wrapLines={wrapLines}
-                      showDivider
-                    />
-                  </View>
+                  <SplitDiffRowView
+                    key={`pair-${rowIndex}`}
+                    row={row}
+                    gutterWidth={gutterWidth}
+                    wrapLines={wrapLines}
+                    hunkActionMode={hunkActionMode}
+                    onAddHunkReference={
+                      onAddHunkReference
+                        ? () => onAddHunkReference(row.chatReference)
+                        : undefined
+                    }
+                    testID={testID ? `${testID}-hunk-${rowIndex}` : undefined}
+                  />
                 );
               })
             : file.hunks.map((hunk, hunkIndex) => {
                 let oldLineNo = hunk.oldStart;
                 let newLineNo = hunk.newStart;
+                let hasVisibleLine = false;
                 return hunk.lines.map((line, lineIndex) => {
                   let lineNumber: number | null = null;
+                  let isFirstVisibleLineInHunk = false;
                   if (line.type === "remove") {
                     lineNumber = oldLineNo;
                     oldLineNo++;
@@ -405,6 +674,10 @@ function DiffFileBody({
                     oldLineNo++;
                     newLineNo++;
                   }
+                  if (line.type !== "header") {
+                    isFirstVisibleLineInHunk = !hasVisibleLine;
+                    hasVisibleLine = true;
+                  }
                   return (
                     <DiffLineView
                       key={`${hunkIndex}-${lineIndex}`}
@@ -412,6 +685,21 @@ function DiffFileBody({
                       lineNumber={lineNumber}
                       gutterWidth={gutterWidth}
                       wrapLines={wrapLines}
+                      hunkActionMode={hunkActionMode}
+                      isFirstVisibleLineInHunk={isFirstVisibleLineInHunk}
+                      onAddHunkReference={
+                        line.type !== "header" && onAddHunkReference
+                          ? () =>
+                              onAddHunkReference(
+                                buildHunkLineChatReference({
+                                  path: file.path,
+                                  hunk,
+                                  lineIndex,
+                                }),
+                              )
+                          : undefined
+                      }
+                      testID={testID ? `${testID}-hunk-${hunkIndex}-line-${lineIndex}` : undefined}
                     />
                   );
                 });
@@ -467,7 +755,11 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   const isMobile = UnistylesRuntime.breakpoint === "xs" || UnistylesRuntime.breakpoint === "sm";
   const showDesktopWebScrollbar = Platform.OS === "web" && !isMobile;
   const canUseSplitLayout = Platform.OS === "web" && !isMobile;
+  const hunkActionMode: HunkChatActionMode =
+    Platform.OS === "web" && !isMobile ? "hover" : "first-line";
   const router = useRouter();
+  const toast = useToast();
+  const closeToAgent = usePanelStore((state) => state.closeToAgent);
   const [diffModeOverride, setDiffModeOverride] = useState<"uncommitted" | "base" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [postShipArchiveSuggested, setPostShipArchiveSuggested] = useState(false);
@@ -491,6 +783,62 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   const handleToggleHideWhitespace = useCallback(() => {
     void updateChangesPreferences({ hideWhitespace: !changesPreferences.hideWhitespace });
   }, [changesPreferences.hideWhitespace, updateChangesPreferences]);
+
+  const handleInsertChatReference = useCallback(
+    (reference: string) => {
+      if (insertIntoActiveChatComposer(reference)) {
+        if (isMobile) {
+          closeToAgent();
+        }
+        return;
+      }
+
+      const resolvedWorkspaceId = workspaceId?.trim() || cwd.trim();
+      if (!resolvedWorkspaceId) {
+        toast.error("Open a chat first");
+        return;
+      }
+
+      const draftId = generateDraftId();
+      const draftKey = buildDraftStoreKey({
+        serverId,
+        agentId: draftId,
+        draftId,
+      });
+      useDraftStore.getState().saveDraftInput({
+        draftKey,
+        draft: {
+          text: appendTextTokenToComposer({ value: "", token: reference }),
+          images: [],
+        },
+      });
+
+      const route = prepareWorkspaceTab({
+        serverId,
+        workspaceId: resolvedWorkspaceId,
+        target: { kind: "draft", draftId },
+      });
+      if (isMobile) {
+        closeToAgent();
+      }
+      router.navigate(route as any);
+    },
+    [closeToAgent, cwd, isMobile, router, serverId, toast, workspaceId],
+  );
+
+  const handleAddFileReference = useCallback(
+    (file: ParsedDiffFile) => {
+      handleInsertChatReference(buildFileChatReference(file.path));
+    },
+    [handleInsertChatReference],
+  );
+
+  const handleAddHunkReference = useCallback(
+    (reference: string) => {
+      handleInsertChatReference(reference);
+    },
+    [handleInsertChatReference],
+  );
 
   const {
     status,
@@ -835,6 +1183,7 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
             file={item.file}
             isExpanded={item.isExpanded}
             onToggle={handleToggleExpanded}
+            onAddFileReference={handleAddFileReference}
             onHeaderHeightChange={handleHeaderHeightChange}
             testID={`diff-file-${item.fileIndex}`}
           />
@@ -845,6 +1194,8 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
           file={item.file}
           layout={effectiveLayout}
           wrapLines={wrapLines}
+          hunkActionMode={hunkActionMode}
+          onAddHunkReference={handleAddHunkReference}
           onBodyHeightChange={handleBodyHeightChange}
           testID={`diff-file-${item.fileIndex}-body`}
         />
@@ -852,9 +1203,12 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
     },
     [
       effectiveLayout,
+      handleAddFileReference,
+      handleAddHunkReference,
       handleBodyHeightChange,
       handleHeaderHeightChange,
       handleToggleExpanded,
+      hunkActionMode,
       wrapLines,
     ],
   );
@@ -1517,16 +1871,23 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
+  fileHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    paddingLeft: theme.spacing[3],
+    paddingRight: theme.spacing[2],
+    paddingVertical: theme.spacing[2],
+    zIndex: 2,
+    elevation: 2,
+  },
   fileHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingLeft: theme.spacing[3],
-    paddingRight: theme.spacing[2],
-    paddingVertical: theme.spacing[2],
     gap: theme.spacing[1],
-    zIndex: 2,
-    elevation: 2,
+    flex: 1,
+    minWidth: 0,
   },
   fileHeaderPressed: {
     opacity: 0.7,
@@ -1642,6 +2003,13 @@ const styles = StyleSheet.create((theme) => ({
     alignSelf: "stretch",
     justifyContent: "flex-start",
   },
+  lineNumberGutterActionContent: {
+    height: theme.lineHeight.diff,
+    alignSelf: "stretch",
+    alignItems: "flex-end",
+    justifyContent: "center",
+    paddingRight: theme.spacing[2],
+  },
   lineNumberText: {
     textAlign: "right",
     paddingRight: theme.spacing[2],
@@ -1684,11 +2052,34 @@ const styles = StyleSheet.create((theme) => ({
   headerLineText: {
     color: theme.colors.foregroundMuted,
   },
+  hunkHeaderText: {
+    flexShrink: 1,
+    paddingRight: theme.spacing[2],
+  },
   contextLineContainer: {
     backgroundColor: theme.colors.surface1,
   },
   contextLineText: {
     color: theme.colors.foregroundMuted,
+  },
+  chatReferenceButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    width: {
+      xs: 28,
+      sm: 28,
+      md: 24,
+    },
+    height: {
+      xs: 28,
+      sm: 28,
+      md: 24,
+    },
+    borderRadius: theme.borderRadius.base,
+    flexShrink: 0,
+  },
+  chatReferenceButtonHovered: {
+    backgroundColor: theme.colors.surface3,
   },
   emptySplitCellText: {
     color: "transparent",

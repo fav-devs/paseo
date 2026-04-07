@@ -100,6 +100,7 @@ export interface MessageInputProps {
 export interface MessageInputRef {
   focus: () => void;
   blur: () => void;
+  setSelection: (selection: { start: number; end: number }) => void;
   runKeyboardAction: (action: MessageInputKeyboardActionKind) => boolean;
   /**
    * Web-only: return the underlying DOM element for focus assertions/retries.
@@ -231,6 +232,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(funct
     null,
   );
   const isInputFocusedRef = useRef(false);
+  const webTextareaRef = useRef<HTMLElement | null>(null);
 
   useImperativeHandle(ref, () => ({
     focus: () => {
@@ -238,6 +240,28 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(funct
     },
     blur: () => {
       textInputRef.current?.blur?.();
+    },
+    setSelection: ({ start, end }) => {
+      const clampedStart = Math.max(0, Math.trunc(start));
+      const clampedEnd = Math.max(clampedStart, Math.trunc(end));
+
+      if (IS_WEB) {
+        const textarea = webTextareaRef.current as HTMLTextAreaElement | null;
+        textarea?.focus?.();
+        if (textarea && typeof textarea.selectionStart === "number") {
+          textarea.selectionStart = clampedStart;
+          textarea.selectionEnd = clampedEnd;
+        }
+        return;
+      }
+
+      const input = textInputRef.current as
+        | (TextInput & {
+            setNativeProps?: (props: { selection: { start: number; end: number } }) => void;
+          })
+        | null;
+      input?.focus?.();
+      input?.setNativeProps?.({ selection: { start: clampedStart, end: clampedEnd } });
     },
     runKeyboardAction: (action) => {
       if (action === "focus") {
@@ -590,8 +614,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(funct
     if (isTextAreaLike(ref)) return ref;
     return null;
   }, []);
-
-  const webTextareaRef = useRef<HTMLElement | null>(null);
 
   useLayoutEffect(() => {
     if (IS_WEB) {

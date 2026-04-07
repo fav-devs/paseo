@@ -11,6 +11,7 @@ import { useDraftAgentCreateFlow } from "@/hooks/use-draft-agent-create-flow";
 import { useDraftAgentFeatures } from "@/hooks/use-draft-agent-features";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { buildDraftStoreKey } from "@/stores/draft-keys";
+import { buildWorkspaceTabPersistenceKey, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import type { Agent } from "@/stores/session-store";
 import { encodeImages } from "@/utils/encode-images";
 import { shouldAutoFocusWorkspaceDraftComposer } from "@/screens/workspace/workspace-draft-pane-focus";
@@ -51,6 +52,7 @@ export function WorkspaceDraftAgentTab({
 }: WorkspaceDraftAgentTabProps) {
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
+  const focusWorkspaceTab = useWorkspaceLayoutStore((state) => state.focusTab);
   const addImagesRef = useRef<((images: ImageAttachment[]) => void) | null>(null);
   const draftInput = useAgentInputDraft(
     buildDraftStoreKey({
@@ -304,6 +306,13 @@ export function WorkspaceDraftAgentTab({
     },
     [setDraftFeatureValue],
   );
+  const handleActivateTab = useCallback(() => {
+    const workspaceKey = buildWorkspaceTabPersistenceKey({ serverId, workspaceId });
+    if (!workspaceKey) {
+      return;
+    }
+    focusWorkspaceTab(workspaceKey, tabId);
+  }, [focusWorkspaceTab, serverId, tabId, workspaceId]);
 
   return (
     <FileDropZone onFilesDropped={handleFilesDropped}>
@@ -341,6 +350,7 @@ export function WorkspaceDraftAgentTab({
             agentId={tabId}
             serverId={serverId}
             isInputActive={isPaneFocused}
+            onActivateTab={handleActivateTab}
             onSubmitMessage={handleCreateFromInput}
             isSubmitLoading={isSubmitting}
             blurOnSubmit={true}

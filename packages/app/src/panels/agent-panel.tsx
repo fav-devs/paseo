@@ -40,6 +40,7 @@ import { mergePendingCreateImages } from "@/utils/pending-create-images";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { buildDraftStoreKey } from "@/stores/draft-keys";
+import { buildWorkspaceTabPersistenceKey, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { useSessionStore, type Agent } from "@/stores/session-store";
 import type { PendingPermission } from "@/types/shared";
 import type { StreamItem } from "@/types/stream";
@@ -111,20 +112,30 @@ function useAgentPanelDescriptor(
 }
 
 function AgentPanel() {
-  const { serverId, target, isPaneFocused, openFileInWorkspace } = usePaneContext();
+  const { serverId, workspaceId, tabId, target, isPaneFocused, openFileInWorkspace } =
+    usePaneContext();
   invariant(target.kind === "agent", "AgentPanel requires agent target");
+  const focusWorkspaceTab = useWorkspaceLayoutStore((state) => state.focusTab);
 
   function openWorkspaceFile(input: { filePath: string }) {
     openFileInWorkspace(input.filePath);
   }
 
   const handleOpenWorkspaceFile = useStableEvent(openWorkspaceFile);
+  const handleActivateTab = useCallback(() => {
+    const workspaceKey = buildWorkspaceTabPersistenceKey({ serverId, workspaceId });
+    if (!workspaceKey) {
+      return;
+    }
+    focusWorkspaceTab(workspaceKey, tabId);
+  }, [focusWorkspaceTab, serverId, tabId, workspaceId]);
 
   return (
     <AgentPanelContent
       serverId={serverId}
       agentId={target.agentId}
       isPaneFocused={isPaneFocused}
+      onActivateTab={handleActivateTab}
       onOpenWorkspaceFile={handleOpenWorkspaceFile}
     />
   );
@@ -155,11 +166,13 @@ function AgentPanelContent({
   serverId,
   agentId,
   isPaneFocused,
+  onActivateTab,
   onOpenWorkspaceFile,
 }: {
   serverId: string;
   agentId: string;
   isPaneFocused: boolean;
+  onActivateTab?: () => void;
   onOpenWorkspaceFile?: (input: { filePath: string }) => void;
 }) {
   const resolvedAgentId = agentId.trim() || undefined;
@@ -199,6 +212,7 @@ function AgentPanelContent({
       serverId={resolvedServerId}
       agentId={resolvedAgentId}
       isPaneFocused={isPaneFocused}
+      onActivateTab={onActivateTab}
       client={runtimeClient}
       isConnected={runtimeIsConnected}
       connectionStatus={connectionStatus}
@@ -211,6 +225,7 @@ function AgentPanelBody({
   serverId,
   agentId,
   isPaneFocused,
+  onActivateTab,
   client,
   isConnected,
   connectionStatus,
@@ -219,6 +234,7 @@ function AgentPanelBody({
   serverId: string;
   agentId?: string;
   isPaneFocused: boolean;
+  onActivateTab?: () => void;
   client: NonNullable<ReturnType<typeof useHostRuntimeClient>>;
   isConnected: boolean;
   connectionStatus: HostRuntimeConnectionStatus;
@@ -760,6 +776,7 @@ function AgentPanelBody({
               agentId={agentId}
               serverId={serverId}
               isInputActive={isPaneFocused}
+              onActivateTab={onActivateTab}
               value={agentInputDraft.text}
               onChangeText={agentInputDraft.setText}
               images={agentInputDraft.images}
