@@ -769,15 +769,11 @@ export class CursorCliAgentSession implements AgentSession {
     }
 
     if (type === "user") {
-      const text = extractAssistantText(record.message);
-      if (text) {
-        this.pushEvent({
-          type: "timeline",
-          provider: this.provider,
-          turnId,
-          item: { type: "user_message", text },
-        });
-      }
+      // Cursor stream-json replays the submitted prompt as `user` messages. Paseo already
+      // inserts the canonical bubble via AgentManager.recordUserMessage() before streaming.
+      // Those rows carry client messageId; CLI output does not, so handleStreamEvent cannot
+      // dedupe and the UI shows duplicate bubbles. Tool / continuation traffic is not
+      // modeled as `user` in this headless print path.
       return;
     }
 
