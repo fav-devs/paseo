@@ -51,6 +51,7 @@ interface SidebarSessionListProps {
   isRefreshing?: boolean;
   onRefresh?: () => void;
   selectedAgentId?: string;
+  onAgentPress?: () => void;
 }
 
 export function SidebarSessionList({
@@ -58,6 +59,7 @@ export function SidebarSessionList({
   isRefreshing = false,
   onRefresh,
   selectedAgentId,
+  onAgentPress,
 }: SidebarSessionListProps) {
   const { theme } = useUnistyles();
 
@@ -82,15 +84,19 @@ export function SidebarSessionList({
     return result;
   }, [agents]);
 
-  const handleAgentPress = useCallback((agent: AggregatedAgent) => {
-    const route = prepareWorkspaceTab({
-      serverId: agent.serverId,
-      workspaceId: agent.cwd,
-      target: { kind: "agent", agentId: agent.id },
-      pin: Boolean(agent.archivedAt),
-    });
-    router.navigate(route);
-  }, []);
+  const handleAgentPress = useCallback(
+    (agent: AggregatedAgent) => {
+      onAgentPress?.();
+      const route = prepareWorkspaceTab({
+        serverId: agent.serverId,
+        workspaceId: agent.cwd,
+        target: { kind: "agent", agentId: agent.id },
+        pin: Boolean(agent.archivedAt),
+      });
+      router.navigate(route);
+    },
+    [onAgentPress],
+  );
 
   const renderItem: ListRenderItem<SidebarSessionListItem> = useCallback(
     ({ item }) => {
