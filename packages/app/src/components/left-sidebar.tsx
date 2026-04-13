@@ -34,7 +34,12 @@ import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { router, usePathname } from "expo-router";
 import { usePanelStore, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH } from "@/stores/panel-store";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
+import { SidebarSessionList } from "./sidebar-session-list";
 import { SidebarAgentListSkeleton } from "./sidebar-agent-list-skeleton";
+import { SegmentedControl } from "@/components/ui/segmented-control";
+import { FolderGit2 } from "lucide-react-native";
+import { useAllAgentsList } from "@/hooks/use-all-agents-list";
+import type { AggregatedAgent } from "@/hooks/use-aggregated-agents";
 import { useSidebarShortcutModel } from "@/hooks/use-sidebar-shortcut-model";
 import {
   useSidebarWorkspacesList,
@@ -68,6 +73,8 @@ type SidebarTheme = ReturnType<typeof useUnistyles>["theme"];
 interface LeftSidebarProps {
   selectedAgentId?: string;
 }
+
+type SidebarTab = "projects" | "sessions";
 
 interface SidebarSharedProps {
   theme: SidebarTheme;
@@ -108,14 +115,17 @@ interface MobileSidebarProps extends SidebarSharedProps {
 interface DesktopSidebarProps extends SidebarSharedProps {
   insetsTop: number;
   isOpen: boolean;
-  handleViewMore: () => void;
+  activeTab: SidebarTab;
+  setActiveTab: Dispatch<SetStateAction<SidebarTab>>;
+  sessions: AggregatedAgent[];
+  isSessionsInitialLoad: boolean;
+  isSessionsRevalidating: boolean;
+  handleSessionsRefresh: () => void;
+  isSessionsManualRefresh: boolean;
+  selectedAgentId?: string;
 }
 
-export const LeftSidebar = memo(function LeftSidebar({
-  selectedAgentId: _selectedAgentId,
-}: LeftSidebarProps) {
-  void _selectedAgentId;
-
+export const LeftSidebar = memo(function LeftSidebar({ selectedAgentId }: LeftSidebarProps) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
   const isCompactLayout = useIsCompactFormFactor();
@@ -188,10 +198,34 @@ export const LeftSidebar = memo(function LeftSidebar({
 
   const isOpen = isCompactLayout ? mobileView === "agent-list" : desktopAgentListOpen;
 
+  const [activeTab, setActiveTab] = useState<SidebarTab>("projects");
+
   const { projects, isInitialLoad, isRevalidating, refreshAll } = useSidebarWorkspacesList({
     serverId: activeServerId,
     enabled: isOpen,
   });
+
+  // Sessions data for desktop Sessions tab. Hook always runs for stable hook order;
+  // the data only renders when the Sessions tab is active on desktop.
+  const {
+    agents: sessions,
+    isInitialLoad: isSessionsInitialLoad,
+    isRevalidating: isSessionsRevalidating,
+    refreshAll: refreshSessions,
+  } = useAllAgentsList({ serverId: activeServerId, includeArchived: false });
+
+  const [isSessionsManualRefresh, setIsSessionsManualRefresh] = useState(false);
+
+  const handleSessionsRefresh = useCallback(() => {
+    setIsSessionsManualRefresh(true);
+    refreshSessions();
+  }, [refreshSessions]);
+
+  useEffect(() => {
+    if (!isSessionsRevalidating && isSessionsManualRefresh) {
+      setIsSessionsManualRefresh(false);
+    }
+  }, [isSessionsRevalidating, isSessionsManualRefresh]);
   const { collapsedProjectKeys, shortcutIndexByWorkspaceKey, toggleProjectCollapsed } =
     useSidebarShortcutModel(projects);
 
@@ -296,7 +330,14 @@ export const LeftSidebar = memo(function LeftSidebar({
       isOpen={isOpen}
       handleOpenProject={handleOpenProjectDesktop}
       handleSettings={handleSettingsDesktop}
-      handleViewMore={handleViewMoreNavigate}
+      activeTab={activeTab}
+      setActiveTab={setActiveTab}
+      sessions={sessions}
+      isSessionsInitialLoad={isSessionsInitialLoad}
+      isSessionsRevalidating={isSessionsRevalidating}
+      handleSessionsRefresh={handleSessionsRefresh}
+      isSessionsManualRefresh={isSessionsManualRefresh}
+      selectedAgentId={selectedAgentId}
     />
   );
 });
@@ -673,7 +714,14 @@ function DesktopSidebar({
   handleSettings,
   insetsTop,
   isOpen,
-  handleViewMore,
+  activeTab,
+  setActiveTab,
+  sessions,
+  isSessionsInitialLoad,
+  isSessionsRevalidating,
+  handleSessionsRefresh,
+  isSessionsManualRefresh,
+  selectedAgentId,
 }: DesktopSidebarProps) {
   const newAgentKeys = useShortcutKeys("new-agent");
   const padding = useWindowControlsPadding("sidebar");
@@ -734,23 +782,54 @@ function DesktopSidebar({
           {padding.top > 0 ? <View style={{ height: padding.top }} /> : null}
           <View style={styles.sidebarHeader}>
             <View style={styles.sidebarHeaderRow}>
-              <SessionsButton onPress={handleViewMore} />
+              <SegmentedControl<SidebarTab>
+                testID="sidebar-tab-switcher"
+                options={[
+                  {
+                    value: "projects",
+                    label: "Projects",
+                    icon: ({ color, size }) => <FolderGit2 color={color} size={size} />,
+                    testID: "sidebar-tab-projects",
+                  },
+                  {
+                    value: "sessions",
+                    label: "Sessions",
+                    icon: ({ color, size }) => <MessagesSquare color={color} size={size} />,
+                    testID: "sidebar-tab-sessions",
+                  },
+                ]}
+                value={activeTab}
+                onValueChange={setActiveTab}
+                size="sm"
+                style={styles.tabSwitcher}
+              />
             </View>
           </View>
         </View>
 
-        {isInitialLoad ? (
+        {activeTab === "projects" ? (
+          isInitialLoad ? (
+            <SidebarAgentListSkeleton />
+          ) : (
+            <SidebarWorkspaceList
+              serverId={activeServerId}
+              collapsedProjectKeys={collapsedProjectKeys}
+              onToggleProjectCollapsed={toggleProjectCollapsed}
+              shortcutIndexByWorkspaceKey={shortcutIndexByWorkspaceKey}
+              projects={projects}
+              isRefreshing={isManualRefresh && isRevalidating}
+              onRefresh={handleRefresh}
+              onAddProject={handleOpenProject}
+            />
+          )
+        ) : isSessionsInitialLoad ? (
           <SidebarAgentListSkeleton />
         ) : (
-          <SidebarWorkspaceList
-            serverId={activeServerId}
-            collapsedProjectKeys={collapsedProjectKeys}
-            onToggleProjectCollapsed={toggleProjectCollapsed}
-            shortcutIndexByWorkspaceKey={shortcutIndexByWorkspaceKey}
-            projects={projects}
-            isRefreshing={isManualRefresh && isRevalidating}
-            onRefresh={handleRefresh}
-            onAddProject={handleOpenProject}
+          <SidebarSessionList
+            agents={sessions}
+            isRefreshing={isSessionsManualRefresh && isSessionsRevalidating}
+            onRefresh={handleSessionsRefresh}
+            selectedAgentId={selectedAgentId}
           />
         )}
 
@@ -897,6 +976,10 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "space-between",
     gap: theme.spacing[2],
+  },
+  tabSwitcher: {
+    flex: 1,
+    justifyContent: "center",
   },
   newAgentButton: {
     flex: 1,
