@@ -22,6 +22,9 @@ export function normalizeWorkspaceTabTarget(
     const path = trimNonEmpty(value.path);
     return path ? { kind: "file", path: path.replace(/\\/g, "/") } : null;
   }
+  if (value.kind === "system-monitor") {
+    return { kind: "system-monitor" };
+  }
   return null;
 }
 
@@ -44,7 +47,8 @@ export function workspaceTabTargetsEqual(
   if (left.kind === "file" && right.kind === "file") {
     return left.path === right.path;
   }
-  return false;
+  // system-monitor is a singleton — any two instances are equal
+  return true;
 }
 
 export function buildDeterministicWorkspaceTabId(target: WorkspaceTabTarget): string {
@@ -56,6 +60,9 @@ export function buildDeterministicWorkspaceTabId(target: WorkspaceTabTarget): st
   }
   if (target.kind === "terminal") {
     return `terminal_${target.terminalId}`;
+  }
+  if (target.kind === "system-monitor") {
+    return "system-monitor";
   }
   return `file_${target.path}`;
 }

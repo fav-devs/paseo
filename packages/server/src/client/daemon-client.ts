@@ -63,6 +63,7 @@ import type {
   SessionInboundMessage,
   SessionOutboundMessage,
   EditorTargetId,
+  SystemMonitorResponse,
 } from "../shared/messages.js";
 import type {
   AgentPermissionRequest,
@@ -239,6 +240,7 @@ type CreatePaseoWorktreePayload = Extract<
 >["payload"];
 type FileExplorerPayload = FileExplorerResponse["payload"];
 type FileDownloadTokenPayload = FileDownloadTokenResponse["payload"];
+type SystemMonitorResponsePayload = SystemMonitorResponse["payload"];
 type FileWritePayload = FileWriteResponse["payload"];
 type ListProviderFeaturesPayload = ListProviderFeaturesResponseMessage["payload"];
 type ListProviderModelsPayload = ListProviderModelsResponseMessage["payload"];
@@ -2664,6 +2666,19 @@ export class DaemonClient {
       },
       responseType: "project_icon_response",
       timeout: 10000,
+    });
+  }
+
+  // ============================================================================
+  // System Monitor
+  // ============================================================================
+
+  async systemMonitor(requestId?: string): Promise<SystemMonitorResponsePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "system_monitor_request" },
+      responseType: "system_monitor_response",
+      timeout: 15000,
     });
   }
 
