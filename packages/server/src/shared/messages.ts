@@ -1422,6 +1422,15 @@ export const CaptureTerminalRequestSchema = z.object({
   requestId: z.string(),
 });
 
+// ============================================================================
+// System Monitor
+// ============================================================================
+
+export const SystemMonitorRequestSchema = z.object({
+  type: z.literal("system_monitor_request"),
+  requestId: z.string(),
+});
+
 export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   VoiceAudioChunkMessageSchema,
   AbortRequestMessageSchema,
@@ -1502,6 +1511,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   TerminalInputSchema,
   KillTerminalRequestSchema,
   CaptureTerminalRequestSchema,
+  SystemMonitorRequestSchema,
   ChatCreateRequestSchema,
   ChatListRequestSchema,
   ChatInspectRequestSchema,
@@ -2744,6 +2754,32 @@ export const TerminalStreamExitSchema = z.object({
   }),
 });
 
+const SystemMonitorPortEntrySchema = z.object({
+  port: z.number().int(),
+  pid: z.number().int().nullable(),
+  process: z.string(),
+  framework: z.string().nullable(),
+  uptimeSeconds: z.number().int().nullable(),
+  status: z.enum(["healthy", "unknown"]),
+});
+
+const SystemMonitorResourcesSchema = z.object({
+  cpuPercent: z.number().nullable(),
+  memUsedBytes: z.number().nullable(),
+  memTotalBytes: z.number().nullable(),
+  loadAvg1m: z.number().nullable(),
+});
+
+export const SystemMonitorResponseSchema = z.object({
+  type: z.literal("system_monitor_response"),
+  payload: z.object({
+    ports: z.array(SystemMonitorPortEntrySchema),
+    resources: SystemMonitorResourcesSchema,
+    error: z.string().nullable(),
+    requestId: z.string(),
+  }),
+});
+
 export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ActivityLogMessageSchema,
   AssistantChunkMessageSchema,
@@ -2844,6 +2880,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   LoopInspectResponseSchema,
   LoopLogsResponseSchema,
   LoopStopResponseSchema,
+  SystemMonitorResponseSchema,
 ]);
 
 export type SessionOutboundMessage = z.infer<typeof SessionOutboundMessageSchema>;
@@ -3076,6 +3113,10 @@ export type KillTerminalResponse = z.infer<typeof KillTerminalResponseSchema>;
 export type CaptureTerminalRequest = z.infer<typeof CaptureTerminalRequestSchema>;
 export type CaptureTerminalResponse = z.infer<typeof CaptureTerminalResponseSchema>;
 export type TerminalStreamExit = z.infer<typeof TerminalStreamExitSchema>;
+
+// System monitor message types
+export type SystemMonitorRequest = z.infer<typeof SystemMonitorRequestSchema>;
+export type SystemMonitorResponse = z.infer<typeof SystemMonitorResponseSchema>;
 
 // ============================================================================
 // WebSocket Level Messages (wraps session messages)

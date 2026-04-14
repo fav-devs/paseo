@@ -5,6 +5,7 @@ import { ActivityIndicator, BackHandler, Keyboard, Pressable, Text, View } from 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Clipboard from "expo-clipboard";
 import {
+  Activity,
   CopyX,
   ArrowLeftToLine,
   ArrowRightToLine,
@@ -163,6 +164,9 @@ function getFallbackTabOptionLabel(tab: WorkspaceTabDescriptor): string {
   if (tab.target.kind === "file") {
     return tab.target.path.split("/").filter(Boolean).pop() ?? tab.target.path;
   }
+  if (tab.target.kind === "system-monitor") {
+    return "System Monitor";
+  }
   return "Agent";
 }
 
@@ -175,6 +179,9 @@ function getFallbackTabOptionDescription(tab: WorkspaceTabDescriptor): string {
   }
   if (tab.target.kind === "terminal") {
     return "Terminal";
+  }
+  if (tab.target.kind === "system-monitor") {
+    return "System Monitor";
   }
   return tab.target.path;
 }
@@ -1168,6 +1175,13 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
     openWorkspaceDraftTab();
   }, [openWorkspaceDraftTab]);
 
+  const handleOpenSystemMonitor = useCallback(() => {
+    if (!persistenceKey) {
+      return;
+    }
+    openWorkspaceTab(persistenceKey, { kind: "system-monitor" });
+  }, [openWorkspaceTab, persistenceKey]);
+
   const handleCreateTerminal = useCallback(
     (input?: { paneId?: string }) => {
       if (createTerminalMutation.isPending) {
@@ -2029,6 +2043,13 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
                           onSelect={handleCreateTerminal}
                         >
                           New terminal
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          testID="workspace-header-system-monitor"
+                          leading={<Activity size={16} color={theme.colors.foregroundMuted} />}
+                          onSelect={handleOpenSystemMonitor}
+                        >
+                          System monitor
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           testID="workspace-header-copy-path"
