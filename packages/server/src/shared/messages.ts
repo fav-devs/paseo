@@ -890,6 +890,33 @@ export const ShutdownServerRequestMessageSchema = z.object({
   requestId: z.string(),
 });
 
+export const ForkAgentRequestMessageSchema = z.object({
+  type: z.literal("fork_agent_request"),
+  /** The agent whose timeline/context will be cloned. */
+  sourceAgentId: z.string(),
+  /** Provider to use for the new agent. */
+  targetProvider: AgentProviderSchema,
+  /**
+   * messageId of the user_message to start the transcript from.
+   * If omitted the entire timeline is used.
+   */
+  fromMessageId: z.string().optional(),
+  /** Config overrides for the new agent (provider is always replaced by targetProvider). */
+  targetConfig: AgentSessionConfigSchema.partial().optional(),
+  /** Optional first message to send to the new agent immediately after creation. */
+  initialPrompt: z.string().optional(),
+  requestId: z.string(),
+});
+
+export const ForkAgentResponseMessageSchema = z.object({
+  type: z.literal("fork_agent_response"),
+  payload: z.object({
+    requestId: z.string(),
+    newAgentId: z.string().optional(),
+    error: z.string().optional(),
+  }),
+});
+
 export const AgentTimelineCursorSchema = z.object({
   epoch: z.string(),
   seq: z.number().int().nonnegative(),
@@ -1542,6 +1569,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   LoopInspectRequestSchema,
   LoopLogsRequestSchema,
   LoopStopRequestSchema,
+  ForkAgentRequestMessageSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -2923,6 +2951,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   LoopLogsResponseSchema,
   LoopStopResponseSchema,
   SystemMonitorResponseSchema,
+  ForkAgentResponseMessageSchema,
 ]);
 
 export type SessionOutboundMessage = z.infer<typeof SessionOutboundMessageSchema>;
@@ -3129,6 +3158,8 @@ export type FileWriteRequest = z.infer<typeof FileWriteRequestSchema>;
 export type FileWriteResponse = z.infer<typeof FileWriteResponseSchema>;
 export type RestartServerRequestMessage = z.infer<typeof RestartServerRequestMessageSchema>;
 export type ShutdownServerRequestMessage = z.infer<typeof ShutdownServerRequestMessageSchema>;
+export type ForkAgentRequestMessage = z.infer<typeof ForkAgentRequestMessageSchema>;
+export type ForkAgentResponseMessage = z.infer<typeof ForkAgentResponseMessageSchema>;
 export type ClearAgentAttentionMessage = z.infer<typeof ClearAgentAttentionMessageSchema>;
 export type ClearAgentAttentionResponseMessage = z.infer<
   typeof ClearAgentAttentionResponseMessageSchema
