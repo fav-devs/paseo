@@ -1754,7 +1754,7 @@ export class Session {
             break;
 
           case "cancel_agent_request":
-            await this.handleCancelAgentRequest(msg.agentId);
+            await this.handleCancelAgentRequest(msg.agentId, msg.requestId);
             break;
 
           case "restart_server_request":
@@ -1939,7 +1939,7 @@ export class Session {
             break;
 
           case "clear_agent_attention":
-            await this.handleClearAgentAttention(msg.agentId);
+            await this.handleClearAgentAttention(msg.agentId, msg.requestId);
             break;
 
           case "client_heartbeat":
@@ -3195,11 +3195,23 @@ export class Session {
     }
   }
 
-  private async handleCancelAgentRequest(agentId: string): Promise<void> {
+  private async handleCancelAgentRequest(agentId: string, requestId?: string): Promise<void> {
     this.sessionLogger.info({ agentId }, `Cancel request received for agent ${agentId}`);
 
     try {
       await this.interruptAgentIfRunning(agentId);
+      if (requestId) {
+        const agent = this.agentManager.getAgent(agentId);
+        const payload = agent ? await this.buildAgentPayload(agent) : null;
+        this.emit({
+          type: "cancel_agent_response",
+          payload: {
+            requestId,
+            agentId,
+            agent: payload,
+          },
+        });
+      }
     } catch (error) {
       this.handleAgentRunError(agentId, error, "Failed to cancel running agent on request");
     }
@@ -3863,11 +3875,32 @@ export class Session {
   /**
    * Handle clearing agent attention flag
    */
-  private async handleClearAgentAttention(agentId: string | string[]): Promise<void> {
+  private async handleClearAgentAttention(
+    agentId: string | string[],
+    requestId?: string,
+  ): Promise<void> {
     const agentIds = Array.isArray(agentId) ? agentId : [agentId];
 
     try {
       await Promise.all(agentIds.map((id) => this.agentManager.clearAgentAttention(id)));
+      if (requestId) {
+        const agents = (
+          await Promise.all(
+            agentIds.map(async (id) => {
+              const agent = this.agentManager.getAgent(id);
+              return agent ? this.buildAgentPayload(agent) : null;
+            }),
+          )
+        ).filter((payload): payload is NonNullable<typeof payload> => payload !== null);
+        this.emit({
+          type: "clear_agent_attention_response",
+          payload: {
+            requestId,
+            agentId,
+            agents,
+          },
+        });
+      }
     } catch (error: any) {
       this.sessionLogger.error({ err: error, agentIds }, "Failed to clear agent attention");
       // Don't throw - this is not critical
