@@ -1,46 +1,14 @@
-const fs = require("node:fs");
-const path = require("node:path");
 const pkg = require("./package.json");
 const appVariant = process.env.APP_VARIANT ?? "production";
 
-function resolveSecretFile(params) {
-  const fromEnv = process.env[params.envKey];
-  if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
-    return fromEnv.trim();
-  }
-
-  const fallbackAbsolutePath = path.resolve(__dirname, params.fallbackRelativePath);
-  if (fs.existsSync(fallbackAbsolutePath)) {
-    return params.fallbackRelativePath;
-  }
-
-  return undefined;
-}
-
 const variants = {
   production: {
-    name: "Paseo",
-    packageId: "sh.paseo",
-    googleServicesFile: resolveSecretFile({
-      envKey: "GOOGLE_SERVICES_FILE_PROD",
-      fallbackRelativePath: "./.secrets/google-services.prod.json",
-    }),
-    googleServiceInfoPlist: resolveSecretFile({
-      envKey: "GOOGLE_SERVICE_INFO_PLIST_PROD",
-      fallbackRelativePath: "./.secrets/GoogleService-Info.prod.plist",
-    }),
+    name: "Paso",
+    packageId: "com.favdevs.paso",
   },
   development: {
-    name: "Paseo Debug",
-    packageId: "sh.paseo.debug",
-    googleServicesFile: resolveSecretFile({
-      envKey: "GOOGLE_SERVICES_FILE_DEBUG",
-      fallbackRelativePath: "./.secrets/google-services.debug.json",
-    }),
-    googleServiceInfoPlist: resolveSecretFile({
-      envKey: "GOOGLE_SERVICE_INFO_PLIST_DEBUG",
-      fallbackRelativePath: "./.secrets/GoogleService-Info.debug.plist",
-    }),
+    name: "Paso Debug",
+    packageId: "com.favdevs.paso.dev",
   },
 };
 
@@ -49,18 +17,15 @@ const variant = variants[appVariant] ?? variants.production;
 export default {
   expo: {
     name: variant.name,
-    slug: "voice-mobile",
+    slug: "paso",
     version: pkg.version,
     orientation: "portrait",
     icon: "./assets/images/icon.png",
-    scheme: "paseo",
+    scheme: "paso",
     userInterfaceStyle: "automatic",
     newArchEnabled: true,
     runtimeVersion: {
       policy: "appVersion",
-    },
-    updates: {
-      url: "https://u.expo.dev/0e7f65ce-0367-46c8-a238-2b65963d235a",
     },
     ios: {
       supportsTablet: true,
@@ -69,9 +34,6 @@ export default {
         ITSAppUsesNonExemptEncryption: false,
       },
       bundleIdentifier: variant.packageId,
-      ...(variant.googleServiceInfoPlist
-        ? { googleServicesFile: variant.googleServiceInfoPlist }
-        : {}),
     },
     android: {
       adaptiveIcon: {
@@ -81,7 +43,6 @@ export default {
       edgeToEdgeEnabled: true,
       predictiveBackGestureEnabled: false,
       softwareKeyboardLayoutMode: "resize",
-      // Allow HTTP connections for local network hosts (required for release builds)
       usesCleartextTraffic: true,
       permissions: [
         "RECORD_AUDIO",
@@ -91,7 +52,6 @@ export default {
         "android.permission.CAMERA",
       ],
       package: variant.packageId,
-      ...(variant.googleServicesFile ? { googleServicesFile: variant.googleServicesFile } : {}),
     },
     web: {
       output: "single",
@@ -134,7 +94,6 @@ export default {
           android: {
             minSdkVersion: 29,
             kotlinVersion: "2.1.20",
-            // Allow HTTP connections for local network hosts in release builds
             usesCleartextTraffic: true,
           },
         },
@@ -148,9 +107,9 @@ export default {
     extra: {
       router: {},
       eas: {
-        projectId: "0e7f65ce-0367-46c8-a238-2b65963d235a",
+        projectId: "3520a041-9964-4390-9019-e3cc9e31c27f",
       },
     },
-    owner: "getpaseo",
+    owner: "babalolafavour",
   },
 };
