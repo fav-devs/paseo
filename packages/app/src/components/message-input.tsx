@@ -254,7 +254,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(funct
       const clampedStart = Math.max(0, Math.trunc(start));
       const clampedEnd = Math.max(clampedStart, Math.trunc(end));
 
-      if (IS_WEB) {
+      if (isWeb) {
         const textarea = webTextareaRef.current as HTMLTextAreaElement | null;
         textarea?.focus?.();
         if (textarea && typeof textarea.selectionStart === "number") {
