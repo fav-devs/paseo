@@ -15,6 +15,7 @@ import {
   type SessionOutboundMessage,
   type FileExplorerRequest,
   type FileDownloadTokenRequest,
+  type FileWriteRequest,
   type GitSetupOptions,
   type ListTerminalsRequest,
   type SubscribeTerminalsRequest,
@@ -143,6 +144,7 @@ import {
   listDirectoryEntries,
   readExplorerFile,
   getDownloadableFileInfo,
+  writeExplorerFile,
 } from "./file-explorer/service.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { PushTokenStore } from "./push/token-store.js";
@@ -1894,6 +1896,10 @@ export class Session {
 
           case "file_explorer_request":
             await this.handleFileExplorerRequest(msg);
+            break;
+
+          case "file_write_request":
+            await this.handleFileWriteRequest(msg);
             break;
 
           case "project_icon_request":
@@ -4853,6 +4859,53 @@ export class Session {
           mode,
           directory: null,
           file: null,
+          error: error.message,
+          requestId,
+        },
+      });
+    }
+  }
+
+  /**
+   * Handle file write request scoped to a workspace cwd
+   */
+  private async handleFileWriteRequest(request: FileWriteRequest): Promise<void> {
+    const { cwd: workspaceCwd, path: requestedPath, content, requestId } = request;
+    const cwd = workspaceCwd.trim();
+    if (!cwd) {
+      this.emit({
+        type: "file_write_response",
+        payload: {
+          cwd: workspaceCwd,
+          path: requestedPath,
+          error: "cwd is required",
+          requestId,
+        },
+      });
+      return;
+    }
+
+    try {
+      await writeExplorerFile({ root: cwd, relativePath: requestedPath, content });
+      this.emit({
+        type: "file_write_response",
+        payload: {
+          cwd,
+          path: requestedPath,
+          error: null,
+          requestId,
+        },
+      });
+    } catch (error: any) {
+      this.sessionLogger.error(
+        { err: error, cwd, path: requestedPath },
+        `Failed to write file in workspace ${cwd}`,
+      );
+      this.emit({
+        type: "file_write_response",
+        payload: {
+          cwd,
+          path: requestedPath,
           error: error.message,
           requestId,
         },

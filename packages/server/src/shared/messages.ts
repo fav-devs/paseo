@@ -1304,6 +1304,14 @@ export const FileDownloadTokenRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const FileWriteRequestSchema = z.object({
+  type: z.literal("file_write_request"),
+  cwd: z.string(),
+  path: z.string(),
+  content: z.string(),
+  requestId: z.string(),
+});
+
 export const ClearAgentAttentionMessageSchema = z.object({
   type: z.literal("clear_agent_attention"),
   agentId: z.union([z.string(), z.array(z.string())]),
@@ -1488,6 +1496,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   FileExplorerRequestSchema,
   ProjectIconRequestSchema,
   FileDownloadTokenRequestSchema,
+  FileWriteRequestSchema,
   ClearAgentAttentionMessageSchema,
   ClientHeartbeatMessageSchema,
   PingMessageSchema,
@@ -2523,6 +2532,16 @@ export const FileDownloadTokenResponseSchema = z.object({
   }),
 });
 
+export const FileWriteResponseSchema = z.object({
+  type: z.literal("file_write_response"),
+  payload: z.object({
+    cwd: z.string(),
+    path: z.string(),
+    error: z.string().nullable(),
+    requestId: z.string(),
+  }),
+});
+
 export const ListProviderModelsResponseMessageSchema = z.object({
   type: z.literal("list_provider_models_response"),
   payload: z.object({
@@ -2809,6 +2828,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   FileExplorerResponseSchema,
   ProjectIconResponseSchema,
   FileDownloadTokenResponseSchema,
+  FileWriteResponseSchema,
   ListProviderModelsResponseMessageSchema,
   ListProviderModesResponseMessageSchema,
   ListProviderFeaturesResponseMessageSchema,
@@ -3045,6 +3065,8 @@ export type ProjectIconResponse = z.infer<typeof ProjectIconResponseSchema>;
 export type ProjectIcon = z.infer<typeof ProjectIconSchema>;
 export type FileDownloadTokenRequest = z.infer<typeof FileDownloadTokenRequestSchema>;
 export type FileDownloadTokenResponse = z.infer<typeof FileDownloadTokenResponseSchema>;
+export type FileWriteRequest = z.infer<typeof FileWriteRequestSchema>;
+export type FileWriteResponse = z.infer<typeof FileWriteResponseSchema>;
 export type RestartServerRequestMessage = z.infer<typeof RestartServerRequestMessageSchema>;
 export type ShutdownServerRequestMessage = z.infer<typeof ShutdownServerRequestMessageSchema>;
 export type ClearAgentAttentionMessage = z.infer<typeof ClearAgentAttentionMessageSchema>;
