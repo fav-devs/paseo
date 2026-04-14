@@ -38,7 +38,7 @@ Write-Host @"
 ======================================================
   Home:    $($env:PASEO_HOME)
   Models:  $($env:PASEO_LOCAL_MODELS_DIR)
-  Daemon:  localhost:6767
+  Daemon:  localhost:9239
 ======================================================
 "@
 
@@ -52,9 +52,10 @@ Write-Host "Building @getpaseo/relay..."
 npm run build --workspace=@getpaseo/relay
 
 $env:PASEO_CORS_ORIGINS = "*"
+$env:PASEO_LISTEN = "127.0.0.1:9239"
 
 # Configure the app to auto-connect to this daemon on localhost
-$env:EXPO_PUBLIC_LOCAL_DAEMON = "localhost:6767"
+$env:EXPO_PUBLIC_LOCAL_DAEMON = "localhost:9239"
 $env:BROWSER = "none"
 
 # Run both with concurrently
