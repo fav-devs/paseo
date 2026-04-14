@@ -15,6 +15,7 @@ import {
   type SessionOutboundMessage,
   type FileExplorerRequest,
   type FileDownloadTokenRequest,
+  type FileWriteRequest,
   type GitSetupOptions,
   type ListTerminalsRequest,
   type SubscribeTerminalsRequest,
@@ -143,6 +144,7 @@ import {
   listDirectoryEntries,
   readExplorerFile,
   getDownloadableFileInfo,
+  writeExplorerFile,
 } from "./file-explorer/service.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { PushTokenStore } from "./push/token-store.js";
@@ -1752,7 +1754,7 @@ export class Session {
             break;
 
           case "cancel_agent_request":
-            await this.handleCancelAgentRequest(msg.agentId);
+            await this.handleCancelAgentRequest(msg.agentId, msg.requestId);
             break;
 
           case "restart_server_request":
@@ -1896,6 +1898,10 @@ export class Session {
             await this.handleFileExplorerRequest(msg);
             break;
 
+          case "file_write_request":
+            await this.handleFileWriteRequest(msg);
+            break;
+
           case "project_icon_request":
             await this.handleProjectIconRequest(msg);
             break;
@@ -1933,7 +1939,7 @@ export class Session {
             break;
 
           case "clear_agent_attention":
-            await this.handleClearAgentAttention(msg.agentId);
+            await this.handleClearAgentAttention(msg.agentId, msg.requestId);
             break;
 
           case "client_heartbeat":
@@ -3193,11 +3199,23 @@ export class Session {
     }
   }
 
-  private async handleCancelAgentRequest(agentId: string): Promise<void> {
+  private async handleCancelAgentRequest(agentId: string, requestId?: string): Promise<void> {
     this.sessionLogger.info({ agentId }, `Cancel request received for agent ${agentId}`);
 
     try {
       await this.interruptAgentIfRunning(agentId);
+      if (requestId) {
+        const agent = this.agentManager.getAgent(agentId);
+        const payload = agent ? await this.buildAgentPayload(agent) : null;
+        this.emit({
+          type: "cancel_agent_response",
+          payload: {
+            requestId,
+            agentId,
+            agent: payload,
+          },
+        });
+      }
     } catch (error) {
       this.handleAgentRunError(agentId, error, "Failed to cancel running agent on request");
     }
@@ -3861,11 +3879,32 @@ export class Session {
   /**
    * Handle clearing agent attention flag
    */
-  private async handleClearAgentAttention(agentId: string | string[]): Promise<void> {
+  private async handleClearAgentAttention(
+    agentId: string | string[],
+    requestId?: string,
+  ): Promise<void> {
     const agentIds = Array.isArray(agentId) ? agentId : [agentId];
 
     try {
       await Promise.all(agentIds.map((id) => this.agentManager.clearAgentAttention(id)));
+      if (requestId) {
+        const agents = (
+          await Promise.all(
+            agentIds.map(async (id) => {
+              const agent = this.agentManager.getAgent(id);
+              return agent ? this.buildAgentPayload(agent) : null;
+            }),
+          )
+        ).filter((payload): payload is NonNullable<typeof payload> => payload !== null);
+        this.emit({
+          type: "clear_agent_attention_response",
+          payload: {
+            requestId,
+            agentId,
+            agents,
+          },
+        });
+      }
     } catch (error: any) {
       this.sessionLogger.error({ err: error, agentIds }, "Failed to clear agent attention");
       // Don't throw - this is not critical
@@ -4857,6 +4896,53 @@ export class Session {
           mode,
           directory: null,
           file: null,
+          error: error.message,
+          requestId,
+        },
+      });
+    }
+  }
+
+  /**
+   * Handle file write request scoped to a workspace cwd
+   */
+  private async handleFileWriteRequest(request: FileWriteRequest): Promise<void> {
+    const { cwd: workspaceCwd, path: requestedPath, content, requestId } = request;
+    const cwd = workspaceCwd.trim();
+    if (!cwd) {
+      this.emit({
+        type: "file_write_response",
+        payload: {
+          cwd: workspaceCwd,
+          path: requestedPath,
+          error: "cwd is required",
+          requestId,
+        },
+      });
+      return;
+    }
+
+    try {
+      await writeExplorerFile({ root: cwd, relativePath: requestedPath, content });
+      this.emit({
+        type: "file_write_response",
+        payload: {
+          cwd,
+          path: requestedPath,
+          error: null,
+          requestId,
+        },
+      });
+    } catch (error: any) {
+      this.sessionLogger.error(
+        { err: error, cwd, path: requestedPath },
+        `Failed to write file in workspace ${cwd}`,
+      );
+      this.emit({
+        type: "file_write_response",
+        payload: {
+          cwd,
+          path: requestedPath,
           error: error.message,
           requestId,
         },

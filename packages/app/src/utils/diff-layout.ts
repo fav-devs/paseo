@@ -1,4 +1,11 @@
 import type { DiffLine, ParsedDiffFile } from "@/hooks/use-checkout-diff-query";
+import { buildDiffRangeChatReference } from "./chat-reference-token";
+import {
+  buildChangeBlockReferenceRange,
+  buildContextReferenceRange,
+  buildHunkLinePositions,
+  type DiffHunkLinePosition,
+} from "./diff-chat-reference";
 
 export interface SplitDiffDisplayLine {
   type: DiffLine["type"];
@@ -17,20 +24,23 @@ export type SplitDiffRow =
   | {
       kind: "header";
       content: string;
+      hunkIndex: number;
     }
   | {
       kind: "pair";
+      hunkIndex: number;
+      isFirstChangedLineInHunk: boolean;
+      chatReference: string;
       left: SplitDiffDisplayLine | null;
       right: SplitDiffDisplayLine | null;
     };
 
 function toDisplayLine(input: {
   line: DiffLine;
-  oldLineNumber: number | null;
-  newLineNumber: number | null;
+  position: DiffHunkLinePosition;
   side: "left" | "right";
 }): SplitDiffDisplayLine | null {
-  const { line, oldLineNumber, newLineNumber, side } = input;
+  const { line, position, side } = input;
   if (line.type === "header") {
     return null;
   }
@@ -43,7 +53,7 @@ function toDisplayLine(input: {
       type: "remove",
       content: line.content,
       tokens: line.tokens,
-      lineNumber: oldLineNumber,
+      lineNumber: position.oldLineNumber,
     };
   }
 
@@ -55,7 +65,7 @@ function toDisplayLine(input: {
       type: "add",
       content: line.content,
       tokens: line.tokens,
-      lineNumber: newLineNumber,
+      lineNumber: position.newLineNumber,
     };
   }
 
@@ -63,7 +73,7 @@ function toDisplayLine(input: {
     type: "context",
     content: line.content,
     tokens: line.tokens,
-    lineNumber: side === "left" ? oldLineNumber : newLineNumber,
+    lineNumber: side === "left" ? position.oldLineNumber : position.newLineNumber,
   };
 }
 
@@ -103,79 +113,140 @@ export function buildUnifiedDiffLines(file: ParsedDiffFile): UnifiedDiffDisplayL
 export function buildSplitDiffRows(file: ParsedDiffFile): SplitDiffRow[] {
   const rows: SplitDiffRow[] = [];
 
-  for (const hunk of file.hunks) {
-    let oldLineNo = hunk.oldStart;
-    let newLineNo = hunk.newStart;
+  for (const [hunkIndex, hunk] of file.hunks.entries()) {
+    const positions = buildHunkLinePositions(hunk);
+    let hasChangedLine = false;
     rows.push({
       kind: "header",
       content: hunk.lines[0]?.type === "header" ? hunk.lines[0].content : "@@",
+      hunkIndex,
     });
 
-    let pendingRemovals: Array<{ line: DiffLine; oldLineNumber: number }> = [];
-    let pendingAdditions: Array<{ line: DiffLine; newLineNumber: number }> = [];
+    let pendingRemovalIndices: number[] = [];
+    let pendingAdditionIndices: number[] = [];
+
+    const pushPairRow = (input: {
+      chatReference: string;
+      hasChanges: boolean;
+      left: SplitDiffDisplayLine | null;
+      right: SplitDiffDisplayLine | null;
+    }) => {
+      rows.push({
+        kind: "pair",
+        hunkIndex,
+        isFirstChangedLineInHunk: input.hasChanges && !hasChangedLine,
+        chatReference: input.chatReference,
+        left: input.left,
+        right: input.right,
+      });
+      if (input.hasChanges) {
+        hasChangedLine = true;
+      }
+    };
 
     const flushPendingRows = () => {
-      const pairCount = Math.max(pendingRemovals.length, pendingAdditions.length);
+      const pairCount = Math.max(pendingRemovalIndices.length, pendingAdditionIndices.length);
+      if (pairCount === 0) {
+        return;
+      }
+
+      const range = buildChangeBlockReferenceRange({
+        hunk,
+        positions,
+        startIndex:
+          Math.min(
+            pendingRemovalIndices[0] ?? Number.POSITIVE_INFINITY,
+            pendingAdditionIndices[0] ?? Number.POSITIVE_INFINITY,
+          ) || 0,
+        endIndex:
+          Math.max(
+            pendingRemovalIndices[pendingRemovalIndices.length - 1] ?? Number.NEGATIVE_INFINITY,
+            pendingAdditionIndices[pendingAdditionIndices.length - 1] ?? Number.NEGATIVE_INFINITY,
+          ) || 0,
+      });
+      const chatReference = buildDiffRangeChatReference({
+        path: file.path,
+        ...(range ?? {
+          oldStart: hunk.oldStart,
+          oldCount: hunk.oldCount,
+          newStart: hunk.newStart,
+          newCount: hunk.newCount,
+        }),
+      });
+
       for (let index = 0; index < pairCount; index += 1) {
-        const removal = pendingRemovals[index] ?? null;
-        const addition = pendingAdditions[index] ?? null;
-        rows.push({
-          kind: "pair",
-          left: removal
+        const removalIndex = pendingRemovalIndices[index];
+        const additionIndex = pendingAdditionIndices[index];
+        const removalLine = removalIndex != null ? hunk.lines[removalIndex] : null;
+        const additionLine = additionIndex != null ? hunk.lines[additionIndex] : null;
+        pushPairRow({
+          chatReference,
+          hasChanges: true,
+          left: removalLine && removalIndex != null
             ? toDisplayLine({
-                line: removal.line,
-                oldLineNumber: removal.oldLineNumber,
-                newLineNumber: null,
+                line: removalLine,
+                position: positions[removalIndex],
                 side: "left",
               })
             : null,
-          right: addition
+          right: additionLine && additionIndex != null
             ? toDisplayLine({
-                line: addition.line,
-                oldLineNumber: null,
-                newLineNumber: addition.newLineNumber,
+                line: additionLine,
+                position: positions[additionIndex],
                 side: "right",
               })
             : null,
         });
       }
-      pendingRemovals = [];
-      pendingAdditions = [];
+      pendingRemovalIndices = [];
+      pendingAdditionIndices = [];
     };
 
-    for (const line of hunk.lines.slice(1)) {
+    for (const [lineIndex, line] of hunk.lines.entries()) {
+      if (lineIndex === 0) {
+        continue;
+      }
+
       if (line.type === "remove") {
-        pendingRemovals.push({ line, oldLineNumber: oldLineNo });
-        oldLineNo += 1;
+        pendingRemovalIndices.push(lineIndex);
         continue;
       }
 
       if (line.type === "add") {
-        pendingAdditions.push({ line, newLineNumber: newLineNo });
-        newLineNo += 1;
+        pendingAdditionIndices.push(lineIndex);
         continue;
       }
 
       flushPendingRows();
 
       if (line.type === "context") {
-        rows.push({
-          kind: "pair",
+        const range = buildContextReferenceRange({
+          hunk,
+          positions,
+          lineIndex,
+        });
+        const position = positions[lineIndex];
+        if (!range || !position) {
+          continue;
+        }
+
+        pushPairRow({
+          chatReference: buildDiffRangeChatReference({
+            path: file.path,
+            ...range,
+          }),
+          hasChanges: false,
           left: toDisplayLine({
             line,
-            oldLineNumber: oldLineNo,
-            newLineNumber: newLineNo,
+            position,
             side: "left",
           }),
           right: toDisplayLine({
             line,
-            oldLineNumber: oldLineNo,
-            newLineNumber: newLineNo,
+            position,
             side: "right",
           }),
         });
-        oldLineNo += 1;
-        newLineNo += 1;
       }
     }
 
