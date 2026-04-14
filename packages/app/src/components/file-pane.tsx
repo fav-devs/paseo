@@ -372,7 +372,7 @@ export function FilePane({
             </>
           ) : (
             <Pressable style={styles.toolbarButton} onPress={handleEditPress}>
-              <Text style={[styles.toolbarButtonText, { color: theme.colors.accent }]}>Edit</Text>
+              <Text style={styles.toolbarButtonTextEdit}>Edit</Text>
             </Pressable>
           )}
         </View>
@@ -479,6 +479,11 @@ const styles = StyleSheet.create((theme) => ({
   toolbarButtonTextSave: {
     color: theme.colors.accentForeground,
   },
+  toolbarButtonTextEdit: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.accent,
+    fontWeight: "500",
+  },
   toolbarErrorText: {
     flex: 1,
     fontSize: theme.fontSize.xs,
@@ -497,6 +502,6 @@ const styles = StyleSheet.create((theme) => ({
           outlineStyle: "none",
           whiteSpace: "pre",
         }
-      : null),
+      : {}),
   },
 }));
