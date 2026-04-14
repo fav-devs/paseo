@@ -1,5 +1,10 @@
 {
   "android": {
     "package": "com.moboudra.paseo"
+  },
+  "extra": {
+    "eas": {
+      "projectId": "772a2f9a-e673-4448-a8f1-dd3650bda32d"
+    }
   }
 }
