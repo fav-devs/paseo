@@ -19,6 +19,7 @@ import type {
   CreateAgentRequestMessage,
   FileDownloadTokenResponse,
   FileExplorerResponse,
+  FileWriteResponse,
   FetchAgentTimelineResponseMessage,
   GitSetupOptions,
   CheckoutStatusResponse,
@@ -238,6 +239,7 @@ type CreatePaseoWorktreePayload = Extract<
 >["payload"];
 type FileExplorerPayload = FileExplorerResponse["payload"];
 type FileDownloadTokenPayload = FileDownloadTokenResponse["payload"];
+type FileWritePayload = FileWriteResponse["payload"];
 type ListProviderFeaturesPayload = ListProviderFeaturesResponseMessage["payload"];
 type ListProviderModelsPayload = ListProviderModelsResponseMessage["payload"];
 type ListProviderModesPayload = ListProviderModesResponseMessage["payload"];
@@ -2588,6 +2590,25 @@ export class DaemonClient {
       },
       responseType: "file_download_token_response",
       timeout: 10000,
+    });
+  }
+
+  async writeWorkspaceFile(
+    cwd: string,
+    path: string,
+    content: string,
+    requestId?: string,
+  ): Promise<FileWritePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "file_write_request",
+        cwd,
+        path,
+        content,
+      },
+      responseType: "file_write_response",
+      timeout: 15000,
     });
   }
 

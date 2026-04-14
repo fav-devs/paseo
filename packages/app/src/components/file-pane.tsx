@@ -1,11 +1,13 @@
-import React, { useMemo, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import React, { useMemo, useRef, useState, useCallback } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ActivityIndicator,
   Image as RNImage,
   ScrollView as RNScrollView,
   Text,
+  TextInput,
   View,
+  Pressable,
 } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -36,6 +38,9 @@ interface FilePreviewBodyProps {
   showDesktopWebScrollbar: boolean;
   isMobile: boolean;
   filePath: string;
+  isEditing: boolean;
+  editContent: string;
+  onEditContentChange: (text: string) => void;
 }
 
 function trimNonEmpty(value: string | null | undefined): string | null {
@@ -112,6 +117,9 @@ function FilePreviewBody({
   showDesktopWebScrollbar,
   isMobile,
   filePath,
+  isEditing,
+  editContent,
+  onEditContentChange,
 }: FilePreviewBodyProps) {
   const { theme } = useUnistyles();
   const isDark = theme.colorScheme === "dark";
@@ -154,6 +162,24 @@ function FilePreviewBody({
   }
 
   if (preview.kind === "text") {
+    if (isEditing) {
+      return (
+        <View style={styles.previewScrollContainer}>
+          <TextInput
+            style={styles.editor}
+            value={editContent}
+            onChangeText={onEditContentChange}
+            multiline
+            autoCorrect={false}
+            autoCapitalize="none"
+            spellCheck={false}
+            scrollEnabled
+            textAlignVertical="top"
+          />
+        </View>
+      );
+    }
+
     const lines = highlightedLines ?? [[{ text: preview.content ?? "", style: null }]];
     const codeLines = (
       <View>
@@ -242,12 +268,18 @@ export function FilePane({
   workspaceRoot: string;
   filePath: string;
 }) {
+  const { theme } = useUnistyles();
   const isMobile = useIsCompactFormFactor();
   const showDesktopWebScrollbar = isWeb && !isMobile;
 
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
   const normalizedWorkspaceRoot = useMemo(() => workspaceRoot.trim(), [workspaceRoot]);
   const normalizedFilePath = useMemo(() => trimNonEmpty(filePath), [filePath]);
+  const queryClient = useQueryClient();
+
+  const [isEditing, setIsEditing] = useState(false);
+  const [editContent, setEditContent] = useState("");
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const query = useQuery({
     queryKey: ["workspaceFile", serverId, normalizedWorkspaceRoot, normalizedFilePath],
@@ -266,8 +298,86 @@ export function FilePane({
     staleTime: 5_000,
   });
 
+  const saveMutation = useMutation({
+    mutationFn: async (content: string) => {
+      if (!client || !normalizedWorkspaceRoot || !normalizedFilePath) {
+        throw new Error("Host is not connected");
+      }
+      const result = await client.writeWorkspaceFile(
+        normalizedWorkspaceRoot,
+        normalizedFilePath,
+        content,
+      );
+      if (result.error) {
+        throw new Error(result.error);
+      }
+    },
+    onSuccess: () => {
+      setIsEditing(false);
+      setSaveError(null);
+      queryClient.invalidateQueries({
+        queryKey: ["workspaceFile", serverId, normalizedWorkspaceRoot, normalizedFilePath],
+      });
+    },
+    onError: (error: Error) => {
+      setSaveError(error.message);
+    },
+  });
+
+  const handleEditPress = useCallback(() => {
+    const content = query.data?.file?.content ?? "";
+    setEditContent(content);
+    setSaveError(null);
+    setIsEditing(true);
+  }, [query.data?.file?.content]);
+
+  const handleCancelPress = useCallback(() => {
+    setIsEditing(false);
+    setSaveError(null);
+  }, []);
+
+  const handleSavePress = useCallback(() => {
+    saveMutation.mutate(editContent);
+  }, [saveMutation, editContent]);
+
+  const isTextFile = query.data?.file?.kind === "text";
+
   return (
     <View style={styles.container} testID="workspace-file-pane">
+      {isTextFile ? (
+        <View style={styles.toolbar}>
+          {isEditing ? (
+            <>
+              <Pressable
+                style={[styles.toolbarButton, styles.toolbarButtonSave]}
+                onPress={handleSavePress}
+                disabled={saveMutation.isPending}
+              >
+                <Text style={[styles.toolbarButtonText, styles.toolbarButtonTextSave]}>
+                  {saveMutation.isPending ? "Saving…" : "Save"}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={styles.toolbarButton}
+                onPress={handleCancelPress}
+                disabled={saveMutation.isPending}
+              >
+                <Text style={styles.toolbarButtonText}>Cancel</Text>
+              </Pressable>
+              {saveError ? (
+                <Text style={styles.toolbarErrorText} numberOfLines={1}>
+                  {saveError}
+                </Text>
+              ) : null}
+            </>
+          ) : (
+            <Pressable style={styles.toolbarButton} onPress={handleEditPress}>
+              <Text style={styles.toolbarButtonTextEdit}>Edit</Text>
+            </Pressable>
+          )}
+        </View>
+      ) : null}
+
       {query.data?.error ? (
         <View style={styles.centerState}>
           <Text style={styles.errorText}>{query.data.error}</Text>
@@ -280,6 +390,9 @@ export function FilePane({
         showDesktopWebScrollbar={showDesktopWebScrollbar}
         isMobile={isMobile}
         filePath={filePath}
+        isEditing={isEditing}
+        editContent={editContent}
+        onEditContentChange={setEditContent}
       />
     </View>
   );
@@ -337,5 +450,58 @@ const styles = StyleSheet.create((theme) => ({
   previewImage: {
     width: "100%",
     height: 420,
+  },
+  toolbar: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[2],
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+    gap: theme.spacing[2],
+  },
+  toolbarButton: {
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[1],
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  toolbarButtonSave: {
+    backgroundColor: theme.colors.accent,
+    borderColor: theme.colors.accent,
+  },
+  toolbarButtonText: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foreground,
+    fontWeight: "500",
+  },
+  toolbarButtonTextSave: {
+    color: theme.colors.accentForeground,
+  },
+  toolbarButtonTextEdit: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.accent,
+    fontWeight: "500",
+  },
+  toolbarErrorText: {
+    flex: 1,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.destructive,
+  },
+  editor: {
+    flex: 1,
+    padding: theme.spacing[4],
+    fontFamily: Fonts.mono,
+    fontSize: theme.fontSize.sm,
+    lineHeight: theme.fontSize.sm * 1.45,
+    color: theme.colors.foreground,
+    backgroundColor: theme.colors.surface0,
+    ...(isWeb
+      ? {
+          outlineStyle: "none",
+          whiteSpace: "pre",
+        }
+      : {}),
   },
 }));

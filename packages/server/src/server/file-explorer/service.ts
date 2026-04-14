@@ -205,6 +205,21 @@ export async function getDownloadableFileInfo({ root, relativePath }: ReadFilePa
   };
 }
 
+export interface WriteFileParams {
+  root: string;
+  relativePath: string;
+  content: string;
+}
+
+export async function writeExplorerFile({
+  root,
+  relativePath,
+  content,
+}: WriteFileParams): Promise<void> {
+  const filePath = await resolveScopedPath({ root, relativePath });
+  await fs.writeFile(filePath, content, "utf-8");
+}
+
 async function resolveScopedPath({ root, relativePath = "." }: ScopedPathParams): Promise<string> {
   const normalizedRoot = path.resolve(root);
   const requestedPath = path.resolve(normalizedRoot, relativePath);
