@@ -2079,6 +2079,10 @@ export class Session {
           case "loop/stop":
             await this.handleLoopStopRequest(msg);
             break;
+
+          case "system_monitor_request":
+            await this.handleSystemMonitorRequest(msg);
+            break;
         }
       } catch (error: any) {
         const err = error instanceof Error ? error : new Error(String(error));
@@ -8534,6 +8538,38 @@ export class Session {
   private disposeTerminalSubscriptions(): void {
     for (const terminalId of [...this.terminalIdToSlot.keys()]) {
       this.detachTerminalStream(terminalId, { emitExit: false });
+    }
+  }
+
+  /**
+   * Handle system monitor request — returns listening ports and resource usage.
+   */
+  private async handleSystemMonitorRequest(
+    request: Extract<SessionInboundMessage, { type: "system_monitor_request" }>,
+  ): Promise<void> {
+    const { requestId } = request;
+    try {
+      const { getSystemMonitorData } = await import("./system-monitor.js");
+      const data = await getSystemMonitorData();
+      this.emit({
+        type: "system_monitor_response",
+        payload: {
+          ports: data.ports,
+          resources: data.resources,
+          error: null,
+          requestId,
+        },
+      });
+    } catch (error: any) {
+      this.emit({
+        type: "system_monitor_response",
+        payload: {
+          ports: [],
+          resources: { cpuPercent: null, memUsedBytes: null, memTotalBytes: null, loadAvg1m: null },
+          error: String(error?.message ?? error),
+          requestId,
+        },
+      });
     }
   }
 }
