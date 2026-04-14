@@ -64,6 +64,7 @@ import type {
   SessionOutboundMessage,
   EditorTargetId,
   SystemMonitorResponse,
+  ForkAgentResponseMessage,
 } from "../shared/messages.js";
 import type {
   AgentPermissionRequest,
@@ -211,6 +212,25 @@ export type CreateAgentRequestOptions = {
   requestId?: string;
   labels?: Record<string, string>;
 } & AgentConfigOverrides;
+
+export type ForkAgentOptions = {
+  /** ID of the agent whose conversation will be used as context. */
+  sourceAgentId: string;
+  /** Provider for the new agent. */
+  targetProvider: AgentProvider;
+  /**
+   * messageId of the user_message in the source timeline to start the
+   * transcript from. If omitted the full timeline is included.
+   */
+  fromMessageId?: string;
+  /** Config overrides for the new agent (provider is always targetProvider). */
+  targetConfig?: Partial<AgentSessionConfig>;
+  /** Optional first message sent to the new agent immediately after creation. */
+  initialPrompt?: string;
+  requestId?: string;
+};
+
+type ForkAgentResponsePayload = ForkAgentResponseMessage["payload"];
 
 type CheckoutStatusPayload = CheckoutStatusResponse["payload"];
 type SubscribeCheckoutDiffPayload = Extract<
@@ -1492,6 +1512,43 @@ export class DaemonClient {
     }
 
     return status.agent;
+  }
+
+  async forkAgent(options: ForkAgentOptions): Promise<{ newAgentId: string }> {
+    const requestId = this.createRequestId(options.requestId);
+    const message = SessionInboundMessageSchema.parse({
+      type: "fork_agent_request",
+      sourceAgentId: options.sourceAgentId,
+      targetProvider: options.targetProvider,
+      ...(options.fromMessageId ? { fromMessageId: options.fromMessageId } : {}),
+      ...(options.targetConfig ? { targetConfig: options.targetConfig } : {}),
+      ...(options.initialPrompt ? { initialPrompt: options.initialPrompt } : {}),
+      requestId,
+    });
+
+    const payload = await this.sendRequest<ForkAgentResponsePayload>({
+      requestId,
+      message,
+      timeout: 60000,
+      options: { skipQueue: true },
+      select: (msg) => {
+        if (msg.type !== "fork_agent_response") {
+          return null;
+        }
+        if (msg.payload.requestId !== requestId) {
+          return null;
+        }
+        return msg.payload;
+      },
+    });
+
+    if (payload.error) {
+      throw new Error(payload.error);
+    }
+    if (!payload.newAgentId) {
+      throw new Error("Fork succeeded but no newAgentId was returned");
+    }
+    return { newAgentId: payload.newAgentId };
   }
 
   async deleteAgent(agentId: string): Promise<void> {

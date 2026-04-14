@@ -2627,3 +2627,64 @@ export class AgentManager {
     return agent;
   }
 }
+
+/**
+ * Converts a normalized agent timeline into a plain-text transcript suitable
+ * for injecting as context into a new session on a different provider.
+ *
+ * @param timeline - The source agent's timeline items.
+ * @param sourceProvider - Provider name for the header comment.
+ * @param fromMessageId - Optional user_message.messageId to start the transcript
+ *   from. When supplied, only items from the first matching user_message onward
+ *   are included. Falls back to the full timeline if the id is not found.
+ */
+export function buildTranscriptFromTimeline(
+  timeline: AgentTimelineItem[],
+  sourceProvider: AgentProvider,
+  fromMessageId?: string,
+): string {
+  let items: AgentTimelineItem[] = timeline;
+
+  if (fromMessageId) {
+    const startIndex = timeline.findIndex(
+      (item) => item.type === "user_message" && item.messageId === fromMessageId,
+    );
+    if (startIndex >= 0) {
+      items = timeline.slice(startIndex);
+    }
+  }
+
+  if (items.length === 0) {
+    return "";
+  }
+
+  const lines: string[] = [`[Context from previous session (provider: ${sourceProvider})]`, ""];
+
+  for (const item of items) {
+    switch (item.type) {
+      case "user_message":
+        lines.push(`User: ${item.text}`);
+        lines.push("");
+        break;
+      case "assistant_message":
+        lines.push(`Assistant: ${item.text}`);
+        lines.push("");
+        break;
+      case "tool_call":
+        if (item.status === "completed" || item.status === "failed" || item.status === "canceled") {
+          lines.push(`[tool: ${item.name}] (${item.status})`);
+          lines.push("");
+        }
+        break;
+      case "error":
+        lines.push(`[error: ${item.message}]`);
+        lines.push("");
+        break;
+      default:
+        // reasoning, todo, compaction — skip in transcript
+        break;
+    }
+  }
+
+  return lines.join("\n").trimEnd();
+}

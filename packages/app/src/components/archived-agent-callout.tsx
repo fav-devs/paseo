@@ -12,9 +12,11 @@ import type { Theme } from "@/styles/theme";
 interface ArchivedAgentCalloutProps {
   serverId: string;
   agentId: string;
+  /** Optional callback to open the provider handoff sheet. */
+  onHandoff?: () => void;
 }
 
-export function ArchivedAgentCallout({ serverId, agentId }: ArchivedAgentCalloutProps) {
+export function ArchivedAgentCallout({ serverId, agentId, onHandoff }: ArchivedAgentCalloutProps) {
   const insets = useSafeAreaInsets();
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
@@ -41,14 +43,21 @@ export function ArchivedAgentCallout({ serverId, agentId }: ArchivedAgentCallout
         <View style={styles.inputAreaContent}>
           <View style={styles.callout}>
             <Text style={styles.calloutText}>This agent is archived</Text>
-            <Button
-              size="sm"
-              variant="secondary"
-              onPress={handleUnarchive}
-              disabled={!isConnected || isUnarchiving}
-            >
-              Unarchive
-            </Button>
+            <View style={styles.actions}>
+              {onHandoff ? (
+                <Button size="sm" variant="secondary" onPress={onHandoff} disabled={!isConnected}>
+                  Hand off to…
+                </Button>
+              ) : null}
+              <Button
+                size="sm"
+                variant="secondary"
+                onPress={handleUnarchive}
+                disabled={!isConnected || isUnarchiving}
+              >
+                Unarchive
+              </Button>
+            </View>
           </View>
         </View>
       </View>
@@ -95,5 +104,10 @@ const styles = StyleSheet.create(((theme: Theme) => ({
   calloutText: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
+  },
+  actions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
   },
 })) as any) as Record<string, any>;

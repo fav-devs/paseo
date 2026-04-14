@@ -83,6 +83,7 @@ import type {
   AgentTimelineFetchDirection,
   ManagedAgent,
 } from "./agent/agent-manager.js";
+import { buildTranscriptFromTimeline } from "./agent/agent-manager.js";
 import { scheduleAgentMetadataGeneration } from "./agent/agent-metadata-generator.js";
 import { resolveEffectiveThinkingOptionId, toAgentPayload } from "./agent/agent-projections.js";
 import { MAX_EXPLICIT_AGENT_TITLE_CHARS } from "./agent/agent-title-limits.js";
@@ -1753,6 +1754,10 @@ export class Session {
             await this.handleRefreshAgentRequest(msg);
             break;
 
+          case "fork_agent_request":
+            await this.handleForkAgentRequest(msg);
+            break;
+
           case "cancel_agent_request":
             await this.handleCancelAgentRequest(msg.agentId, msg.requestId);
             break;
@@ -3194,6 +3199,88 @@ export class Session {
           timestamp: new Date(),
           type: "error",
           content: `Failed to refresh agent: ${error.message}`,
+        },
+      });
+    }
+  }
+
+  private async handleForkAgentRequest(
+    msg: Extract<SessionInboundMessage, { type: "fork_agent_request" }>,
+  ): Promise<void> {
+    const { sourceAgentId, targetProvider, fromMessageId, targetConfig, initialPrompt, requestId } =
+      msg;
+
+    this.sessionLogger.info(
+      { sourceAgentId, targetProvider, fromMessageId, requestId },
+      "fork_agent_request: forking agent to new provider",
+    );
+
+    try {
+      const sourceAgent = this.agentManager.getAgent(sourceAgentId);
+      if (!sourceAgent) {
+        throw new Error(`Source agent '${sourceAgentId}' not found`);
+      }
+
+      const transcript = buildTranscriptFromTimeline(
+        sourceAgent.timeline,
+        sourceAgent.provider,
+        fromMessageId,
+      );
+
+      // Merge source config → caller overrides → force targetProvider.
+      // Never inherit a systemPrompt from the source so we can set our own.
+      const { systemPrompt: _dropped, ...sourceConfigWithoutSystemPrompt } = sourceAgent.config;
+      const mergedConfig: AgentSessionConfig = {
+        ...sourceConfigWithoutSystemPrompt,
+        ...targetConfig,
+        provider: targetProvider,
+        ...(transcript ? { systemPrompt: transcript } : {}),
+      };
+
+      const { sessionConfig } = await this.buildAgentSessionConfig(
+        mergedConfig,
+        undefined,
+        undefined,
+        { forkSource: sourceAgentId },
+      );
+      await this.ensureWorkspaceRegistered(sessionConfig.cwd);
+
+      const snapshot = await this.agentManager.createAgent(sessionConfig, undefined, {
+        labels: { forkSource: sourceAgentId, ...sourceAgent.labels },
+      });
+      await this.forwardAgentUpdate(snapshot);
+
+      const trimmedPrompt = initialPrompt?.trim();
+      if (trimmedPrompt) {
+        const started = await this.handleSendAgentMessage(snapshot.id, trimmedPrompt);
+        if (!started.ok) {
+          // Log but don't fail the fork — agent was created successfully.
+          this.sessionLogger.warn(
+            { agentId: snapshot.id, error: started.error },
+            "fork_agent_request: failed to send initial prompt after fork",
+          );
+        }
+      }
+
+      this.sessionLogger.info(
+        { sourceAgentId, newAgentId: snapshot.id, targetProvider },
+        "fork_agent_request: fork succeeded",
+      );
+
+      this.emit({
+        type: "fork_agent_response",
+        payload: { requestId, newAgentId: snapshot.id },
+      });
+    } catch (error: any) {
+      this.sessionLogger.error(
+        { err: error, sourceAgentId, targetProvider, requestId },
+        "fork_agent_request: failed",
+      );
+      this.emit({
+        type: "fork_agent_response",
+        payload: {
+          requestId,
+          error: error?.message ?? String(error),
         },
       });
     }

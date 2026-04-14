@@ -9,6 +9,7 @@ import invariant from "tiny-invariant";
 import { AgentStreamView, type AgentStreamViewHandle } from "@/components/agent-stream-view";
 import { AgentInputArea } from "@/components/agent-input-area";
 import { ArchivedAgentCallout } from "@/components/archived-agent-callout";
+import { HandoffSheet } from "@/components/handoff-sheet";
 import { FileDropZone } from "@/components/file-drop-zone";
 import type { ImageAttachment } from "@/components/message-input";
 import { getProviderIcon } from "@/components/provider-icons";
@@ -40,7 +41,10 @@ import { mergePendingCreateImages } from "@/utils/pending-create-images";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { buildDraftStoreKey } from "@/stores/draft-keys";
-import { buildWorkspaceTabPersistenceKey, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import {
+  buildWorkspaceTabPersistenceKey,
+  useWorkspaceLayoutStore,
+} from "@/stores/workspace-layout-store";
 import { useSessionStore, type Agent } from "@/stores/session-store";
 import type { PendingPermission } from "@/types/shared";
 import type { StreamItem } from "@/types/stream";
@@ -48,6 +52,8 @@ import {
   deriveRouteBottomAnchorIntent,
   deriveRouteBottomAnchorRequest,
 } from "@/screens/agent/agent-ready-screen-bottom-anchor";
+import { buildHostAgentDetailRoute } from "@/utils/host-routes";
+import { useRouter } from "expo-router";
 import { isNative } from "@/constants/platform";
 
 function formatProviderLabel(provider: Agent["provider"]): string {
@@ -242,8 +248,10 @@ function AgentPanelBody({
   onOpenWorkspaceFile?: (input: { filePath: string }) => void;
 }) {
   const { theme } = useUnistyles();
+  const router = useRouter();
   const panelToast = useToastHost();
   const { isArchivingAgent } = useArchiveAgent();
+  const [isHandoffSheetOpen, setIsHandoffSheetOpen] = useState(false);
   const streamViewRef = useRef<AgentStreamViewHandle>(null);
   const addImagesRef = useRef<((images: ImageAttachment[]) => void) | null>(null);
   const clearOnAgentBlurRef = useRef<() => void>(() => {});
@@ -269,6 +277,16 @@ function AgentPanelBody({
     addImagesRef.current = addImages;
   }, []);
 
+  const handleForked = useCallback(
+    (newAgentId: string) => {
+      const route = buildHostAgentDetailRoute(serverId, newAgentId);
+      if (route !== "/") {
+        router.navigate(route as Parameters<typeof router.navigate>[0]);
+      }
+    },
+    [router, serverId],
+  );
+
   const agentState = useSessionStore(
     useShallow((state) => {
       const agent = agentId ? (state.sessions[serverId]?.agents?.get(agentId) ?? null) : null;
@@ -280,6 +298,7 @@ function AgentPanelBody({
         archivedAt: agent?.archivedAt ?? null,
         requiresAttention: agent?.requiresAttention ?? false,
         attentionReason: agent?.attentionReason ?? null,
+        provider: agent?.provider ?? null,
       };
     }),
   );
@@ -805,7 +824,11 @@ function AgentPanelBody({
               }}
             />
           ) : agentId && agentState.archivedAt ? (
-            <ArchivedAgentCallout serverId={serverId} agentId={agentId} />
+            <ArchivedAgentCallout
+              serverId={serverId}
+              agentId={agentId}
+              onHandoff={isConnected ? () => setIsHandoffSheetOpen(true) : undefined}
+            />
           ) : null}
 
           {viewState.tag === "ready" &&
@@ -830,6 +853,18 @@ function AgentPanelBody({
           <Text style={styles.archivingTitle}>Archiving agent...</Text>
           <Text style={styles.archivingSubtitle}>Please wait while we archive this agent.</Text>
         </View>
+      ) : null}
+
+      {agentId && agentState.provider ? (
+        <HandoffSheet
+          visible={isHandoffSheetOpen}
+          onClose={() => setIsHandoffSheetOpen(false)}
+          serverId={serverId}
+          sourceAgentId={agentId}
+          currentProvider={agentState.provider}
+          streamItems={streamItems}
+          onForked={handleForked}
+        />
       ) : null}
     </View>
   );
