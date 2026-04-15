@@ -6,6 +6,7 @@ import type { AgentManager } from "./agent/agent-manager.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
 import type { DownloadTokenStore } from "./file-download/token-store.js";
 import type { TerminalManager } from "../terminal/terminal-manager.js";
+import type { PortForwardManager } from "../port-forward/port-forward-manager.js";
 import type pino from "pino";
 import type { ProjectRegistry, WorkspaceRegistry } from "./workspace-registry.js";
 import type { FileBackedChatService } from "./chat/chat-service.js";
@@ -183,28 +184,41 @@ function resolveCapabilityReason(params: {
 
 function buildServerCapabilities(params: {
   readiness: SpeechReadinessSnapshot | null;
+  portForwardingEnabled?: boolean;
 }): ServerCapabilities | undefined {
   const readiness = params.readiness;
-  if (!readiness) {
+  const portForwarding =
+    params.portForwardingEnabled === true
+      ? {
+          enabled: true,
+          reason: "",
+        }
+      : undefined;
+  if (!readiness && !portForwarding) {
     return undefined;
   }
   return {
-    voice: {
-      dictation: toServerCapabilityState({
-        state: readiness.dictation,
-        reason: resolveCapabilityReason({
-          state: readiness.dictation,
-          readiness,
-        }),
-      }),
-      voice: toServerCapabilityState({
-        state: readiness.realtimeVoice,
-        reason: resolveCapabilityReason({
-          state: readiness.realtimeVoice,
-          readiness,
-        }),
-      }),
-    },
+    ...(portForwarding ? { portForwarding } : {}),
+    ...(readiness
+      ? {
+          voice: {
+            dictation: toServerCapabilityState({
+              state: readiness.dictation,
+              reason: resolveCapabilityReason({
+                state: readiness.dictation,
+                readiness,
+              }),
+            }),
+            voice: toServerCapabilityState({
+              state: readiness.realtimeVoice,
+              reason: resolveCapabilityReason({
+                state: readiness.realtimeVoice,
+                readiness,
+              }),
+            }),
+          },
+        }
+      : {}),
   };
 }
 
@@ -307,6 +321,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly mcpBaseUrl: string | null;
   private readonly speech: SpeechService | null;
   private readonly terminalManager: TerminalManager | null;
+  private readonly portForwardManager: PortForwardManager | null;
   private readonly dictation: {
     finalTimeoutMs?: number;
   } | null;
@@ -355,6 +370,7 @@ export class VoiceAssistantWebSocketServer {
     wsConfig: WebSocketServerConfig,
     speech?: SpeechService | null,
     terminalManager?: TerminalManager | null,
+    portForwardManager?: PortForwardManager | null,
     dictation?: {
       finalTimeoutMs?: number;
     },
@@ -403,6 +419,7 @@ export class VoiceAssistantWebSocketServer {
     this.mcpBaseUrl = mcpBaseUrl;
     this.speech = speech ?? null;
     this.terminalManager = terminalManager ?? null;
+    this.portForwardManager = portForwardManager ?? null;
     this.dictation = dictation ?? null;
     this.agentProviderRuntimeSettings = agentProviderRuntimeSettings;
     this.providerOverrides = providerOverrides;
@@ -417,6 +434,7 @@ export class VoiceAssistantWebSocketServer {
     this.onLifecycleIntent = onLifecycleIntent ?? null;
     this.serverCapabilities = buildServerCapabilities({
       readiness: this.speech?.getReadiness() ?? null,
+      portForwardingEnabled: this.portForwardManager !== null,
     });
     this.unsubscribeSpeechReadiness =
       this.speech?.onReadinessChange((snapshot) => {
@@ -490,7 +508,12 @@ export class VoiceAssistantWebSocketServer {
   }
 
   public publishSpeechReadiness(readiness: SpeechReadinessSnapshot | null): void {
-    this.updateServerCapabilities(buildServerCapabilities({ readiness }));
+    this.updateServerCapabilities(
+      buildServerCapabilities({
+        readiness,
+        portForwardingEnabled: this.portForwardManager !== null,
+      }),
+    );
   }
 
   public updateServerCapabilities(capabilities: ServerCapabilities | null | undefined): void {
@@ -713,6 +736,7 @@ export class VoiceAssistantWebSocketServer {
       stt: () => this.speech?.resolveStt() ?? null,
       tts: () => this.speech?.resolveTts() ?? null,
       terminalManager: this.terminalManager,
+      portForwardManager: this.portForwardManager,
       providerSnapshotManager: this.providerSnapshotManager,
       voice: {
         turnDetection: () => this.speech?.resolveTurnDetection() ?? null,

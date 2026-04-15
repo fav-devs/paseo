@@ -1494,6 +1494,43 @@ export const CaptureTerminalRequestSchema = z.object({
 });
 
 // ============================================================================
+// Port Forward Messages
+// ============================================================================
+
+export const ListPortForwardsRequestSchema = z.object({
+  type: z.literal("list_port_forwards_request"),
+  cwd: z.string().optional(),
+  requestId: z.string(),
+});
+
+export const SubscribePortForwardsRequestSchema = z.object({
+  type: z.literal("subscribe_port_forwards_request"),
+  cwd: z.string(),
+});
+
+export const UnsubscribePortForwardsRequestSchema = z.object({
+  type: z.literal("unsubscribe_port_forwards_request"),
+  cwd: z.string(),
+});
+
+export const CreatePortForwardRequestSchema = z.object({
+  type: z.literal("create_port_forward_request"),
+  cwd: z.string(),
+  name: z.string().optional(),
+  bindHost: z.string().optional(),
+  localPort: z.number().int().min(0).max(65535),
+  targetHost: z.string(),
+  targetPort: z.number().int().min(1).max(65535),
+  requestId: z.string(),
+});
+
+export const ClosePortForwardRequestSchema = z.object({
+  type: z.literal("close_port_forward_request"),
+  portForwardId: z.string(),
+  requestId: z.string(),
+});
+
+// ============================================================================
 // System Monitor
 // ============================================================================
 
@@ -1584,6 +1621,11 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   TerminalInputSchema,
   KillTerminalRequestSchema,
   CaptureTerminalRequestSchema,
+  ListPortForwardsRequestSchema,
+  SubscribePortForwardsRequestSchema,
+  UnsubscribePortForwardsRequestSchema,
+  CreatePortForwardRequestSchema,
+  ClosePortForwardRequestSchema,
   SystemMonitorRequestSchema,
   ChatCreateRequestSchema,
   ChatListRequestSchema,
@@ -1726,6 +1768,7 @@ export const ServerVoiceCapabilitiesSchema = z.object({
 export const ServerCapabilitiesSchema = z
   .object({
     voice: ServerVoiceCapabilitiesSchema.optional(),
+    portForwarding: ServerCapabilityStateSchema.optional(),
   })
   .passthrough();
 
@@ -2885,6 +2928,51 @@ export const TerminalStreamExitSchema = z.object({
   }),
 });
 
+const PortForwardInfoSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  cwd: z.string(),
+  bindHost: z.string(),
+  localPort: z.number().int().min(0).max(65535),
+  targetHost: z.string(),
+  targetPort: z.number().int().min(1).max(65535),
+});
+
+export const ListPortForwardsResponseSchema = z.object({
+  type: z.literal("list_port_forwards_response"),
+  payload: z.object({
+    cwd: z.string().optional(),
+    portForwards: z.array(PortForwardInfoSchema.omit({ cwd: true })),
+    requestId: z.string(),
+  }),
+});
+
+export const PortForwardsChangedSchema = z.object({
+  type: z.literal("port_forwards_changed"),
+  payload: z.object({
+    cwd: z.string(),
+    portForwards: z.array(PortForwardInfoSchema.omit({ cwd: true })),
+  }),
+});
+
+export const CreatePortForwardResponseSchema = z.object({
+  type: z.literal("create_port_forward_response"),
+  payload: z.object({
+    portForward: PortForwardInfoSchema.nullable(),
+    error: z.string().nullable(),
+    requestId: z.string(),
+  }),
+});
+
+export const ClosePortForwardResponseSchema = z.object({
+  type: z.literal("close_port_forward_response"),
+  payload: z.object({
+    portForwardId: z.string(),
+    success: z.boolean(),
+    requestId: z.string(),
+  }),
+});
+
 const SystemMonitorPortEntrySchema = z.object({
   port: z.number().int(),
   pid: z.number().int().nullable(),
@@ -2996,6 +3084,10 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   KillTerminalResponseSchema,
   CaptureTerminalResponseSchema,
   TerminalStreamExitSchema,
+  ListPortForwardsResponseSchema,
+  PortForwardsChangedSchema,
+  CreatePortForwardResponseSchema,
+  ClosePortForwardResponseSchema,
   ChatCreateResponseSchema,
   ChatListResponseSchema,
   ChatInspectResponseSchema,
@@ -3263,6 +3355,17 @@ export type KillTerminalResponse = z.infer<typeof KillTerminalResponseSchema>;
 export type CaptureTerminalRequest = z.infer<typeof CaptureTerminalRequestSchema>;
 export type CaptureTerminalResponse = z.infer<typeof CaptureTerminalResponseSchema>;
 export type TerminalStreamExit = z.infer<typeof TerminalStreamExitSchema>;
+
+// Port forward message types
+export type ListPortForwardsRequest = z.infer<typeof ListPortForwardsRequestSchema>;
+export type ListPortForwardsResponse = z.infer<typeof ListPortForwardsResponseSchema>;
+export type SubscribePortForwardsRequest = z.infer<typeof SubscribePortForwardsRequestSchema>;
+export type UnsubscribePortForwardsRequest = z.infer<typeof UnsubscribePortForwardsRequestSchema>;
+export type PortForwardsChanged = z.infer<typeof PortForwardsChangedSchema>;
+export type CreatePortForwardRequest = z.infer<typeof CreatePortForwardRequestSchema>;
+export type CreatePortForwardResponse = z.infer<typeof CreatePortForwardResponseSchema>;
+export type ClosePortForwardRequest = z.infer<typeof ClosePortForwardRequestSchema>;
+export type ClosePortForwardResponse = z.infer<typeof ClosePortForwardResponseSchema>;
 
 // System monitor message types
 export type SystemMonitorRequest = z.infer<typeof SystemMonitorRequestSchema>;

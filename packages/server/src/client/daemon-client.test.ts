@@ -213,6 +213,163 @@ describe("DaemonClient", () => {
     expect(client.getConnectionState().status).toBe("disposed");
   });
 
+  test("lists port forwards via correlated request", async () => {
+    const logger = createMockLogger();
+    const mock = createMockTransport();
+
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: "clsk_unit_test",
+      logger,
+      reconnect: { enabled: false },
+      transportFactory: () => mock.transport,
+    });
+    clients.push(client);
+
+    const connectPromise = client.connect();
+    mock.triggerOpen();
+    await connectPromise;
+
+    const listPromise = client.listPortForwards("/repo/app", "pf-list-1");
+    const request = JSON.parse(String(mock.sent[0]));
+    expect(request.message).toMatchObject({
+      type: "list_port_forwards_request",
+      cwd: "/repo/app",
+      requestId: "pf-list-1",
+    });
+
+    mock.triggerMessage(
+      wrapSessionMessage({
+        type: "list_port_forwards_response",
+        payload: {
+          cwd: "/repo/app",
+          portForwards: [
+            {
+              id: "pf-1",
+              name: "Web App",
+              bindHost: "127.0.0.1",
+              localPort: 3000,
+              targetHost: "127.0.0.1",
+              targetPort: 3000,
+            },
+          ],
+          requestId: "pf-list-1",
+        },
+      }),
+    );
+
+    await expect(listPromise).resolves.toEqual({
+      cwd: "/repo/app",
+      portForwards: [
+        {
+          id: "pf-1",
+          name: "Web App",
+          bindHost: "127.0.0.1",
+          localPort: 3000,
+          targetHost: "127.0.0.1",
+          targetPort: 3000,
+        },
+      ],
+      requestId: "pf-list-1",
+    });
+  });
+
+  test("creates and closes port forwards", async () => {
+    const logger = createMockLogger();
+    const mock = createMockTransport();
+
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: "clsk_unit_test",
+      logger,
+      reconnect: { enabled: false },
+      transportFactory: () => mock.transport,
+    });
+    clients.push(client);
+
+    const connectPromise = client.connect();
+    mock.triggerOpen();
+    await connectPromise;
+
+    const createPromise = client.createPortForward(
+      {
+        cwd: "/repo/app",
+        name: "Web App",
+        bindHost: "127.0.0.1",
+        localPort: 3000,
+        targetHost: "127.0.0.1",
+        targetPort: 3000,
+      },
+      "pf-create-1",
+    );
+    const createRequest = JSON.parse(String(mock.sent[0]));
+    expect(createRequest.message).toMatchObject({
+      type: "create_port_forward_request",
+      cwd: "/repo/app",
+      name: "Web App",
+      bindHost: "127.0.0.1",
+      localPort: 3000,
+      targetHost: "127.0.0.1",
+      targetPort: 3000,
+      requestId: "pf-create-1",
+    });
+
+    mock.triggerMessage(
+      wrapSessionMessage({
+        type: "create_port_forward_response",
+        payload: {
+          portForward: {
+            id: "pf-1",
+            name: "Web App",
+            cwd: "/repo/app",
+            bindHost: "127.0.0.1",
+            localPort: 3000,
+            targetHost: "127.0.0.1",
+            targetPort: 3000,
+          },
+          error: null,
+          requestId: "pf-create-1",
+        },
+      }),
+    );
+
+    await expect(createPromise).resolves.toMatchObject({
+      portForward: {
+        id: "pf-1",
+        name: "Web App",
+      },
+      error: null,
+      requestId: "pf-create-1",
+    });
+
+    mock.sent.length = 0;
+
+    const closePromise = client.closePortForward("pf-1", "pf-close-1");
+    const closeRequest = JSON.parse(String(mock.sent[0]));
+    expect(closeRequest.message).toMatchObject({
+      type: "close_port_forward_request",
+      portForwardId: "pf-1",
+      requestId: "pf-close-1",
+    });
+
+    mock.triggerMessage(
+      wrapSessionMessage({
+        type: "close_port_forward_response",
+        payload: {
+          portForwardId: "pf-1",
+          success: true,
+          requestId: "pf-close-1",
+        },
+      }),
+    );
+
+    await expect(closePromise).resolves.toEqual({
+      portForwardId: "pf-1",
+      success: true,
+      requestId: "pf-close-1",
+    });
+  });
+
   test("sends explicit shutdown_server_request via shutdownServer", async () => {
     const logger = createMockLogger();
     const mock = createMockTransport();

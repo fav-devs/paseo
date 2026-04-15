@@ -52,6 +52,8 @@ import type {
   ListAvailableProvidersResponse,
   ListTerminalsResponse,
   CreateTerminalResponse,
+  ListPortForwardsResponse,
+  CreatePortForwardResponse,
   GetProvidersSnapshotResponseMessage,
   ProviderDiagnosticResponseMessage,
   RefreshProvidersSnapshotResponseMessage,
@@ -59,6 +61,7 @@ import type {
   TerminalState,
   CloseItemsResponse,
   KillTerminalResponse,
+  ClosePortForwardResponse,
   CaptureTerminalResponse,
   TerminalInput,
   SessionInboundMessage,
@@ -291,9 +294,12 @@ type DictationFinishAcceptedPayload = Extract<
 type AgentPermissionResolvedPayload = AgentPermissionResolvedMessage["payload"];
 type ListTerminalsPayload = ListTerminalsResponse["payload"];
 type CreateTerminalPayload = CreateTerminalResponse["payload"];
+type ListPortForwardsPayload = ListPortForwardsResponse["payload"];
+type CreatePortForwardPayload = CreatePortForwardResponse["payload"];
 type SubscribeTerminalPayload = SubscribeTerminalResponse["payload"];
 type CloseItemsPayload = CloseItemsResponse["payload"];
 type KillTerminalPayload = KillTerminalResponse["payload"];
+type ClosePortForwardPayload = ClosePortForwardResponse["payload"];
 type CaptureTerminalPayload = CaptureTerminalResponse["payload"];
 type ChatCreatePayload = Extract<
   SessionOutboundMessage,
@@ -644,6 +650,7 @@ export class DaemonClient {
     }
   >();
   private terminalDirectorySubscriptions = new Set<string>();
+  private portForwardDirectorySubscriptions = new Set<string>();
   private terminalSlots = new Map<string, number>();
   private slotTerminals = new Map<number, string>();
   private readonly terminalStreamListeners = new Set<(event: TerminalStreamEvent) => void>();
@@ -1479,6 +1486,18 @@ export class DaemonClient {
     for (const cwd of this.terminalDirectorySubscriptions) {
       this.sendSessionMessage({
         type: "subscribe_terminals_request",
+        cwd,
+      });
+    }
+  }
+
+  private resubscribePortForwardDirectorySubscriptions(): void {
+    if (this.portForwardDirectorySubscriptions.size === 0) {
+      return;
+    }
+    for (const cwd of this.portForwardDirectorySubscriptions) {
+      this.sendSessionMessage({
+        type: "subscribe_port_forwards_request",
         cwd,
       });
     }
@@ -3284,6 +3303,94 @@ export class DaemonClient {
     });
   }
 
+  subscribePortForwards(input: { cwd: string }): void {
+    this.portForwardDirectorySubscriptions.add(input.cwd);
+    if (!this.transport || this.connectionState.status !== "connected") {
+      return;
+    }
+    this.sendSessionMessage({
+      type: "subscribe_port_forwards_request",
+      cwd: input.cwd,
+    });
+  }
+
+  unsubscribePortForwards(input: { cwd: string }): void {
+    this.portForwardDirectorySubscriptions.delete(input.cwd);
+    if (!this.transport || this.connectionState.status !== "connected") {
+      return;
+    }
+    this.sendSessionMessage({
+      type: "unsubscribe_port_forwards_request",
+      cwd: input.cwd,
+    });
+  }
+
+  async listPortForwards(cwd?: string, requestId?: string): Promise<ListPortForwardsPayload> {
+    const resolvedRequestId = this.createRequestId(requestId);
+    const message = SessionInboundMessageSchema.parse({
+      type: "list_port_forwards_request",
+      ...(cwd === undefined ? {} : { cwd }),
+      requestId: resolvedRequestId,
+    });
+    return this.sendCorrelatedRequest({
+      requestId: resolvedRequestId,
+      message,
+      responseType: "list_port_forwards_response",
+      timeout: 10000,
+      options: { skipQueue: true },
+    });
+  }
+
+  async createPortForward(
+    input: {
+      cwd: string;
+      name?: string;
+      bindHost?: string;
+      localPort: number;
+      targetHost: string;
+      targetPort: number;
+    },
+    requestId?: string,
+  ): Promise<CreatePortForwardPayload> {
+    const resolvedRequestId = this.createRequestId(requestId);
+    const message = SessionInboundMessageSchema.parse({
+      type: "create_port_forward_request",
+      cwd: input.cwd,
+      name: input.name,
+      bindHost: input.bindHost,
+      localPort: input.localPort,
+      targetHost: input.targetHost,
+      targetPort: input.targetPort,
+      requestId: resolvedRequestId,
+    });
+    return this.sendCorrelatedRequest({
+      requestId: resolvedRequestId,
+      message,
+      responseType: "create_port_forward_response",
+      timeout: 10000,
+      options: { skipQueue: true },
+    });
+  }
+
+  async closePortForward(
+    portForwardId: string,
+    requestId?: string,
+  ): Promise<ClosePortForwardPayload> {
+    const resolvedRequestId = this.createRequestId(requestId);
+    const message = SessionInboundMessageSchema.parse({
+      type: "close_port_forward_request",
+      portForwardId,
+      requestId: resolvedRequestId,
+    });
+    return this.sendCorrelatedRequest({
+      requestId: resolvedRequestId,
+      message,
+      responseType: "close_port_forward_response",
+      timeout: 10000,
+      options: { skipQueue: true },
+    });
+  }
+
   async createChatRoom(options: CreateChatRoomOptions): Promise<ChatCreatePayload> {
     return this.sendCorrelatedSessionRequest({
       requestId: options.requestId,
@@ -3877,6 +3984,7 @@ export class DaemonClient {
           this.updateConnectionState({ status: "connected" }, { event: "HELLO_SERVER_INFO" });
           this.resubscribeCheckoutDiffSubscriptions();
           this.resubscribeTerminalDirectorySubscriptions();
+          this.resubscribePortForwardDirectorySubscriptions();
           this.flushPendingSendQueue();
           this.resolveConnect();
         }

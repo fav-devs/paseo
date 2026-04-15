@@ -27,6 +27,11 @@ import {
   type CloseItemsRequest,
   type KillTerminalRequest,
   type CaptureTerminalRequest,
+  type ListPortForwardsRequest,
+  type SubscribePortForwardsRequest,
+  type UnsubscribePortForwardsRequest,
+  type CreatePortForwardRequest,
+  type ClosePortForwardRequest,
   type SubscribeCheckoutDiffRequest,
   type UnsubscribeCheckoutDiffRequest,
   type DirectorySuggestionsRequest,
@@ -38,6 +43,11 @@ import {
 } from "./messages.js";
 import type { TerminalManager, TerminalsChangedEvent } from "../terminal/terminal-manager.js";
 import { captureTerminalLines, type TerminalSession } from "../terminal/terminal.js";
+import type {
+  PortForwardManager,
+  PortForwardsChangedEvent,
+  PortForwardSession,
+} from "../port-forward/port-forward-manager.js";
 import {
   TerminalStreamOpcode,
   encodeTerminalSnapshotPayload,
@@ -443,6 +453,7 @@ export type SessionOptions = {
   stt: Resolvable<SpeechToTextProvider | null>;
   tts: Resolvable<TextToSpeechProvider | null>;
   terminalManager: TerminalManager | null;
+  portForwardManager: PortForwardManager | null;
   providerSnapshotManager?: ProviderSnapshotManager;
   voice?: {
     turnDetection?: Resolvable<TurnDetectionProvider | null>;
@@ -653,10 +664,13 @@ export class Session {
   } | null = null;
   private readonly MOBILE_BACKGROUND_STREAM_GRACE_MS = 60_000;
   private readonly terminalManager: TerminalManager | null;
+  private readonly portForwardManager: PortForwardManager | null;
   private readonly providerSnapshotManager: ProviderSnapshotManager | null;
   private unsubscribeProviderSnapshotEvents: (() => void) | null = null;
   private readonly subscribedTerminalDirectories = new Set<string>();
   private unsubscribeTerminalsChanged: (() => void) | null = null;
+  private readonly subscribedPortForwardDirectories = new Set<string>();
+  private unsubscribePortForwardsChanged: (() => void) | null = null;
   private terminalExitSubscriptions: Map<string, () => void> = new Map();
   private readonly activeTerminalStreams = new Map<number, ActiveTerminalStream>();
   private readonly terminalIdToSlot = new Map<string, number>();
@@ -707,6 +721,7 @@ export class Session {
       stt,
       tts,
       terminalManager,
+      portForwardManager,
       providerSnapshotManager,
       voice,
       voiceBridge,
@@ -736,10 +751,16 @@ export class Session {
     this.daemonConfigStore = daemonConfigStore;
     this.mcpBaseUrl = mcpBaseUrl ?? null;
     this.terminalManager = terminalManager;
+    this.portForwardManager = portForwardManager;
     this.providerSnapshotManager = providerSnapshotManager ?? null;
     if (this.terminalManager) {
       this.unsubscribeTerminalsChanged = this.terminalManager.subscribeTerminalsChanged((event) =>
         this.handleTerminalsChanged(event),
+      );
+    }
+    if (this.portForwardManager) {
+      this.unsubscribePortForwardsChanged = this.portForwardManager.subscribePortForwardsChanged(
+        (event) => this.handlePortForwardsChanged(event),
       );
     }
     if (this.providerSnapshotManager) {
@@ -2021,6 +2042,26 @@ export class Session {
 
           case "capture_terminal_request":
             await this.handleCaptureTerminalRequest(msg);
+            break;
+
+          case "subscribe_port_forwards_request":
+            this.handleSubscribePortForwardsRequest(msg);
+            break;
+
+          case "unsubscribe_port_forwards_request":
+            this.handleUnsubscribePortForwardsRequest(msg);
+            break;
+
+          case "list_port_forwards_request":
+            await this.handleListPortForwardsRequest(msg);
+            break;
+
+          case "create_port_forward_request":
+            await this.handleCreatePortForwardRequest(msg);
+            break;
+
+          case "close_port_forward_request":
+            await this.handleClosePortForwardRequest(msg);
             break;
 
           case "chat/create":
@@ -7697,6 +7738,11 @@ export class Session {
       this.unsubscribeTerminalsChanged = null;
     }
     this.subscribedTerminalDirectories.clear();
+    if (this.unsubscribePortForwardsChanged) {
+      this.unsubscribePortForwardsChanged();
+      this.unsubscribePortForwardsChanged = null;
+    }
+    this.subscribedPortForwardDirectories.clear();
 
     for (const unsubscribeExit of this.terminalExitSubscriptions.values()) {
       unsubscribeExit();
@@ -8570,6 +8616,238 @@ export class Session {
           terminalId: msg.terminalId,
           lines: [],
           totalLines: 0,
+          requestId: msg.requestId,
+        },
+      });
+    }
+  }
+
+  private emitPortForwardsChangedSnapshot(input: {
+    cwd: string;
+    portForwards: Array<{
+      id: string;
+      name: string;
+      bindHost: string;
+      localPort: number;
+      targetHost: string;
+      targetPort: number;
+    }>;
+  }): void {
+    this.emit({
+      type: "port_forwards_changed",
+      payload: {
+        cwd: input.cwd,
+        portForwards: input.portForwards,
+      },
+    });
+  }
+
+  private handlePortForwardsChanged(event: PortForwardsChangedEvent): void {
+    if (!this.subscribedPortForwardDirectories.has(event.cwd)) {
+      return;
+    }
+    this.emitPortForwardsChangedSnapshot({
+      cwd: event.cwd,
+      portForwards: event.portForwards.map((portForward) => ({
+        id: portForward.id,
+        name: portForward.name,
+        bindHost: portForward.bindHost,
+        localPort: portForward.localPort,
+        targetHost: portForward.targetHost,
+        targetPort: portForward.targetPort,
+      })),
+    });
+  }
+
+  private handleSubscribePortForwardsRequest(msg: SubscribePortForwardsRequest): void {
+    this.subscribedPortForwardDirectories.add(msg.cwd);
+    void this.emitInitialPortForwardsChangedSnapshot(msg.cwd);
+  }
+
+  private handleUnsubscribePortForwardsRequest(msg: UnsubscribePortForwardsRequest): void {
+    this.subscribedPortForwardDirectories.delete(msg.cwd);
+  }
+
+  private async emitInitialPortForwardsChangedSnapshot(cwd: string): Promise<void> {
+    if (!this.portForwardManager || !this.subscribedPortForwardDirectories.has(cwd)) {
+      return;
+    }
+
+    try {
+      const portForwards = await this.portForwardManager.getPortForwards(cwd);
+      if (!this.subscribedPortForwardDirectories.has(cwd)) {
+        return;
+      }
+      this.emitPortForwardsChangedSnapshot({
+        cwd,
+        portForwards: portForwards.map((portForward) => ({
+          id: portForward.id,
+          name: portForward.name,
+          bindHost: portForward.bindHost,
+          localPort: portForward.localPort,
+          targetHost: portForward.targetHost,
+          targetPort: portForward.targetPort,
+        })),
+      });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error, cwd }, "Failed to emit initial port forward snapshot");
+    }
+  }
+
+  private async handleListPortForwardsRequest(msg: ListPortForwardsRequest): Promise<void> {
+    if (!this.portForwardManager) {
+      this.emit({
+        type: "list_port_forwards_response",
+        payload: {
+          ...(msg.cwd ? { cwd: msg.cwd } : {}),
+          portForwards: [],
+          requestId: msg.requestId,
+        },
+      });
+      return;
+    }
+
+    try {
+      const portForwards =
+        typeof msg.cwd === "string"
+          ? await this.portForwardManager.getPortForwards(msg.cwd)
+          : await this.getAllPortForwardSessions();
+      this.emit({
+        type: "list_port_forwards_response",
+        payload: {
+          ...(msg.cwd ? { cwd: msg.cwd } : {}),
+          portForwards: portForwards.map((portForward) => ({
+            id: portForward.id,
+            name: portForward.name,
+            bindHost: portForward.bindHost,
+            localPort: portForward.localPort,
+            targetHost: portForward.targetHost,
+            targetPort: portForward.targetPort,
+          })),
+          requestId: msg.requestId,
+        },
+      });
+    } catch (error) {
+      this.sessionLogger.error({ err: error, cwd: msg.cwd }, "Failed to list port forwards");
+      this.emit({
+        type: "list_port_forwards_response",
+        payload: {
+          ...(msg.cwd ? { cwd: msg.cwd } : {}),
+          portForwards: [],
+          requestId: msg.requestId,
+        },
+      });
+    }
+  }
+
+  private async getAllPortForwardSessions(): Promise<PortForwardSession[]> {
+    if (!this.portForwardManager) {
+      return [];
+    }
+    const directories = this.portForwardManager.listDirectories();
+    const portForwardsByDirectory = await Promise.all(
+      directories.map((cwd) => this.portForwardManager!.getPortForwards(cwd)),
+    );
+    return portForwardsByDirectory.flat();
+  }
+
+  private async handleCreatePortForwardRequest(msg: CreatePortForwardRequest): Promise<void> {
+    if (!this.portForwardManager) {
+      this.emit({
+        type: "create_port_forward_response",
+        payload: {
+          portForward: null,
+          error: "Port forward manager not available",
+          requestId: msg.requestId,
+        },
+      });
+      return;
+    }
+
+    try {
+      const portForward = await this.portForwardManager.createPortForward({
+        cwd: msg.cwd,
+        name: msg.name,
+        bindHost: msg.bindHost,
+        localPort: msg.localPort,
+        targetHost: msg.targetHost,
+        targetPort: msg.targetPort,
+      });
+      this.emit({
+        type: "create_port_forward_response",
+        payload: {
+          portForward: {
+            id: portForward.id,
+            name: portForward.name,
+            cwd: portForward.cwd,
+            bindHost: portForward.bindHost,
+            localPort: portForward.localPort,
+            targetHost: portForward.targetHost,
+            targetPort: portForward.targetPort,
+          },
+          error: null,
+          requestId: msg.requestId,
+        },
+      });
+    } catch (error: any) {
+      this.sessionLogger.error({ err: error, cwd: msg.cwd }, "Failed to create port forward");
+      this.emit({
+        type: "create_port_forward_response",
+        payload: {
+          portForward: null,
+          error: error.message,
+          requestId: msg.requestId,
+        },
+      });
+    }
+  }
+
+  private async handleClosePortForwardRequest(msg: ClosePortForwardRequest): Promise<void> {
+    if (!this.portForwardManager) {
+      this.emit({
+        type: "close_port_forward_response",
+        payload: {
+          portForwardId: msg.portForwardId,
+          success: false,
+          requestId: msg.requestId,
+        },
+      });
+      return;
+    }
+
+    const portForward = this.portForwardManager.getPortForward(msg.portForwardId);
+    if (!portForward) {
+      this.emit({
+        type: "close_port_forward_response",
+        payload: {
+          portForwardId: msg.portForwardId,
+          success: false,
+          requestId: msg.requestId,
+        },
+      });
+      return;
+    }
+
+    try {
+      await this.portForwardManager.closePortForward(msg.portForwardId);
+      this.emit({
+        type: "close_port_forward_response",
+        payload: {
+          portForwardId: msg.portForwardId,
+          success: true,
+          requestId: msg.requestId,
+        },
+      });
+    } catch (error) {
+      this.sessionLogger.error(
+        { err: error, portForwardId: msg.portForwardId },
+        "Failed to close port forward",
+      );
+      this.emit({
+        type: "close_port_forward_response",
+        payload: {
+          portForwardId: msg.portForwardId,
+          success: false,
           requestId: msg.requestId,
         },
       });

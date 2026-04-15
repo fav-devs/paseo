@@ -13,6 +13,7 @@ import {
   Copy,
   Ellipsis,
   EllipsisVertical,
+  Network,
   PanelRight,
   RotateCw,
   SquarePen,
@@ -117,7 +118,11 @@ import { isWeb, isNative } from "@/constants/platform";
 const TERMINALS_QUERY_STALE_TIME = 5_000;
 const NEW_TAB_AGENT_OPTION_ID = "__new_tab_agent__";
 const NEW_TAB_TERMINAL_OPTION_ID = "__new_tab_terminal__";
-type NewTabOptionId = typeof NEW_TAB_AGENT_OPTION_ID | typeof NEW_TAB_TERMINAL_OPTION_ID;
+const NEW_TAB_PORT_FORWARDS_OPTION_ID = "__new_tab_port_forwards__";
+type NewTabOptionId =
+  | typeof NEW_TAB_AGENT_OPTION_ID
+  | typeof NEW_TAB_TERMINAL_OPTION_ID
+  | typeof NEW_TAB_PORT_FORWARDS_OPTION_ID;
 const EMPTY_UI_TABS: WorkspaceTab[] = [];
 const EMPTY_PINNED_AGENT_IDS = new Set<string>();
 const EMPTY_SET = new Set<string>();
@@ -162,6 +167,9 @@ function getFallbackTabOptionLabel(tab: WorkspaceTabDescriptor): string {
   if (tab.target.kind === "terminal") {
     return "Terminal";
   }
+  if (tab.target.kind === "port-forwards") {
+    return "Ports";
+  }
   if (tab.target.kind === "file") {
     return tab.target.path.split("/").filter(Boolean).pop() ?? tab.target.path;
   }
@@ -180,6 +188,9 @@ function getFallbackTabOptionDescription(tab: WorkspaceTabDescriptor): string {
   }
   if (tab.target.kind === "terminal") {
     return "Terminal";
+  }
+  if (tab.target.kind === "port-forwards") {
+    return "Port Forwards";
   }
   if (tab.target.kind === "system-monitor") {
     return "System Monitor";
@@ -1240,6 +1251,13 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
     openWorkspaceTab(persistenceKey, { kind: "system-monitor" });
   }, [openWorkspaceTab, persistenceKey]);
 
+  const handleOpenPortForwards = useCallback(() => {
+    if (!persistenceKey) {
+      return;
+    }
+    openWorkspaceTab(persistenceKey, { kind: "port-forwards" });
+  }, [openWorkspaceTab, persistenceKey]);
+
   const handleCreateTerminal = useCallback(
     (input?: { paneId?: string }) => {
       if (createTerminalMutation.isPending) {
@@ -1269,9 +1287,17 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
         handleCreateDraftTab();
       } else if (selection.optionId === NEW_TAB_TERMINAL_OPTION_ID) {
         handleCreateTerminal({ paneId: selection.paneId });
+      } else if (selection.optionId === NEW_TAB_PORT_FORWARDS_OPTION_ID) {
+        handleOpenPortForwards();
       }
     },
-    [focusWorkspacePane, handleCreateDraftTab, handleCreateTerminal, persistenceKey],
+    [
+      focusWorkspacePane,
+      handleCreateDraftTab,
+      handleCreateTerminal,
+      handleOpenPortForwards,
+      persistenceKey,
+    ],
   );
 
   const handleCreateDraftSplit = useCallback(
@@ -2123,6 +2149,13 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
                           System monitor
                         </DropdownMenuItem>
                         <DropdownMenuItem
+                          testID="workspace-header-port-forwards"
+                          leading={<Network size={16} color={theme.colors.foregroundMuted} />}
+                          onSelect={handleOpenPortForwards}
+                        >
+                          Port forwards
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
                           testID="workspace-header-copy-path"
                           leading={<Copy size={16} color={theme.colors.foregroundMuted} />}
                           disabled={!isAbsolutePath(normalizedWorkspaceId)}
@@ -2317,6 +2350,7 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
               onCloseOtherTabs={handleCloseOtherTabs}
               onSelectNewTabOption={handleSelectNewTabOption}
               newTabAgentOptionId={NEW_TAB_AGENT_OPTION_ID}
+              newTabPortForwardsOptionId={NEW_TAB_PORT_FORWARDS_OPTION_ID}
               onReorderTabs={handleReorderTabsInFocusedPane}
               onNewTerminalTab={handleCreateTerminal}
               onSplitRight={() => {}}
@@ -2354,6 +2388,7 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
                     onCloseOtherTabs={handleCloseOtherTabsInPane}
                     onSelectNewTabOption={handleSelectNewTabOption}
                     newTabAgentOptionId={NEW_TAB_AGENT_OPTION_ID}
+                    newTabPortForwardsOptionId={NEW_TAB_PORT_FORWARDS_OPTION_ID}
                     buildPaneContentModel={buildDesktopPaneContentModel}
                     onFocusPane={handleFocusPane}
                     onNewTerminalTab={handleCreateTerminal}

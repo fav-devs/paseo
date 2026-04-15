@@ -259,6 +259,7 @@ function createSessionForWorkspaceTests(
     stt: null,
     tts: null,
     terminalManager: null,
+    portForwardManager: null,
     providerSnapshotManager: options.providerSnapshotManager as any,
   }) as any;
   return session;
@@ -367,6 +368,7 @@ describe("workspace aggregation", () => {
       stt: null,
       tts: null,
       terminalManager: null,
+      portForwardManager: null,
     }) as any;
 
     session.agentUpdatesSubscription = {
@@ -535,6 +537,7 @@ describe("workspace aggregation", () => {
         isPaseoOwnedWorktree: false,
         mainRepoRoot: null,
       },
+      portForwardManager: null,
     });
     session.interruptAgentIfRunning = vi.fn();
 
@@ -698,6 +701,7 @@ describe("workspace aggregation", () => {
         isPaseoOwnedWorktree: false,
         mainRepoRoot: null,
       },
+      portForwardManager: null,
     });
     session.interruptAgentIfRunning = vi.fn();
 
@@ -834,6 +838,7 @@ describe("workspace aggregation", () => {
         isPaseoOwnedWorktree: false,
         mainRepoRoot: null,
       },
+      portForwardManager: null,
     });
     session.interruptAgentIfRunning = vi.fn();
 
@@ -1080,6 +1085,7 @@ describe("workspace aggregation", () => {
       stt: null,
       tts: null,
       terminalManager: null,
+      portForwardManager: null,
     }) as any;
 
     session.workspaceUpdatesSubscription = {

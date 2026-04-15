@@ -109,6 +109,10 @@ import { ScheduleService } from "./schedule/service.js";
 import { DaemonConfigStore } from "./daemon-config-store.js";
 import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
 import { createTerminalManager, type TerminalManager } from "../terminal/terminal-manager.js";
+import {
+  createPortForwardManager,
+  type PortForwardManager,
+} from "../port-forward/port-forward-manager.js";
 import { createConnectionOfferV2, encodeOfferToFragmentUrl } from "./connection-offer.js";
 import { loadOrCreateDaemonKeyPair } from "./daemon-keypair.js";
 import { startRelayTransport, type RelayTransportController } from "./relay-transport.js";
@@ -190,6 +194,7 @@ export interface PaseoDaemon {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
   terminalManager: TerminalManager;
+  portForwardManager: PortForwardManager;
   start(): Promise<void>;
   stop(): Promise<void>;
   getListenTarget(): ListenTarget | null;
@@ -369,6 +374,7 @@ export async function createPaseoDaemon(
     });
 
     const terminalManager = createTerminalManager();
+    const portForwardManager = createPortForwardManager();
     const workspaceGitService = new WorkspaceGitServiceImpl({
       logger,
       paseoHome: config.paseoHome,
@@ -607,6 +613,7 @@ export async function createPaseoDaemon(
               { allowedOrigins, hostnames: config.hostnames },
               speechService,
               terminalManager,
+              portForwardManager,
               {
                 finalTimeoutMs: config.dictationFinalTimeoutMs,
               },
@@ -694,6 +701,7 @@ export async function createPaseoDaemon(
         providerOverrides: config.providerOverrides,
       });
       terminalManager.killAll();
+      await portForwardManager.closeAll().catch(() => undefined);
       speechService.stop();
       await scheduleService.stop().catch(() => undefined);
       await relayTransport?.stop().catch(() => undefined);
@@ -714,6 +722,7 @@ export async function createPaseoDaemon(
       agentManager,
       agentStorage,
       terminalManager,
+      portForwardManager,
       start,
       stop,
       getListenTarget: () => boundListenTarget,

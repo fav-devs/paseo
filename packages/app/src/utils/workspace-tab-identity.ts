@@ -18,6 +18,9 @@ export function normalizeWorkspaceTabTarget(
     const terminalId = trimNonEmpty(value.terminalId);
     return terminalId ? { kind: "terminal", terminalId } : null;
   }
+  if (value.kind === "port-forwards") {
+    return { kind: "port-forwards" };
+  }
   if (value.kind === "file") {
     const path = trimNonEmpty(value.path);
     return path ? { kind: "file", path: path.replace(/\\/g, "/") } : null;
@@ -47,7 +50,7 @@ export function workspaceTabTargetsEqual(
   if (left.kind === "file" && right.kind === "file") {
     return left.path === right.path;
   }
-  // system-monitor is a singleton — any two instances are equal
+  // singleton panels are always equal
   return true;
 }
 
@@ -60,6 +63,9 @@ export function buildDeterministicWorkspaceTabId(target: WorkspaceTabTarget): st
   }
   if (target.kind === "terminal") {
     return `terminal_${target.terminalId}`;
+  }
+  if (target.kind === "port-forwards") {
+    return "port-forwards";
   }
   if (target.kind === "system-monitor") {
     return "system-monitor";

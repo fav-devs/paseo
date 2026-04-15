@@ -197,6 +197,7 @@ function createSessionForWorkspaceGitWatchTests(): {
     stt: null,
     tts: null,
     terminalManager: null,
+    portForwardManager: null,
   }) as any;
 
   session.listAgentPayloads = async () => [];

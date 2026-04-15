@@ -11,7 +11,7 @@ import { useIsFocused } from "@react-navigation/native";
 import Animated, { useAnimatedStyle, useSharedValue, runOnJS } from "react-native-reanimated";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { Activity, X } from "lucide-react-native";
+import { Activity, Files, GitBranch, Network, X } from "lucide-react-native";
 import {
   usePanelStore,
   MIN_EXPLORER_SIDEBAR_WIDTH,
@@ -22,6 +22,7 @@ import { useExplorerSidebarAnimation } from "@/contexts/explorer-sidebar-animati
 import { HEADER_INNER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout";
 import { GitDiffPane } from "./git-diff-pane";
 import { FileExplorerPane } from "./file-explorer-pane";
+import { PortForwardsPane } from "./port-forwards-pane";
 import { SystemMonitorPane } from "./system-monitor-pane";
 import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { useWindowControlsPadding } from "@/utils/desktop-window";
@@ -355,6 +356,8 @@ function SidebarContent({
   const { theme } = useUnistyles();
   const padding = useWindowControlsPadding("explorerSidebar");
   const resolvedTab: ExplorerTab = !isGit && activeTab === "changes" ? "files" : activeTab;
+  const tabIconColor = (tab: ExplorerTab) =>
+    resolvedTab === tab ? theme.colors.foreground : theme.colors.foregroundMuted;
 
   return (
     <View style={styles.sidebarContent} pointerEvents="auto">
@@ -364,42 +367,37 @@ function SidebarContent({
         <View style={styles.tabsContainer}>
           {isGit && (
             <Pressable
+              accessibilityLabel="Changes"
               testID="explorer-tab-changes"
               style={[styles.tab, resolvedTab === "changes" && styles.tabActive]}
               onPress={() => onTabPress("changes")}
             >
-              <Text style={[styles.tabText, resolvedTab === "changes" && styles.tabTextActive]}>
-                Changes
-              </Text>
+              <GitBranch size={16} color={tabIconColor("changes")} />
             </Pressable>
           )}
           <Pressable
+            accessibilityLabel="Files"
             testID="explorer-tab-files"
             style={[styles.tab, resolvedTab === "files" && styles.tabActive]}
             onPress={() => onTabPress("files")}
           >
-            <Text style={[styles.tabText, resolvedTab === "files" && styles.tabTextActive]}>
-              Files
-            </Text>
+            <Files size={16} color={tabIconColor("files")} />
           </Pressable>
           <Pressable
+            accessibilityLabel="Ports"
+            testID="explorer-tab-ports"
+            style={[styles.tab, resolvedTab === "ports" && styles.tabActive]}
+            onPress={() => onTabPress("ports")}
+          >
+            <Network size={16} color={tabIconColor("ports")} />
+          </Pressable>
+          <Pressable
+            accessibilityLabel="System monitor"
             testID="explorer-tab-system-monitor"
             style={[styles.tab, resolvedTab === "system-monitor" && styles.tabActive]}
             onPress={() => onTabPress("system-monitor")}
           >
-            <Activity
-              size={14}
-              color={
-                resolvedTab === "system-monitor"
-                  ? theme.colors.foreground
-                  : theme.colors.foregroundMuted
-              }
-            />
-            <Text
-              style={[styles.tabText, resolvedTab === "system-monitor" && styles.tabTextActive]}
-            >
-              System
-            </Text>
+            <Activity size={16} color={tabIconColor("system-monitor")} />
           </Pressable>
         </View>
         <View style={styles.headerRightSection}>
@@ -428,6 +426,9 @@ function SidebarContent({
             workspaceRoot={workspaceRoot}
             onOpenFile={onOpenFile}
           />
+        )}
+        {resolvedTab === "ports" && (
+          <PortForwardsPane serverId={serverId} workspaceId={workspaceRoot} />
         )}
         {resolvedTab === "system-monitor" && <SystemMonitorPane serverId={serverId} />}
       </View>
@@ -489,26 +490,14 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
   },
   tab: {
-    flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[2],
-    paddingVertical: theme.spacing[2],
-    paddingHorizontal: theme.spacing[3],
+    justifyContent: "center",
+    width: 32,
+    height: 32,
     borderRadius: theme.borderRadius.md,
   },
   tabActive: {
     backgroundColor: theme.colors.surfaceSidebarHover,
-  },
-  tabText: {
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.normal,
-    color: theme.colors.foregroundMuted,
-  },
-  tabTextActive: {
-    color: theme.colors.foreground,
-  },
-  tabTextMuted: {
-    opacity: 0.8,
   },
   headerRightSection: {
     flexDirection: "row",

@@ -23,6 +23,7 @@ import {
   Copy,
   RotateCw,
   Rows2,
+  Network,
   SquarePen,
   SquareTerminal,
   X,
@@ -55,7 +56,7 @@ import type { WorkspaceTabDescriptor } from "@/screens/workspace/workspace-tabs-
 
 const DROPDOWN_WIDTH = 220;
 const LOADING_TAB_LABEL_SKELETON_WIDTH = 80;
-type NewTabOptionId = "__new_tab_agent__" | "__new_tab_terminal__";
+type NewTabOptionId = "__new_tab_agent__" | "__new_tab_terminal__" | "__new_tab_port_forwards__";
 type NewTabSelection = {
   optionId: NewTabOptionId;
   paneId?: string;
@@ -86,6 +87,7 @@ type WorkspaceDesktopTabsRowProps = {
   onCloseOtherTabs: (tabId: string) => Promise<void> | void;
   onSelectNewTabOption: (selection: NewTabSelection) => void;
   newTabAgentOptionId: NewTabOptionId;
+  newTabPortForwardsOptionId: NewTabOptionId;
   onReorderTabs: (nextTabs: WorkspaceTabDescriptor[]) => void;
   onNewTerminalTab: (input: { paneId?: string }) => void;
   onSplitRight: () => void;
@@ -102,6 +104,9 @@ function getFallbackTabLabel(tab: WorkspaceTabDescriptor): string {
   }
   if (tab.target.kind === "terminal") {
     return "Terminal";
+  }
+  if (tab.target.kind === "port-forwards") {
+    return "Ports";
   }
   if (tab.target.kind === "file") {
     return tab.target.path.split("/").filter(Boolean).pop() ?? tab.target.path;
@@ -385,6 +390,7 @@ export function WorkspaceDesktopTabsRow({
   onCloseOtherTabs,
   onSelectNewTabOption,
   newTabAgentOptionId,
+  newTabPortForwardsOptionId,
   onReorderTabs,
   onNewTerminalTab,
   onSplitRight,
@@ -567,6 +573,30 @@ export function WorkspaceDesktopTabsRow({
               {newTerminalTabKeys ? (
                 <Shortcut chord={newTerminalTabKeys} style={styles.newTabTooltipShortcut} />
               ) : null}
+            </View>
+          </TooltipContent>
+        </Tooltip>
+        <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+          <TooltipTrigger
+            testID="workspace-new-port-forwards-tab"
+            onPress={() =>
+              onSelectNewTabOption({
+                optionId: newTabPortForwardsOptionId,
+                paneId,
+              })
+            }
+            accessibilityRole="button"
+            accessibilityLabel="Open port forwards tab"
+            style={({ hovered, pressed }) => [
+              styles.newTabActionButton,
+              (hovered || pressed) && styles.newTabActionButtonHovered,
+            ]}
+          >
+            <Network size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
+          </TooltipTrigger>
+          <TooltipContent side="bottom" align="center" offset={8}>
+            <View style={styles.newTabTooltipRow}>
+              <Text style={styles.newTabTooltipText}>Open port forwards tab</Text>
             </View>
           </TooltipContent>
         </Tooltip>

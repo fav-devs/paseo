@@ -104,6 +104,32 @@ describe("workspace-tabs-store retargetTab", () => {
     );
   });
 
+  it("deduplicates singleton port forwards tabs", () => {
+    const key = buildWorkspaceTabPersistenceKey({ serverId: SERVER_ID, workspaceId: WORKSPACE_ID });
+    expect(key).toBeTruthy();
+    const workspaceKey = key as string;
+
+    const firstTabId = useWorkspaceTabsStore.getState().openOrFocusTab({
+      serverId: SERVER_ID,
+      workspaceId: WORKSPACE_ID,
+      target: { kind: "port-forwards" },
+    });
+    const secondTabId = useWorkspaceTabsStore.getState().openOrFocusTab({
+      serverId: SERVER_ID,
+      workspaceId: WORKSPACE_ID,
+      target: { kind: "port-forwards" },
+    });
+
+    expect(firstTabId).toBe("port-forwards");
+    expect(secondTabId).toBe("port-forwards");
+    expect(useWorkspaceTabsStore.getState().uiTabsByWorkspace[workspaceKey]).toEqual([
+      expect.objectContaining({
+        tabId: "port-forwards",
+        target: { kind: "port-forwards" },
+      }),
+    ]);
+  });
+
   it("ensureTab deduplicates by target when a retargeted tab already exists", () => {
     const draftTabId = "draft_x";
     const key = buildWorkspaceTabPersistenceKey({ serverId: SERVER_ID, workspaceId: WORKSPACE_ID });

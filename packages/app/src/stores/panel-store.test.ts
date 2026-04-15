@@ -58,6 +58,20 @@ describe("panel-store explorer tab resolution", () => {
     ).toBe("system-monitor");
   });
 
+  it("restores a stored ports tab for git checkouts", () => {
+    const key = buildExplorerCheckoutKey(serverId, cwd)!;
+    expect(
+      resolveExplorerTabForCheckout({
+        serverId,
+        cwd,
+        isGit: true,
+        explorerTabByCheckout: {
+          [key]: "ports",
+        },
+      }),
+    ).toBe("ports");
+  });
+
   it("falls back to default when stored tab is invalid", () => {
     const key = buildExplorerCheckoutKey(serverId, cwd)!;
     expect(
@@ -98,5 +112,19 @@ describe("panel-store explorer tab resolution", () => {
         },
       }),
     ).toBe("system-monitor");
+  });
+
+  it("preserves ports for non-git checkouts", () => {
+    const key = buildExplorerCheckoutKey(serverId, cwd)!;
+    expect(
+      resolveExplorerTabForCheckout({
+        serverId,
+        cwd,
+        isGit: false,
+        explorerTabByCheckout: {
+          [key]: "ports",
+        },
+      }),
+    ).toBe("ports");
   });
 });
