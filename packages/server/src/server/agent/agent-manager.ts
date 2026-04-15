@@ -2652,15 +2652,22 @@ export function buildTranscriptFromTimeline(
   timeline: AgentTimelineItem[],
   sourceProvider: AgentProvider,
   fromMessageId?: string,
+  transcriptMode: "from" | "through" | "before" = "from",
 ): string {
   let items: AgentTimelineItem[] = timeline;
 
   if (fromMessageId) {
-    const startIndex = timeline.findIndex(
+    const messageIndex = timeline.findIndex(
       (item) => item.type === "user_message" && item.messageId === fromMessageId,
     );
-    if (startIndex >= 0) {
-      items = timeline.slice(startIndex);
+    if (messageIndex >= 0) {
+      if (transcriptMode === "through") {
+        items = timeline.slice(0, messageIndex + 1);
+      } else if (transcriptMode === "before") {
+        items = timeline.slice(0, messageIndex);
+      } else {
+        items = timeline.slice(messageIndex);
+      }
     }
   }
 
