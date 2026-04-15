@@ -238,6 +238,7 @@ type WebSocketLike = {
 type SessionConnection = {
   session: Session;
   clientId: string;
+  clientType: "mobile" | "browser" | "cli" | "mcp";
   appVersion: string | null;
   connectionLogger: pino.Logger;
   sockets: Set<WebSocketLike>;
@@ -668,14 +669,16 @@ export class VoiceAssistantWebSocketServer {
   private createSessionConnection(params: {
     ws: WebSocketLike;
     clientId: string;
+    clientType: "mobile" | "browser" | "cli" | "mcp";
     appVersion: string | null;
     connectionLogger: pino.Logger;
   }): SessionConnection {
-    const { ws, clientId, appVersion, connectionLogger } = params;
+    const { ws, clientId, clientType, appVersion, connectionLogger } = params;
     let connection: SessionConnection | null = null;
 
     const session = new Session({
       clientId,
+      clientType,
       appVersion,
       onMessage: (msg) => {
         if (!connection) {
@@ -743,6 +746,7 @@ export class VoiceAssistantWebSocketServer {
     connection = {
       session,
       clientId,
+      clientType,
       appVersion,
       connectionLogger,
       sockets: new Set([ws]),
@@ -832,6 +836,7 @@ export class VoiceAssistantWebSocketServer {
     const connection = this.createSessionConnection({
       ws,
       clientId,
+      clientType: message.clientType,
       appVersion: message.appVersion ?? null,
       connectionLogger,
     });

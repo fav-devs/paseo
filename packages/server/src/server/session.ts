@@ -420,6 +420,7 @@ type VoiceTranscriptionResultPayload = {
 
 export type SessionOptions = {
   clientId: string;
+  clientType: "mobile" | "browser" | "cli" | "mcp";
   appVersion: string | null;
   onMessage: (msg: SessionOutboundMessage) => void;
   onBinaryMessage?: (frame: Uint8Array) => void;
@@ -585,6 +586,7 @@ function toAgentPersistenceHandle(
  */
 export class Session {
   private readonly clientId: string;
+  private readonly clientType: "mobile" | "browser" | "cli" | "mcp";
   private appVersion: string | null;
   private readonly sessionId: string;
   private readonly onMessage: (msg: SessionOutboundMessage) => void;
@@ -682,6 +684,7 @@ export class Session {
   constructor(options: SessionOptions) {
     const {
       clientId,
+      clientType,
       appVersion,
       onMessage,
       onBinaryMessage,
@@ -712,6 +715,7 @@ export class Session {
       providerOverrides,
     } = options;
     this.clientId = clientId;
+    this.clientType = clientType;
     this.appVersion = appVersion;
     this.sessionId = uuidv4();
     this.onMessage = onMessage;
@@ -1277,6 +1281,9 @@ export class Session {
 
   // TODO: Remove once all app store clients are on >=0.1.45.
   private isProviderVisibleToClient(provider: string): boolean {
+    if (this.clientType === "cli" || this.clientType === "mcp") {
+      return true;
+    }
     if (clientSupportsAllProviders(this.appVersion)) return true;
     return LEGACY_PROVIDER_IDS.has(provider);
   }

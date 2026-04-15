@@ -182,7 +182,13 @@ function createWorkspaceRuntimeSnapshot(
 
 function createSessionForWorkspaceTests(
   options: {
+    clientType?: "mobile" | "browser" | "cli" | "mcp";
     appVersion?: string | null;
+    providerSnapshotManager?: {
+      getSnapshot: (cwd?: string) => Array<{ provider: string; status: string }>;
+      on?: (event: "change", listener: (...args: unknown[]) => void) => void;
+      off?: (event: "change", listener: (...args: unknown[]) => void) => void;
+    };
     workspaceGitService?: ReturnType<typeof createNoopWorkspaceGitService>;
   } = {},
 ): Session {
@@ -197,6 +203,7 @@ function createSessionForWorkspaceTests(
 
   const session = new Session({
     clientId: "test-client",
+    clientType: options.clientType ?? "mobile",
     appVersion: options.appVersion ?? null,
     onMessage: vi.fn(),
     logger: logger as any,
@@ -252,6 +259,7 @@ function createSessionForWorkspaceTests(
     stt: null,
     tts: null,
     terminalManager: null,
+    providerSnapshotManager: options.providerSnapshotManager as any,
   }) as any;
   return session;
 }
@@ -294,6 +302,7 @@ describe("workspace aggregation", () => {
 
     const session = new Session({
       clientId: "test-client",
+      clientType: "mobile",
       onMessage: (message) => emitted.push(message as any),
       logger: logger as any,
       downloadTokenStore: {} as any,
@@ -441,6 +450,7 @@ describe("workspace aggregation", () => {
     };
     const session = new Session({
       clientId: "test-client",
+      clientType: "mobile",
       onMessage: (message) => emitted.push(message as any),
       logger: sessionLogger as any,
       downloadTokenStore: {} as any,
@@ -594,6 +604,7 @@ describe("workspace aggregation", () => {
 
     const session = new Session({
       clientId: "test-client",
+      clientType: "mobile",
       onMessage: (message) => emitted.push(message as any),
       logger: sessionLogger as any,
       downloadTokenStore: {} as any,
@@ -732,6 +743,7 @@ describe("workspace aggregation", () => {
     };
     const session = new Session({
       clientId: "test-client",
+      clientType: "mobile",
       onMessage: (message) => emitted.push(message as any),
       logger: sessionLogger as any,
       downloadTokenStore: {} as any,
@@ -1016,6 +1028,7 @@ describe("workspace aggregation", () => {
 
     const session = new Session({
       clientId: "test-client",
+      clientType: "mobile",
       onMessage: (message) => emitted.push(message as any),
       logger: logger as any,
       downloadTokenStore: {} as any,
@@ -1447,6 +1460,73 @@ describe("workspace aggregation", () => {
     expect(response?.payload.editors).toEqual([
       { id: "cursor", label: "Cursor" },
       { id: "finder", label: "Finder" },
+    ]);
+  });
+
+  test("get_providers_snapshot_request keeps all providers visible for cli clients", async () => {
+    const emitted: Array<{ type: string; payload: unknown }> = [];
+    const session = createSessionForWorkspaceTests({
+      clientType: "cli",
+      providerSnapshotManager: {
+        getSnapshot: () => [
+          { provider: "claude", status: "ready" },
+          { provider: "cursor", status: "unavailable" },
+          { provider: "gemini", status: "ready" },
+          { provider: "opencode", status: "ready" },
+        ],
+        on: () => undefined,
+        off: () => undefined,
+      },
+    }) as any;
+
+    session.emit = (message: any) => emitted.push(message);
+
+    await session.handleMessage({
+      type: "get_providers_snapshot_request",
+      requestId: "req-providers-cli",
+    });
+
+    const response = emitted.find(
+      (message) => message.type === "get_providers_snapshot_response",
+    ) as any;
+    expect(response?.payload.entries.map((entry: { provider: string }) => entry.provider)).toEqual([
+      "claude",
+      "cursor",
+      "gemini",
+      "opencode",
+    ]);
+  });
+
+  test("get_providers_snapshot_request filters unsupported providers for legacy mobile clients", async () => {
+    const emitted: Array<{ type: string; payload: unknown }> = [];
+    const session = createSessionForWorkspaceTests({
+      clientType: "mobile",
+      appVersion: "0.1.44",
+      providerSnapshotManager: {
+        getSnapshot: () => [
+          { provider: "claude", status: "ready" },
+          { provider: "cursor", status: "unavailable" },
+          { provider: "gemini", status: "ready" },
+          { provider: "opencode", status: "ready" },
+        ],
+        on: () => undefined,
+        off: () => undefined,
+      },
+    }) as any;
+
+    session.emit = (message: any) => emitted.push(message);
+
+    await session.handleMessage({
+      type: "get_providers_snapshot_request",
+      requestId: "req-providers-mobile",
+    });
+
+    const response = emitted.find(
+      (message) => message.type === "get_providers_snapshot_response",
+    ) as any;
+    expect(response?.payload.entries.map((entry: { provider: string }) => entry.provider)).toEqual([
+      "claude",
+      "opencode",
     ]);
   });
 

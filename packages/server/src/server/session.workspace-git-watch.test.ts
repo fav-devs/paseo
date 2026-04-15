@@ -117,6 +117,7 @@ function createSessionForWorkspaceGitWatchTests(): {
 
   const session = new Session({
     clientId: "test-client",
+    clientType: "mobile",
     onMessage: (message) => emitted.push(message as any),
     logger: logger as any,
     downloadTokenStore: {} as any,
