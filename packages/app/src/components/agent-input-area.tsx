@@ -13,6 +13,7 @@ import {
   DraftAgentStatusBar,
   type DraftAgentStatusBarProps,
 } from "./agent-status-bar";
+import { AgentQuotaBadge } from "./agent-quota-badge";
 import { ContextWindowMeter } from "./context-window-meter";
 import { useImageAttachmentPicker } from "@/hooks/use-image-attachment-picker";
 import { useSessionStore } from "@/stores/session-store";
@@ -51,10 +52,7 @@ import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispat
 import { submitAgentInput } from "@/components/agent-input-submit";
 import { useAppSettings } from "@/hooks/use-settings";
 import { isWeb, isNative } from "@/constants/platform";
-import {
-  markActiveChatComposer,
-  registerActiveChatComposer,
-} from "@/utils/active-chat-composer";
+import { markActiveChatComposer, registerActiveChatComposer } from "@/utils/active-chat-composer";
 import { buildComposerInsertResult } from "@/utils/composer-text-insert";
 
 type QueuedMessage = {
@@ -151,6 +149,7 @@ export function AgentInputArea({
         status: agent?.status ?? null,
         contextWindowMaxTokens: agent?.lastUsage?.contextWindowMaxTokens ?? null,
         contextWindowUsedTokens: agent?.lastUsage?.contextWindowUsedTokens ?? null,
+        lastQuota: agent?.lastQuota,
       };
     }),
   );
@@ -252,41 +251,38 @@ export function AgentInputArea({
     onFocusInput?.(focusInput);
   }, [focusInput, onFocusInput]);
 
-  const insertComposerText = useCallback(
-    (text: string): boolean => {
-      const token = text.trim();
-      if (!token) {
-        return false;
-      }
+  const insertComposerText = useCallback((text: string): boolean => {
+    const token = text.trim();
+    if (!token) {
+      return false;
+    }
 
-      const result = buildComposerInsertResult({
-        value: userInputRef.current,
-        token,
-        selection: composerSelectionRef.current,
-        hasKnownSelection: hasKnownComposerSelectionRef.current,
-      });
-      if (result.text === userInputRef.current) {
-        return false;
-      }
+    const result = buildComposerInsertResult({
+      value: userInputRef.current,
+      token,
+      selection: composerSelectionRef.current,
+      hasKnownSelection: hasKnownComposerSelectionRef.current,
+    });
+    if (result.text === userInputRef.current) {
+      return false;
+    }
 
-      composerSelectionRef.current = result.selection;
-      hasKnownComposerSelectionRef.current = true;
-      userInputRef.current = result.text;
-      setCursorIndex(result.selection.start);
-      setUserInput(result.text);
+    composerSelectionRef.current = result.selection;
+    hasKnownComposerSelectionRef.current = true;
+    userInputRef.current = result.text;
+    setCursorIndex(result.selection.start);
+    setUserInput(result.text);
 
-      const applySelection = () => {
-        messageInputRef.current?.setSelection(result.selection);
-      };
-      if (typeof requestAnimationFrame === "function") {
-        requestAnimationFrame(applySelection);
-      } else {
-        setTimeout(applySelection, 0);
-      }
-      return true;
-    },
-    [],
-  );
+    const applySelection = () => {
+      messageInputRef.current?.setSelection(result.selection);
+    };
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(applySelection);
+    } else {
+      setTimeout(applySelection, 0);
+    }
+    return true;
+  }, []);
 
   useEffect(() => {
     return registerActiveChatComposer({
@@ -722,7 +718,8 @@ export function AgentInputArea({
   const contextWindowUsedTokens = hasContextWindowMeter ? agentState.contextWindowUsedTokens : null;
 
   const beforeVoiceContent = (
-    <View style={styles.contextWindowMeterSlot}>
+    <View style={styles.footerIndicators}>
+      {agentState.lastQuota ? <AgentQuotaBadge quota={agentState.lastQuota} /> : null}
       {contextWindowMaxTokens !== null && contextWindowUsedTokens !== null ? (
         <ContextWindowMeter
           maxTokens={contextWindowMaxTokens}
@@ -892,11 +889,12 @@ const styles = StyleSheet.create(((theme: Theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
   },
-  contextWindowMeterSlot: {
-    width: 28,
-    height: 28,
+  footerIndicators: {
+    minHeight: 28,
     alignItems: "center",
     justifyContent: "center",
+    flexDirection: "row",
+    gap: theme.spacing[2],
   },
   realtimeVoiceButton: {
     width: 28,

@@ -86,6 +86,27 @@ function hasAgentUsageChanged(
   return keys.some((key) => incomingUsage?.[key] !== currentUsage?.[key]);
 }
 
+function hasAgentQuotaChanged(
+  incomingQuota: Agent["lastQuota"] | undefined,
+  currentQuota: Agent["lastQuota"] | undefined,
+): boolean {
+  if (!incomingQuota && !currentQuota) {
+    return false;
+  }
+  if (!incomingQuota || !currentQuota) {
+    return true;
+  }
+
+  return (
+    incomingQuota.status !== currentQuota.status ||
+    incomingQuota.resetsAt !== currentQuota.resetsAt ||
+    incomingQuota.limitKind !== currentQuota.limitKind ||
+    incomingQuota.utilization !== currentQuota.utilization ||
+    JSON.stringify(incomingQuota.providerData ?? null) !==
+      JSON.stringify(currentQuota.providerData ?? null)
+  );
+}
+
 type AudioOutputPayload = Extract<SessionOutboundMessage, { type: "audio_output" }>["payload"];
 
 interface BufferedAudioChunk {
@@ -376,11 +397,13 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         const current = prev.get(agent.id);
         if (current && agent.updatedAt.getTime() < current.updatedAt.getTime()) {
           const hasUsageUpdate = hasAgentUsageChanged(agent.lastUsage, current.lastUsage);
-          if (hasUsageUpdate) {
+          const hasQuotaUpdate = hasAgentQuotaChanged(agent.lastQuota, current.lastQuota);
+          if (hasUsageUpdate || hasQuotaUpdate) {
             const next = new Map(prev);
             next.set(agent.id, {
               ...current,
               lastUsage: agent.lastUsage,
+              lastQuota: agent.lastQuota,
             });
             return next;
           }

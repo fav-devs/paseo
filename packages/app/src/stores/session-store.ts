@@ -15,6 +15,7 @@ import type {
   AgentMode,
   AgentCapabilityFlags,
   AgentModelDefinition,
+  AgentQuota,
   AgentUsage,
   AgentPersistenceHandle,
 } from "@server/server/agent/agent-sdk-types";
@@ -97,6 +98,7 @@ export interface Agent {
   persistence: AgentPersistenceHandle | null;
   runtimeInfo?: AgentRuntimeInfo;
   lastUsage?: AgentUsage;
+  lastQuota?: AgentQuota;
   lastError?: string | null;
   title: string | null;
   cwd: string;
