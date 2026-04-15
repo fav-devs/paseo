@@ -917,6 +917,15 @@ export const ForkAgentRequestMessageSchema = z.object({
    * If omitted the entire timeline is used.
    */
   fromMessageId: z.string().optional(),
+  /**
+   * Controls which part of the conversation is converted into transcript
+   * context when fromMessageId is provided.
+   *
+   * - from: include the selected user message and everything after it
+   * - through: include everything up to and including the selected user message
+   * - before: include everything before the selected user message
+   */
+  transcriptMode: z.enum(["from", "through", "before"]).optional(),
   /** Config overrides for the new agent (provider is always replaced by targetProvider). */
   targetConfig: AgentSessionConfigSchema.partial().optional(),
   /** Optional first message to send to the new agent immediately after creation. */
@@ -1071,6 +1080,13 @@ const CheckoutDiffCompareSchema = z.object({
 export const CheckoutStatusRequestSchema = z.object({
   type: z.literal("checkout_status_request"),
   cwd: z.string(),
+  requestId: z.string(),
+});
+
+export const CheckoutHistoryRequestSchema = z.object({
+  type: z.literal("checkout_history_request"),
+  cwd: z.string(),
+  limit: z.number().int().positive().max(200).optional(),
   requestId: z.string(),
 });
 
@@ -1579,6 +1595,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   SetAgentFeatureRequestMessageSchema,
   AgentPermissionResponseMessageSchema,
   CheckoutStatusRequestSchema,
+  CheckoutHistoryRequestSchema,
   SubscribeCheckoutDiffRequestSchema,
   UnsubscribeCheckoutDiffRequestSchema,
   CheckoutCommitRequestSchema,
@@ -2440,6 +2457,16 @@ const CheckoutDiffSubscriptionPayloadSchema = z.object({
   error: CheckoutErrorSchema.nullable(),
 });
 
+const CheckoutHistoryEntrySchema = z.object({
+  graph: z.string(),
+  hash: z.string(),
+  shortHash: z.string(),
+  subject: z.string(),
+  authorName: z.string(),
+  authoredRelative: z.string(),
+  refs: z.array(z.string()),
+});
+
 export const SubscribeCheckoutDiffResponseSchema = z.object({
   type: z.literal("subscribe_checkout_diff_response"),
   payload: CheckoutDiffSubscriptionPayloadSchema.extend({
@@ -2450,6 +2477,16 @@ export const SubscribeCheckoutDiffResponseSchema = z.object({
 export const CheckoutDiffUpdateSchema = z.object({
   type: z.literal("checkout_diff_update"),
   payload: CheckoutDiffSubscriptionPayloadSchema,
+});
+
+export const CheckoutHistoryResponseSchema = z.object({
+  type: z.literal("checkout_history_response"),
+  payload: z.object({
+    cwd: z.string(),
+    entries: z.array(CheckoutHistoryEntrySchema),
+    error: CheckoutErrorSchema.nullable(),
+    requestId: z.string(),
+  }),
 });
 
 export const CheckoutCommitResponseSchema = z.object({
@@ -3045,6 +3082,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentArchivedMessageSchema,
   CloseItemsResponseSchema,
   CheckoutStatusResponseSchema,
+  CheckoutHistoryResponseSchema,
   SubscribeCheckoutDiffResponseSchema,
   CheckoutDiffUpdateSchema,
   CheckoutCommitResponseSchema,
@@ -3269,6 +3307,8 @@ export type SetAgentFeatureRequestMessage = z.infer<typeof SetAgentFeatureReques
 export type AgentPermissionResponseMessage = z.infer<typeof AgentPermissionResponseMessageSchema>;
 export type CheckoutStatusRequest = z.infer<typeof CheckoutStatusRequestSchema>;
 export type CheckoutStatusResponse = z.infer<typeof CheckoutStatusResponseSchema>;
+export type CheckoutHistoryRequest = z.infer<typeof CheckoutHistoryRequestSchema>;
+export type CheckoutHistoryResponse = z.infer<typeof CheckoutHistoryResponseSchema>;
 export type SubscribeCheckoutDiffRequest = z.infer<typeof SubscribeCheckoutDiffRequestSchema>;
 export type UnsubscribeCheckoutDiffRequest = z.infer<typeof UnsubscribeCheckoutDiffRequestSchema>;
 export type SubscribeCheckoutDiffResponse = z.infer<typeof SubscribeCheckoutDiffResponseSchema>;

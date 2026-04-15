@@ -74,6 +74,14 @@ function invalidateCheckoutGitQueries(serverId: string, cwd: string) {
       );
     },
   });
+  void queryClient.invalidateQueries({
+    predicate: (query) => {
+      const key = query.queryKey;
+      return (
+        Array.isArray(key) && key[0] === "checkoutHistory" && key[1] === serverId && key[2] === cwd
+      );
+    },
+  });
 }
 
 function invalidateWorktreeList() {

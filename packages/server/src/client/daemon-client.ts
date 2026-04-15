@@ -23,6 +23,7 @@ import type {
   FetchAgentTimelineResponseMessage,
   GitSetupOptions,
   CheckoutStatusResponse,
+  CheckoutHistoryResponse,
   CheckoutCommitResponse,
   CheckoutMergeResponse,
   CheckoutMergeFromBaseResponse,
@@ -228,6 +229,11 @@ export type ForkAgentOptions = {
    * transcript from. If omitted the full timeline is included.
    */
   fromMessageId?: string;
+  /**
+   * How to build transcript context when fromMessageId is provided.
+   * Defaults to "from" to preserve legacy handoff behavior.
+   */
+  transcriptMode?: "from" | "through" | "before";
   /** Config overrides for the new agent (provider is always targetProvider). */
   targetConfig?: Partial<AgentSessionConfig>;
   /** Optional first message sent to the new agent immediately after creation. */
@@ -238,6 +244,7 @@ export type ForkAgentOptions = {
 type ForkAgentResponsePayload = ForkAgentResponseMessage["payload"];
 
 type CheckoutStatusPayload = CheckoutStatusResponse["payload"];
+type CheckoutHistoryPayload = CheckoutHistoryResponse["payload"];
 type SubscribeCheckoutDiffPayload = Extract<
   SessionOutboundMessage,
   { type: "subscribe_checkout_diff_response" }
@@ -1560,6 +1567,7 @@ export class DaemonClient {
       sourceAgentId: options.sourceAgentId,
       targetProvider: options.targetProvider,
       ...(options.fromMessageId ? { fromMessageId: options.fromMessageId } : {}),
+      ...(options.transcriptMode ? { transcriptMode: options.transcriptMode } : {}),
       ...(options.targetConfig ? { targetConfig: options.targetConfig } : {}),
       ...(options.initialPrompt ? { initialPrompt: options.initialPrompt } : {}),
       requestId,
@@ -2424,6 +2432,23 @@ export class DaemonClient {
         addAll: input.addAll,
       },
       responseType: "checkout_commit_response",
+      timeout: 60000,
+    });
+  }
+
+  async getCheckoutHistory(
+    cwd: string,
+    input: { limit?: number } = {},
+    requestId?: string,
+  ): Promise<CheckoutHistoryPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "checkout_history_request",
+        cwd,
+        limit: input.limit,
+      },
+      responseType: "checkout_history_response",
       timeout: 60000,
     });
   }

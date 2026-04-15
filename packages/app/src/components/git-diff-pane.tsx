@@ -32,10 +32,10 @@ import {
 } from "lucide-react-native";
 import { useCheckoutGitActionsStore } from "@/stores/checkout-git-actions-store";
 import { useCheckoutDiffQuery, type ParsedDiffFile } from "@/hooks/use-checkout-diff-query";
+import { useCheckoutHistoryQuery } from "@/hooks/use-checkout-history-query";
 import { useCheckoutStatusQuery } from "@/hooks/use-checkout-status-query";
 import { useCheckoutPrStatusQuery } from "@/hooks/use-checkout-pr-status-query";
 import { useChangesPreferences } from "@/hooks/use-changes-preferences";
-import { WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
 import { shouldAnchorHeaderBeforeCollapse } from "@/utils/git-diff-scroll";
 import {
   DropdownMenu,
@@ -74,6 +74,29 @@ function openURLInNewTab(url: string): void {
   void openExternalUrl(url);
 }
 
+function getPathBasename(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+function getParentPathLabel(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length <= 1) {
+    return "";
+  }
+  return parts.slice(0, -1).join("/");
+}
+
+function getFileStatusLetter(file: ParsedDiffFile): "A" | "D" | "M" {
+  if (file.isDeleted) {
+    return "D";
+  }
+  if (file.isNew) {
+    return "A";
+  }
+  return "M";
+}
+
 interface DiffFileSectionProps {
   file: ParsedDiffFile;
   isExpanded: boolean;
@@ -93,6 +116,9 @@ const DiffFileHeader = memo(function DiffFileHeader({
   onHeaderHeightChange,
   testID,
 }: DiffFileSectionProps) {
+  const statusLetter = getFileStatusLetter(file);
+  const fileName = getPathBasename(file.path);
+  const parentPathLabel = getParentPathLabel(file.path);
   const layoutYRef = useRef<number | null>(null);
   const pressHandledRef = useRef(false);
   const pressInRef = useRef<{ ts: number; pageX: number; pageY: number } | null>(null);
@@ -147,20 +173,39 @@ const DiffFileHeader = memo(function DiffFileHeader({
           onPress={toggleExpanded}
         >
           <View style={styles.fileHeaderLeft}>
-            <Text style={styles.fileName}>{file.path.split("/").pop()}</Text>
-            <Text style={styles.fileDir} numberOfLines={1}>
-              {file.path.includes("/") ? ` ${file.path.slice(0, file.path.lastIndexOf("/"))}` : ""}
-            </Text>
-            {file.isNew && (
-              <View style={styles.newBadge}>
-                <Text style={styles.newBadgeText}>New</Text>
-              </View>
-            )}
-            {file.isDeleted && (
-              <View style={styles.deletedBadge}>
-                <Text style={styles.deletedBadgeText}>Deleted</Text>
-              </View>
-            )}
+            <View
+              style={[
+                styles.fileStatusBadge,
+                statusLetter === "A"
+                  ? styles.fileStatusBadgeAdded
+                  : statusLetter === "D"
+                    ? styles.fileStatusBadgeDeleted
+                    : styles.fileStatusBadgeModified,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.fileStatusBadgeText,
+                  statusLetter === "A"
+                    ? styles.fileStatusBadgeTextAdded
+                    : statusLetter === "D"
+                      ? styles.fileStatusBadgeTextDeleted
+                      : styles.fileStatusBadgeTextModified,
+                ]}
+              >
+                {statusLetter}
+              </Text>
+            </View>
+            <View style={styles.fileIdentity}>
+              <Text style={styles.fileName} numberOfLines={1}>
+                {fileName}
+              </Text>
+              {parentPathLabel ? (
+                <Text style={styles.fileDir} numberOfLines={1}>
+                  {parentPathLabel}
+                </Text>
+              ) : null}
+            </View>
           </View>
           <View style={styles.fileHeaderRight}>
             {file.isSubmodule ? (
@@ -390,6 +435,18 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
     cwd,
     enabled: isGit,
   });
+  const {
+    history,
+    isLoading: isHistoryLoading,
+    isError: isHistoryError,
+    error: historyError,
+    refresh: refreshHistory,
+  } = useCheckoutHistoryQuery({
+    serverId,
+    cwd,
+    limit: 20,
+    enabled: isGit,
+  });
   // Track user-initiated refresh to avoid iOS RefreshControl animation on background fetches
   const [isManualRefresh, setIsManualRefresh] = useState(false);
   const normalizedWorkspaceRoot = useMemo(() => cwd.trim(), [cwd]);
@@ -422,7 +479,8 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
     void refreshDiff();
     void refreshStatus();
     void refreshPrStatus();
-  }, [refreshDiff, refreshStatus, refreshPrStatus]);
+    void refreshHistory();
+  }, [refreshDiff, refreshHistory, refreshPrStatus, refreshStatus]);
 
   const shipDefaultStorageKey = useMemo(() => {
     if (!gitStatus?.repoRoot) {
@@ -836,9 +894,15 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   }, []);
 
   const hasChanges = files.length > 0;
+  const historyEntries = history?.entries ?? [];
   const diffErrorMessage =
     diffPayloadError?.message ??
     (isDiffError && diffError instanceof Error ? diffError.message : null);
+  const historyErrorMessage = isHistoryError
+    ? historyError instanceof Error
+      ? historyError.message
+      : "Unable to load history graph."
+    : null;
   const prErrorMessage = githubFeaturesEnabled ? (prPayloadError?.message ?? null) : null;
   const branchLabel =
     gitStatus?.currentBranch && gitStatus.currentBranch !== "HEAD"
@@ -851,6 +915,8 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   const behindBaseCount = gitStatus?.aheadBehind?.behind ?? 0;
   const aheadOfOrigin = gitStatus?.aheadOfOrigin ?? 0;
   const behindOfOrigin = gitStatus?.behindOfOrigin ?? 0;
+  const repositoryRoot = gitStatus?.repoRoot?.trim() || cwd.trim();
+  const repositoryName = getPathBasename(repositoryRoot);
   const baseRefLabel = useMemo(() => {
     if (!baseRef) return "base";
     const trimmed = baseRef.replace(/^refs\/(heads|remotes)\//, "").trim();
@@ -868,13 +934,27 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   const isMergedPullRequest = Boolean(prStatus?.isMerged);
   const currentBranch = gitStatus?.currentBranch;
   const isOnBaseBranch = currentBranch === baseRefLabel;
+  const repositorySubtitle = useMemo(() => {
+    const relativeWorkspace =
+      repositoryRoot !== cwd && cwd.startsWith(`${repositoryRoot}/`)
+        ? cwd.slice(repositoryRoot.length + 1)
+        : null;
+    const parts = [branchLabel];
+    if (relativeWorkspace) {
+      parts.push(relativeWorkspace);
+    }
+    if (diffMode === "base" && baseRefLabel && branchLabel !== baseRefLabel) {
+      parts.push(`vs ${baseRefLabel}`);
+    }
+    return parts.filter(Boolean).join(" • ");
+  }, [baseRefLabel, branchLabel, cwd, diffMode, repositoryRoot]);
+  const changeCountLabel = `${files.length} file${files.length === 1 ? "" : "s"}`;
   const shouldPromoteArchive =
     isPaseoOwnedWorktree &&
     !hasUncommittedChanges &&
     (postShipArchiveSuggested || isMergedPullRequest);
 
   const commitDisabled = actionsDisabled || commitStatus === "pending";
-  const trimmedCommitMessage = commitMessage.trim();
   const commitBoxDisabled = commitDisabled || !hasUncommittedChanges;
   const pullDisabled = actionsDisabled || pullStatus === "pending";
   const prDisabled = actionsDisabled || prCreateStatus === "pending";
@@ -1109,257 +1189,341 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
       ) : null}
 
       {isGit ? (
-        <View style={styles.diffStatusContainer}>
-          <View style={styles.diffStatusInner}>
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                style={({ hovered, pressed, open }) => [
-                  styles.diffModeTrigger,
-                  hovered && styles.diffModeTriggerHovered,
-                  (pressed || open) && styles.diffModeTriggerPressed,
-                ]}
-                testID="changes-diff-status"
-                accessibilityRole="button"
-                accessibilityLabel="Diff mode"
-              >
-                <Text style={styles.diffStatusText} numberOfLines={1}>
-                  {diffMode === "uncommitted" ? "Uncommitted" : "Committed"}
+        <View style={styles.repositorySection}>
+          <View style={styles.repositorySectionHeader}>
+            <View style={styles.repositoryMetaBlock}>
+              <Text style={styles.sectionEyebrow}>Repository</Text>
+              <View style={styles.repositoryTitleRow}>
+                <GitBranch size={14} color={theme.colors.foregroundMuted} />
+                <Text style={styles.repositoryName} numberOfLines={1}>
+                  {repositoryName}
                 </Text>
-                <ChevronDown size={12} color={theme.colors.foregroundMuted} />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" width={260} testID="changes-diff-status-menu">
-                <DropdownMenuItem
-                  testID="changes-diff-mode-uncommitted"
-                  selected={diffMode === "uncommitted"}
-                  onSelect={() => setDiffModeOverride("uncommitted")}
-                >
-                  Uncommitted
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  testID="changes-diff-mode-committed"
-                  selected={diffMode === "base"}
-                  description={committedDiffDescription}
-                  onSelect={() => setDiffModeOverride("base")}
-                >
-                  Committed
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-            <View style={styles.diffStatusButtons}>
-              {files.length > 0 ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    style={({ hovered, pressed, open }) => [
-                      styles.diffModeTrigger,
-                      hovered && styles.diffModeTriggerHovered,
-                      (pressed || open) && styles.diffModeTriggerPressed,
-                    ]}
-                    testID="changes-view-mode"
-                    accessibilityRole="button"
-                    accessibilityLabel="View mode"
-                  >
-                    <Text style={styles.diffStatusText} numberOfLines={1}>
-                      {changesPreferences.viewMode === "tree" ? "Tree" : "Flat"}
-                    </Text>
-                    <ChevronDown size={12} color={theme.colors.foregroundMuted} />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" width={180} testID="changes-view-mode-menu">
-                    <DropdownMenuItem
-                      testID="changes-view-mode-flat"
-                      selected={changesPreferences.viewMode === "flat"}
-                      onSelect={() => handleViewModeChange("flat")}
-                    >
-                      Flat
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      testID="changes-view-mode-tree"
-                      selected={changesPreferences.viewMode === "tree"}
-                      onSelect={() => handleViewModeChange("tree")}
-                    >
-                      Tree
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : null}
-              {canUseSplitLayout ? (
-                <View style={styles.toggleButtonGroup}>
-                  <Tooltip delayDuration={300}>
-                    <TooltipTrigger asChild>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel="Unified diff"
-                        testID="changes-layout-unified"
-                        onPress={() => handleLayoutChange("unified")}
-                        style={({ hovered, pressed }) => [
-                          styles.toggleButton,
-                          styles.toggleButtonGroupStart,
-                          changesPreferences.layout === "unified" && styles.toggleButtonSelected,
-                          (hovered || pressed) && styles.diffStatusRowHovered,
-                        ]}
-                      >
-                        <AlignJustify
-                          size={14}
-                          color={
-                            changesPreferences.layout === "unified"
-                              ? theme.colors.foreground
-                              : theme.colors.foregroundMuted
-                          }
-                        />
-                      </Pressable>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">
-                      <Text style={styles.tooltipText}>Unified diff</Text>
-                    </TooltipContent>
-                  </Tooltip>
-                  <Tooltip delayDuration={300}>
-                    <TooltipTrigger asChild>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel="Side-by-side diff"
-                        testID="changes-layout-split"
-                        onPress={() => handleLayoutChange("split")}
-                        style={({ hovered, pressed }) => [
-                          styles.toggleButton,
-                          styles.toggleButtonGroupEnd,
-                          changesPreferences.layout === "split" && styles.toggleButtonSelected,
-                          (hovered || pressed) && styles.diffStatusRowHovered,
-                        ]}
-                      >
-                        <Columns2
-                          size={14}
-                          color={
-                            changesPreferences.layout === "split"
-                              ? theme.colors.foreground
-                              : theme.colors.foregroundMuted
-                          }
-                        />
-                      </Pressable>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">
-                      <Text style={styles.tooltipText}>Side-by-side diff</Text>
-                    </TooltipContent>
-                  </Tooltip>
+                <View style={styles.countBadge}>
+                  <Text style={styles.countBadgeText}>{changeCountLabel}</Text>
                 </View>
-              ) : null}
-              <Tooltip delayDuration={300}>
-                <TooltipTrigger asChild>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Hide whitespace"
-                    testID="changes-toggle-whitespace"
-                    style={({ hovered, pressed }) => [
-                      styles.expandAllButton,
-                      changesPreferences.hideWhitespace && styles.toggleButtonSelected,
-                      (hovered || pressed) && styles.diffStatusRowHovered,
-                    ]}
-                    onPress={handleToggleHideWhitespace}
-                  >
-                    <Pilcrow
-                      size={isMobile ? 18 : 14}
-                      color={
-                        changesPreferences.hideWhitespace
-                          ? theme.colors.foreground
-                          : theme.colors.foregroundMuted
-                      }
-                    />
-                  </Pressable>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  <Text style={styles.tooltipText}>Hide whitespace</Text>
-                </TooltipContent>
-              </Tooltip>
-              {files.length > 0 ? (
-                <View style={styles.diffStatusButtons}>
-                  <Tooltip delayDuration={300}>
-                    <TooltipTrigger asChild>
-                      <Pressable
-                        style={({ hovered, pressed }) => [
-                          styles.expandAllButton,
-                          wrapLines && styles.toggleButtonSelected,
-                          (hovered || pressed) && styles.diffStatusRowHovered,
-                        ]}
-                        onPress={handleToggleWrapLines}
-                      >
-                        <WrapText
-                          size={isMobile ? 18 : 14}
-                          color={wrapLines ? theme.colors.foreground : theme.colors.foregroundMuted}
-                        />
-                      </Pressable>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">
-                      <Text style={styles.tooltipText}>
-                        {wrapLines ? "Scroll long lines" : "Wrap long lines"}
-                      </Text>
-                    </TooltipContent>
-                  </Tooltip>
-                  <Tooltip delayDuration={300}>
-                    <TooltipTrigger asChild>
-                      <Pressable
-                        style={({ hovered, pressed }) => [
-                          styles.expandAllButton,
-                          (hovered || pressed) && styles.diffStatusRowHovered,
-                        ]}
-                        onPress={handleToggleExpandAll}
-                      >
-                        {allExpanded ? (
-                          <ListChevronsDownUp
-                            size={isMobile ? 18 : 14}
-                            color={theme.colors.foregroundMuted}
-                          />
-                        ) : (
-                          <ListChevronsUpDown
-                            size={isMobile ? 18 : 14}
-                            color={theme.colors.foregroundMuted}
-                          />
-                        )}
-                      </Pressable>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">
-                      <Text style={styles.tooltipText}>
-                        {allExpanded ? "Collapse all files" : "Expand all files"}
-                      </Text>
-                    </TooltipContent>
-                  </Tooltip>
+              </View>
+              <Text style={styles.repositorySubtitle} numberOfLines={1}>
+                {repositorySubtitle}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.commitComposer}>
+            <TextInput
+              accessibilityLabel="Commit message"
+              testID="changes-commit-message-input"
+              value={commitMessage}
+              onChangeText={setCommitMessage}
+              placeholder="Message (leave blank to auto-generate)"
+              placeholderTextColor={theme.colors.foregroundMuted}
+              editable={!commitBoxDisabled}
+              multiline
+              numberOfLines={2}
+              style={[
+                styles.commitInput,
+                commitBoxDisabled && styles.commitInputDisabled,
+                !isMobile && styles.commitInputDesktop,
+              ]}
+            />
+            <Button
+              testID="changes-commit-button"
+              size="sm"
+              variant="default"
+              disabled={commitBoxDisabled}
+              onPress={handleCommit}
+            >
+              Commit
+            </Button>
+          </View>
+
+          <View style={styles.graphSection}>
+            <View style={styles.graphSectionHeader}>
+              <View style={styles.diffSectionTitleGroup}>
+                <Text style={styles.sectionEyebrow}>Graph</Text>
+                <View style={styles.diffSectionNameRow}>
+                  <Text style={styles.diffSectionTitle}>Recent commits</Text>
+                  <View style={styles.countBadge}>
+                    <Text style={styles.countBadgeText}>{historyEntries.length}</Text>
+                  </View>
                 </View>
-              ) : null}
+              </View>
+            </View>
+
+            {isHistoryLoading ? (
+              <Text style={styles.graphMessage}>Loading history…</Text>
+            ) : historyErrorMessage ? (
+              <Text style={styles.graphErrorText}>{historyErrorMessage}</Text>
+            ) : historyEntries.length === 0 ? (
+              <Text style={styles.graphMessage}>No commit history yet.</Text>
+            ) : (
+              <View style={styles.graphList}>
+                {historyEntries.map((entry) => (
+                  <View key={entry.hash} style={styles.graphRow}>
+                    <Text style={styles.graphAscii}>{entry.graph || "*"}</Text>
+                    <View style={styles.graphContent}>
+                      <View style={styles.graphSubjectRow}>
+                        <Text style={styles.graphSubject} numberOfLines={1}>
+                          {entry.subject}
+                        </Text>
+                        <Text style={styles.graphMetaMuted}>{entry.shortHash}</Text>
+                      </View>
+                      <Text style={styles.graphMetaText} numberOfLines={1}>
+                        {entry.authorName} • {entry.authoredRelative}
+                      </Text>
+                      {entry.refs.length > 0 ? (
+                        <View style={styles.graphRefsRow}>
+                          {entry.refs.slice(0, 3).map((ref) => (
+                            <View key={`${entry.hash}-${ref}`} style={styles.graphRefBadge}>
+                              <Text style={styles.graphRefText} numberOfLines={1}>
+                                {ref}
+                              </Text>
+                            </View>
+                          ))}
+                        </View>
+                      ) : null}
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+
+          <View style={styles.diffStatusContainer}>
+            <View style={styles.diffSectionHeader}>
+              <View style={styles.diffSectionTitleGroup}>
+                <Text style={styles.sectionEyebrow}>Changes</Text>
+                <View style={styles.diffSectionNameRow}>
+                  <Text style={styles.diffSectionTitle}>Working tree</Text>
+                  <View style={styles.countBadge}>
+                    <Text style={styles.countBadgeText}>{files.length}</Text>
+                  </View>
+                </View>
+              </View>
+              <GitActionsSplitButton gitActions={gitActions} />
+            </View>
+            <View style={styles.diffStatusInner}>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  style={({ hovered, pressed, open }) => [
+                    styles.diffModeTrigger,
+                    hovered && styles.diffModeTriggerHovered,
+                    (pressed || open) && styles.diffModeTriggerPressed,
+                  ]}
+                  testID="changes-diff-status"
+                  accessibilityRole="button"
+                  accessibilityLabel="Diff mode"
+                >
+                  <Text style={styles.diffStatusText} numberOfLines={1}>
+                    {diffMode === "uncommitted" ? "Uncommitted" : "Committed"}
+                  </Text>
+                  <ChevronDown size={12} color={theme.colors.foregroundMuted} />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" width={260} testID="changes-diff-status-menu">
+                  <DropdownMenuItem
+                    testID="changes-diff-mode-uncommitted"
+                    selected={diffMode === "uncommitted"}
+                    onSelect={() => setDiffModeOverride("uncommitted")}
+                  >
+                    Uncommitted
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    testID="changes-diff-mode-committed"
+                    selected={diffMode === "base"}
+                    description={committedDiffDescription}
+                    onSelect={() => setDiffModeOverride("base")}
+                  >
+                    Committed
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <View style={styles.diffStatusButtons}>
+                {files.length > 0 ? (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      style={({ hovered, pressed, open }) => [
+                        styles.diffModeTrigger,
+                        hovered && styles.diffModeTriggerHovered,
+                        (pressed || open) && styles.diffModeTriggerPressed,
+                      ]}
+                      testID="changes-view-mode"
+                      accessibilityRole="button"
+                      accessibilityLabel="View mode"
+                    >
+                      <Text style={styles.diffStatusText} numberOfLines={1}>
+                        {changesPreferences.viewMode === "tree" ? "Tree" : "Flat"}
+                      </Text>
+                      <ChevronDown size={12} color={theme.colors.foregroundMuted} />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" width={180} testID="changes-view-mode-menu">
+                      <DropdownMenuItem
+                        testID="changes-view-mode-flat"
+                        selected={changesPreferences.viewMode === "flat"}
+                        onSelect={() => handleViewModeChange("flat")}
+                      >
+                        Flat
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        testID="changes-view-mode-tree"
+                        selected={changesPreferences.viewMode === "tree"}
+                        onSelect={() => handleViewModeChange("tree")}
+                      >
+                        Tree
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                ) : null}
+                {canUseSplitLayout ? (
+                  <View style={styles.toggleButtonGroup}>
+                    <Tooltip delayDuration={300}>
+                      <TooltipTrigger asChild>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Unified diff"
+                          testID="changes-layout-unified"
+                          onPress={() => handleLayoutChange("unified")}
+                          style={({ hovered, pressed }) => [
+                            styles.toggleButton,
+                            styles.toggleButtonGroupStart,
+                            changesPreferences.layout === "unified" && styles.toggleButtonSelected,
+                            (hovered || pressed) && styles.diffStatusRowHovered,
+                          ]}
+                        >
+                          <AlignJustify
+                            size={14}
+                            color={
+                              changesPreferences.layout === "unified"
+                                ? theme.colors.foreground
+                                : theme.colors.foregroundMuted
+                            }
+                          />
+                        </Pressable>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">
+                        <Text style={styles.tooltipText}>Unified diff</Text>
+                      </TooltipContent>
+                    </Tooltip>
+                    <Tooltip delayDuration={300}>
+                      <TooltipTrigger asChild>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Side-by-side diff"
+                          testID="changes-layout-split"
+                          onPress={() => handleLayoutChange("split")}
+                          style={({ hovered, pressed }) => [
+                            styles.toggleButton,
+                            styles.toggleButtonGroupEnd,
+                            changesPreferences.layout === "split" && styles.toggleButtonSelected,
+                            (hovered || pressed) && styles.diffStatusRowHovered,
+                          ]}
+                        >
+                          <Columns2
+                            size={14}
+                            color={
+                              changesPreferences.layout === "split"
+                                ? theme.colors.foreground
+                                : theme.colors.foregroundMuted
+                            }
+                          />
+                        </Pressable>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">
+                        <Text style={styles.tooltipText}>Side-by-side diff</Text>
+                      </TooltipContent>
+                    </Tooltip>
+                  </View>
+                ) : null}
+                <Tooltip delayDuration={300}>
+                  <TooltipTrigger asChild>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Hide whitespace"
+                      testID="changes-toggle-whitespace"
+                      style={({ hovered, pressed }) => [
+                        styles.expandAllButton,
+                        changesPreferences.hideWhitespace && styles.toggleButtonSelected,
+                        (hovered || pressed) && styles.diffStatusRowHovered,
+                      ]}
+                      onPress={handleToggleHideWhitespace}
+                    >
+                      <Pilcrow
+                        size={isMobile ? 18 : 14}
+                        color={
+                          changesPreferences.hideWhitespace
+                            ? theme.colors.foreground
+                            : theme.colors.foregroundMuted
+                        }
+                      />
+                    </Pressable>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    <Text style={styles.tooltipText}>Hide whitespace</Text>
+                  </TooltipContent>
+                </Tooltip>
+                {files.length > 0 ? (
+                  <View style={styles.diffStatusButtons}>
+                    <Tooltip delayDuration={300}>
+                      <TooltipTrigger asChild>
+                        <Pressable
+                          style={({ hovered, pressed }) => [
+                            styles.expandAllButton,
+                            wrapLines && styles.toggleButtonSelected,
+                            (hovered || pressed) && styles.diffStatusRowHovered,
+                          ]}
+                          onPress={handleToggleWrapLines}
+                        >
+                          <WrapText
+                            size={isMobile ? 18 : 14}
+                            color={
+                              wrapLines ? theme.colors.foreground : theme.colors.foregroundMuted
+                            }
+                          />
+                        </Pressable>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">
+                        <Text style={styles.tooltipText}>
+                          {wrapLines ? "Scroll long lines" : "Wrap long lines"}
+                        </Text>
+                      </TooltipContent>
+                    </Tooltip>
+                    <Tooltip delayDuration={300}>
+                      <TooltipTrigger asChild>
+                        <Pressable
+                          style={({ hovered, pressed }) => [
+                            styles.expandAllButton,
+                            (hovered || pressed) && styles.diffStatusRowHovered,
+                          ]}
+                          onPress={handleToggleExpandAll}
+                        >
+                          {allExpanded ? (
+                            <ListChevronsDownUp
+                              size={isMobile ? 18 : 14}
+                              color={theme.colors.foregroundMuted}
+                            />
+                          ) : (
+                            <ListChevronsUpDown
+                              size={isMobile ? 18 : 14}
+                              color={theme.colors.foregroundMuted}
+                            />
+                          )}
+                        </Pressable>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">
+                        <Text style={styles.tooltipText}>
+                          {allExpanded ? "Collapse all files" : "Expand all files"}
+                        </Text>
+                      </TooltipContent>
+                    </Tooltip>
+                  </View>
+                ) : null}
+              </View>
             </View>
           </View>
         </View>
       ) : null}
 
       {prErrorMessage ? <Text style={styles.actionErrorText}>{prErrorMessage}</Text> : null}
-
-      {isGit ? (
-        <View style={styles.commitComposer}>
-          <TextInput
-            accessibilityLabel="Commit message"
-            testID="changes-commit-message-input"
-            value={commitMessage}
-            onChangeText={setCommitMessage}
-            placeholder="Commit message"
-            placeholderTextColor={theme.colors.foregroundMuted}
-            editable={!commitBoxDisabled}
-            multiline
-            numberOfLines={2}
-            style={[
-              styles.commitInput,
-              commitBoxDisabled && styles.commitInputDisabled,
-              !isMobile && styles.commitInputDesktop,
-            ]}
-          />
-          <Button
-            testID="changes-commit-button"
-            size="sm"
-            variant="default"
-            disabled={commitBoxDisabled || trimmedCommitMessage.length === 0}
-            onPress={handleCommit}
-          >
-            Commit
-          </Button>
-        </View>
-      ) : null}
 
       <View style={styles.diffContainer}>
         {bodyContent}
@@ -1397,25 +1561,92 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.medium,
     flexShrink: 1,
   },
-  diffStatusContainer: {
-    height: WORKSPACE_SECONDARY_HEADER_HEIGHT,
+  sectionEyebrow: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  repositorySection: {
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
+    backgroundColor: theme.colors.surface1,
+  },
+  repositorySectionHeader: {
+    paddingHorizontal: theme.spacing[3],
+    paddingTop: theme.spacing[3],
+  },
+  repositoryMetaBlock: {
+    gap: theme.spacing[1],
+  },
+  repositoryTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  repositoryName: {
+    flexShrink: 1,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foreground,
+    fontWeight: theme.fontWeight.medium,
+  },
+  countBadge: {
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.surface3,
+  },
+  countBadgeText: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+    fontWeight: theme.fontWeight.medium,
+  },
+  repositorySubtitle: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+  },
+  diffStatusContainer: {
+    paddingHorizontal: theme.spacing[3],
+    paddingTop: theme.spacing[2],
+    paddingBottom: theme.spacing[2],
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+    gap: theme.spacing[2],
+    backgroundColor: theme.colors.surface1,
+  },
+  diffSectionHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: theme.spacing[2],
+  },
+  diffSectionTitleGroup: {
+    flex: 1,
+    minWidth: 0,
+    gap: theme.spacing[1],
+  },
+  diffSectionNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  diffSectionTitle: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foreground,
+    fontWeight: theme.fontWeight.medium,
   },
   diffStatusInner: {
-    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingRight: theme.spacing[3],
+    gap: theme.spacing[2],
+    flexWrap: "wrap",
   },
   diffModeTrigger: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: theme.spacing[1],
-    // Align text with header branch icon (at spacing[3] from edge, minus our horizontal padding)
-    marginLeft: theme.spacing[3] - theme.spacing[1],
     paddingHorizontal: theme.spacing[1],
     height: {
       xs: 28,
@@ -1515,11 +1746,9 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "flex-end",
     gap: theme.spacing[2],
-    paddingHorizontal: theme.spacing[3],
     paddingTop: theme.spacing[2],
+    paddingHorizontal: theme.spacing[3],
     paddingBottom: theme.spacing[2],
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
   },
   commitInput: {
     flex: 1,
@@ -1540,6 +1769,90 @@ const styles = StyleSheet.create((theme) => ({
   },
   commitInputDisabled: {
     opacity: 0.6,
+  },
+  graphSection: {
+    paddingHorizontal: theme.spacing[3],
+    paddingBottom: theme.spacing[3],
+    gap: theme.spacing[2],
+  },
+  graphSectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing[2],
+  },
+  graphList: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.lg,
+    overflow: "hidden",
+    backgroundColor: theme.colors.background,
+  },
+  graphRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: theme.spacing[2],
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[2],
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  graphAscii: {
+    width: 44,
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+    fontFamily: "monospace",
+  },
+  graphContent: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  graphSubjectRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing[2],
+  },
+  graphSubject: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foreground,
+    fontWeight: theme.fontWeight.medium,
+  },
+  graphMetaText: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+  },
+  graphMetaMuted: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+    flexShrink: 0,
+  },
+  graphRefsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    flexWrap: "wrap",
+  },
+  graphRefBadge: {
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: 2,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.surface3,
+  },
+  graphRefText: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+  },
+  graphMessage: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+  },
+  graphErrorText: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.destructive,
   },
   diffContainer: {
     flex: 1,
@@ -1596,12 +1909,15 @@ const styles = StyleSheet.create((theme) => ({
   },
   treeDirectoryRow: {
     paddingRight: theme.spacing[2],
-    paddingVertical: theme.spacing[1],
+    paddingTop: theme.spacing[2],
+    paddingBottom: theme.spacing[1],
   },
   treeDirectoryLabel: {
     fontSize: theme.fontSize.xs,
     color: theme.colors.foregroundMuted,
     fontWeight: theme.fontWeight.medium,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
   },
   fileSectionHeaderExpanded: {
     backgroundColor: theme.colors.surface1,
@@ -1637,10 +1953,15 @@ const styles = StyleSheet.create((theme) => ({
   },
   fileHeaderLeft: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1],
+    alignItems: "flex-start",
+    gap: theme.spacing[2],
     flex: 1,
     minWidth: 0,
+  },
+  fileIdentity: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
   fileHeaderRight: {
     flexDirection: "row",
@@ -1650,39 +1971,45 @@ const styles = StyleSheet.create((theme) => ({
   },
   fileName: {
     fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.normal,
+    fontWeight: theme.fontWeight.medium,
     color: theme.colors.foreground,
-    flexShrink: 0,
+    flexShrink: 1,
   },
   fileDir: {
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foregroundMuted,
-    flex: 1,
+    flexShrink: 1,
   },
-  newBadge: {
-    backgroundColor: "rgba(46, 160, 67, 0.2)",
-    paddingHorizontal: theme.spacing[2],
-    paddingVertical: theme.spacing[1],
-    borderRadius: theme.borderRadius.md,
+  fileStatusBadge: {
+    width: 18,
+    height: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: theme.borderRadius.sm,
     flexShrink: 0,
   },
-  newBadgeText: {
+  fileStatusBadgeAdded: {
+    backgroundColor: "rgba(46, 160, 67, 0.16)",
+  },
+  fileStatusBadgeDeleted: {
+    backgroundColor: "rgba(248, 81, 73, 0.16)",
+  },
+  fileStatusBadgeModified: {
+    backgroundColor: "rgba(63, 185, 80, 0.12)",
+  },
+  fileStatusBadgeText: {
     fontSize: theme.fontSize.xs,
-    fontWeight: theme.fontWeight.normal,
+    fontWeight: theme.fontWeight.medium,
+  },
+  fileStatusBadgeTextAdded: {
     color: theme.colors.diffAddition,
   },
-  deletedBadge: {
-    backgroundColor: "rgba(248, 81, 73, 0.2)",
-    paddingHorizontal: theme.spacing[2],
-    paddingVertical: theme.spacing[1],
-    borderRadius: theme.borderRadius.md,
-    flexShrink: 0,
-  },
-  deletedBadgeText: {
-    fontSize: theme.fontSize.xs,
-    fontWeight: theme.fontWeight.normal,
+  fileStatusBadgeTextDeleted: {
     color: theme.colors.diffDeletion,
+  },
+  fileStatusBadgeTextModified: {
+    color: theme.colors.accent,
   },
   additions: {
     fontSize: theme.fontSize.xs,

@@ -163,6 +163,7 @@ import { type WorktreeConfig } from "../utils/worktree.js";
 import { runAsyncWorktreeBootstrap } from "./worktree-bootstrap.js";
 import {
   getCheckoutDiff,
+  getCheckoutHistoryGraph,
   getCheckoutStatus,
   listBranchSuggestions,
   commitChanges,
@@ -1847,6 +1848,10 @@ export class Session {
             await this.handleCheckoutStatusRequest(msg);
             break;
 
+          case "checkout_history_request":
+            await this.handleCheckoutHistoryRequest(msg);
+            break;
+
           case "validate_branch_request":
             await this.handleValidateBranchRequest(msg);
             break;
@@ -3289,12 +3294,19 @@ export class Session {
   private async handleForkAgentRequest(
     msg: Extract<SessionInboundMessage, { type: "fork_agent_request" }>,
   ): Promise<void> {
-    const { sourceAgentId, targetProvider, fromMessageId, targetConfig, initialPrompt, requestId } =
-      msg;
+    const {
+      sourceAgentId,
+      targetProvider,
+      fromMessageId,
+      transcriptMode,
+      targetConfig,
+      initialPrompt,
+      requestId,
+    } = msg;
 
     this.sessionLogger.info(
-      { sourceAgentId, targetProvider, fromMessageId, requestId },
-      "fork_agent_request: forking agent to new provider",
+      { sourceAgentId, targetProvider, fromMessageId, transcriptMode, requestId },
+      "fork_agent_request: creating conversation fork",
     );
 
     try {
@@ -3307,6 +3319,7 @@ export class Session {
         sourceAgent.timeline,
         sourceAgent.provider,
         fromMessageId,
+        transcriptMode,
       );
 
       // Merge source config → caller overrides → force targetProvider.
@@ -4310,6 +4323,36 @@ export class Session {
           hasRemote: false,
           remoteUrl: null,
           isPaseoOwnedWorktree: false,
+          error: toCheckoutError(error),
+          requestId,
+        },
+      });
+    }
+  }
+
+  private async handleCheckoutHistoryRequest(
+    msg: Extract<SessionInboundMessage, { type: "checkout_history_request" }>,
+  ): Promise<void> {
+    const { cwd, requestId } = msg;
+    const resolvedCwd = expandTilde(cwd);
+
+    try {
+      const entries = await getCheckoutHistoryGraph(resolvedCwd, { limit: msg.limit });
+      this.emit({
+        type: "checkout_history_response",
+        payload: {
+          cwd,
+          entries,
+          error: null,
+          requestId,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "checkout_history_response",
+        payload: {
+          cwd,
+          entries: [],
           error: toCheckoutError(error),
           requestId,
         },

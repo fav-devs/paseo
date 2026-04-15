@@ -188,6 +188,80 @@ describe("DaemonClient", () => {
     });
   });
 
+  test("fetches checkout history graph via correlated request", async () => {
+    const logger = createMockLogger();
+    const mock = createMockTransport();
+
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: "clsk_unit_test",
+      logger,
+      reconnect: { enabled: false },
+      transportFactory: () => mock.transport,
+    });
+    clients.push(client);
+
+    const connectPromise = client.connect();
+    mock.triggerOpen();
+    await connectPromise;
+
+    const promise = client.getCheckoutHistory("/tmp/project", { limit: 5 });
+    expect(mock.sent).toHaveLength(1);
+
+    const request = JSON.parse(mock.sent[0]) as {
+      type: "session";
+      message: {
+        type: "checkout_history_request";
+        cwd: string;
+        limit?: number;
+        requestId: string;
+      };
+    };
+
+    expect(request.message).toMatchObject({
+      type: "checkout_history_request",
+      cwd: "/tmp/project",
+      limit: 5,
+    });
+
+    mock.triggerMessage(
+      JSON.stringify({
+        type: "session",
+        message: {
+          type: "checkout_history_response",
+          payload: {
+            cwd: "/tmp/project",
+            requestId: request.message.requestId,
+            error: null,
+            entries: [
+              {
+                graph: "*",
+                hash: "abc123",
+                shortHash: "abc123",
+                subject: "Initial commit",
+                authorName: "Test",
+                authoredRelative: "1 minute ago",
+                refs: ["HEAD -> main"],
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    await expect(promise).resolves.toMatchObject({
+      cwd: "/tmp/project",
+      requestId: request.message.requestId,
+      entries: [
+        expect.objectContaining({
+          graph: "*",
+          shortHash: "abc123",
+          subject: "Initial commit",
+        }),
+      ],
+    });
+  });
+
   test("does not reconnect after close when ensureConnected is called", async () => {
     const logger = createMockLogger();
     const mock = createMockTransport();

@@ -21,6 +21,7 @@ import {
   getCurrentBranch,
   getCheckoutDiff,
   getCheckoutShortstat,
+  getCheckoutHistoryGraph,
   getPullRequestStatus,
   getCheckoutStatus,
   listBranchSuggestions,
@@ -113,6 +114,21 @@ describe("checkout git utilities", () => {
     expect(cleanStatus.isDirty).toBe(false);
     const message = execSync("git log -1 --pretty=%B", { cwd: repoDir }).toString().trim();
     expect(message).toBe("update file");
+  });
+
+  it("returns graph history entries for recent commits", async () => {
+    writeFileSync(join(repoDir, "file.txt"), "updated\n");
+    execSync("git add .", { cwd: repoDir });
+    execSync("git -c commit.gpgsign=false commit -m 'update file'", { cwd: repoDir });
+
+    const entries = await getCheckoutHistoryGraph(repoDir, { limit: 10 });
+    expect(entries.length).toBeGreaterThanOrEqual(2);
+    expect(entries[0]).toMatchObject({
+      shortHash: expect.any(String),
+      subject: "update file",
+      authorName: "Test",
+    });
+    expect(entries.some((entry) => entry.subject === "initial")).toBe(true);
   });
 
   it("hides whitespace-only changes when requested", async () => {

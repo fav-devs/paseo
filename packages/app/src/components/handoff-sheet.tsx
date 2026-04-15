@@ -1,37 +1,30 @@
-import { useCallback, useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ActivityIndicator, Text, View, Pressable } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { Check, GitFork } from "lucide-react-native";
-import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
+import { AdaptiveModalSheet, AdaptiveTextInput } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { getProviderIcon } from "@/components/provider-icons";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import type { AgentProvider, AgentSessionConfig } from "@server/server/agent/agent-sdk-types";
 import type { StreamItem } from "@/types/stream";
+import { extractBranchableUserMessages } from "@/utils/conversation-branch";
 
 export interface HandoffSheetProps {
   visible: boolean;
   onClose: () => void;
   serverId: string;
   sourceAgentId: string;
-  /** Current provider of the source agent — excluded from target options. */
   currentProvider: AgentProvider;
-  /** Stream items from the source agent, used to populate the cutoff picker. */
   streamItems: StreamItem[];
-  /** Called with the new agent's ID after a successful fork. */
   onForked: (newAgentId: string) => void;
+  variant?: "fork" | "edit";
+  initialTargetProvider?: AgentProvider | null;
+  initialFromMessageId?: string | null;
+  initialPrompt?: string;
 }
 
-interface UserMessage {
-  /** Client-side stream item ID (used only for React key). */
-  id: string;
-  text: string;
-  /** 0-based index among user messages — used to pick cutoff. */
-  userMessageIndex: number;
-}
-
-/** Wraps provider name for display. */
 function formatProviderLabel(provider: string): string {
   return provider
     .split(/[-_\s]+/)
@@ -48,88 +41,104 @@ export function HandoffSheet({
   currentProvider,
   streamItems,
   onForked,
+  variant = "fork",
+  initialTargetProvider = null,
+  initialFromMessageId = null,
+  initialPrompt = "",
 }: HandoffSheetProps) {
   const { theme } = useUnistyles();
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
   const { entries: providerEntries } = useProvidersSnapshot(serverId);
 
-  const [selectedProvider, setSelectedProvider] = useState<AgentProvider | null>(null);
-  const [selectedCutoffIndex, setSelectedCutoffIndex] = useState<number | null>(null);
+  const isEditVariant = variant === "edit";
+  const [selectedProvider, setSelectedProvider] = useState<AgentProvider | null>(
+    initialTargetProvider ?? currentProvider,
+  );
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(initialFromMessageId);
+  const [draftPrompt, setDraftPrompt] = useState(initialPrompt);
   const [isForking, setIsForking] = useState(false);
   const [forkError, setForkError] = useState<string | null>(null);
 
-  // Build list of available target providers (exclude current one, only show ready ones).
-  const targetProviders = useMemo(() => {
-    if (!providerEntries) return [];
-    return providerEntries.filter(
-      (entry) => entry.provider !== currentProvider && entry.status === "ready",
-    );
-  }, [providerEntries, currentProvider]);
-
-  // Extract user messages from stream items for the cutoff picker.
-  const userMessages = useMemo<UserMessage[]>(() => {
-    let index = 0;
-    const result: UserMessage[] = [];
-    for (const item of streamItems) {
-      if (item.kind === "user_message") {
-        result.push({ id: item.id, text: item.text, userMessageIndex: index });
-        index += 1;
-      }
+  useEffect(() => {
+    if (!visible) {
+      return;
     }
-    return result;
-  }, [streamItems]);
+    setSelectedProvider(initialTargetProvider ?? currentProvider);
+    setSelectedMessageId(initialFromMessageId);
+    setDraftPrompt(initialPrompt);
+    setForkError(null);
+  }, [currentProvider, initialFromMessageId, initialPrompt, initialTargetProvider, visible]);
+
+  const title = isEditVariant ? "Edit as new branch" : "Fork conversation";
+  const submitLabel = isEditVariant ? "Create branch" : "Fork";
+  const contextHint = isEditVariant
+    ? "Keep everything before the selected message, then send your edited version as the next prompt."
+    : "Keep the conversation up to the selected user message and drop later turns in the new branch.";
+
+  const targetProviders = useMemo(() => {
+    const readyProviders = new Map<
+      AgentProvider,
+      { provider: AgentProvider; label?: string | null }
+    >();
+    readyProviders.set(currentProvider, {
+      provider: currentProvider,
+      label: formatProviderLabel(currentProvider),
+    });
+
+    for (const entry of providerEntries ?? []) {
+      if (entry.status !== "ready") {
+        continue;
+      }
+      readyProviders.set(entry.provider as AgentProvider, {
+        provider: entry.provider as AgentProvider,
+        label: entry.label,
+      });
+    }
+
+    return [...readyProviders.values()].sort((left, right) => {
+      if (left.provider === currentProvider && right.provider !== currentProvider) {
+        return -1;
+      }
+      if (right.provider === currentProvider && left.provider !== currentProvider) {
+        return 1;
+      }
+      return left.provider.localeCompare(right.provider);
+    });
+  }, [currentProvider, providerEntries]);
+
+  const userMessages = useMemo(() => extractBranchableUserMessages(streamItems), [streamItems]);
 
   const handleClose = useCallback(() => {
-    if (isForking) return;
+    if (isForking) {
+      return;
+    }
     setForkError(null);
     onClose();
   }, [isForking, onClose]);
 
   const handleFork = useCallback(async () => {
-    if (!client || !selectedProvider || isForking) return;
+    if (!client || !selectedProvider || isForking) {
+      return;
+    }
+
+    const trimmedPrompt = draftPrompt.trim();
+    if (isEditVariant && (!selectedMessageId || trimmedPrompt.length === 0)) {
+      return;
+    }
 
     setIsForking(true);
     setForkError(null);
 
     try {
-      // Build targetConfig: only provider is required; rest inherits from source.
       const targetConfig: Partial<AgentSessionConfig> = {};
-
-      // Resolve fromMessageId via the timeline if user selected a cutoff.
-      // We pass nothing here and instead rely on the server to use the full
-      // timeline when fromMessageId is undefined.  For cutoff support the
-      // index-based approach: we fetch the timeline to get messageIds for the
-      // selected user message index.
-      let fromMessageId: string | undefined;
-
-      if (selectedCutoffIndex !== null && selectedCutoffIndex > 0) {
-        try {
-          const timelineResult = await client.fetchAgentTimeline(sourceAgentId, {
-            direction: "tail",
-            limit: 0,
-          });
-          let uMsgCount = 0;
-          for (const entry of timelineResult.entries) {
-            const item = entry.item;
-            if (item.type === "user_message") {
-              if (uMsgCount === selectedCutoffIndex) {
-                fromMessageId = item.messageId;
-                break;
-              }
-              uMsgCount += 1;
-            }
-          }
-        } catch {
-          // If we can't fetch the timeline, just use the full context.
-        }
-      }
-
       const result = await client.forkAgent({
         sourceAgentId,
         targetProvider: selectedProvider,
-        fromMessageId,
+        ...(selectedMessageId ? { fromMessageId: selectedMessageId } : {}),
+        ...(selectedMessageId ? { transcriptMode: isEditVariant ? "before" : "through" } : {}),
         targetConfig,
+        ...(trimmedPrompt ? { initialPrompt: trimmedPrompt } : {}),
       });
 
       onForked(result.newAgentId);
@@ -141,111 +150,137 @@ export function HandoffSheet({
     }
   }, [
     client,
-    selectedProvider,
-    isForking,
-    selectedCutoffIndex,
-    sourceAgentId,
-    onForked,
+    draftPrompt,
     handleClose,
+    isEditVariant,
+    isForking,
+    onForked,
+    selectedMessageId,
+    selectedProvider,
+    sourceAgentId,
   ]);
 
   return (
     <AdaptiveModalSheet
-      title="Hand off to another provider"
+      title={title}
       visible={visible}
       onClose={handleClose}
       snapPoints={["70%", "90%"]}
     >
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* Target provider selection */}
-        <Text style={styles.sectionTitle}>Target provider</Text>
-        {targetProviders.length === 0 ? (
-          <Text style={styles.emptyText}>
-            No other providers are available on this host. Configure additional providers in your
-            daemon settings.
+      <View style={styles.content}>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Target provider</Text>
+          <Text style={styles.sectionHint}>
+            Create the new branch on {formatProviderLabel(currentProvider)} or switch to another
+            ready provider.
           </Text>
-        ) : (
-          <View style={styles.providerList}>
-            {targetProviders.map((entry) => {
-              const isSelected = selectedProvider === entry.provider;
-              const ProviderIcon = getProviderIcon(entry.provider as AgentProvider);
-              return (
-                <Pressable
-                  key={entry.provider}
-                  style={[styles.optionRow, isSelected && styles.optionRowSelected]}
-                  onPress={() => setSelectedProvider(entry.provider as AgentProvider)}
-                >
-                  <View style={styles.optionLeft}>
-                    <ProviderIcon
-                      color={isSelected ? theme.colors.primaryForeground : theme.colors.foreground}
-                      size={18}
-                    />
-                    <Text style={[styles.optionLabel, isSelected && styles.optionLabelSelected]}>
-                      {entry.label ?? formatProviderLabel(entry.provider)}
-                    </Text>
-                  </View>
-                  {isSelected ? <Check color={theme.colors.primaryForeground} size={16} /> : null}
-                </Pressable>
-              );
-            })}
-          </View>
-        )}
+          {targetProviders.length === 0 ? (
+            <Text style={styles.emptyText}>No providers are available on this host right now.</Text>
+          ) : (
+            <View style={styles.optionList}>
+              {targetProviders.map((entry) => {
+                const isSelected = selectedProvider === entry.provider;
+                const ProviderIcon = getProviderIcon(entry.provider);
+                return (
+                  <Pressable
+                    key={entry.provider}
+                    style={[styles.optionRow, isSelected && styles.optionRowSelected]}
+                    onPress={() => setSelectedProvider(entry.provider)}
+                  >
+                    <View style={styles.optionLeft}>
+                      <ProviderIcon
+                        color={
+                          isSelected ? theme.colors.primaryForeground : theme.colors.foreground
+                        }
+                        size={18}
+                      />
+                      <Text style={[styles.optionLabel, isSelected && styles.optionLabelSelected]}>
+                        {entry.label ?? formatProviderLabel(entry.provider)}
+                      </Text>
+                    </View>
+                    {isSelected ? <Check color={theme.colors.primaryForeground} size={16} /> : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+        </View>
 
-        {/* Context cutoff picker — only shown when there are multiple user messages */}
-        {userMessages.length > 1 ? (
-          <>
-            <Text style={[styles.sectionTitle, styles.sectionTitleSpaced]}>Context to include</Text>
-            <Text style={styles.sectionHint}>
-              Pick the first message to include in the handoff. Earlier messages are omitted.
-            </Text>
-            <View style={styles.cutoffList}>
-              <Pressable
-                style={[styles.optionRow, selectedCutoffIndex === null && styles.optionRowSelected]}
-                onPress={() => setSelectedCutoffIndex(null)}
-              >
-                <Text
-                  style={[
-                    styles.optionLabel,
-                    selectedCutoffIndex === null && styles.optionLabelSelected,
-                  ]}
-                >
-                  All messages
-                </Text>
-                {selectedCutoffIndex === null ? (
-                  <Check color={theme.colors.primaryForeground} size={16} />
-                ) : null}
-              </Pressable>
-
-              {userMessages.map((msg) => (
+        {userMessages.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Branch point</Text>
+            <Text style={styles.sectionHint}>{contextHint}</Text>
+            <View style={styles.optionList}>
+              {!isEditVariant ? (
                 <Pressable
-                  key={msg.id}
-                  style={[
-                    styles.optionRow,
-                    selectedCutoffIndex === msg.userMessageIndex && styles.optionRowSelected,
-                  ]}
-                  onPress={() => setSelectedCutoffIndex(msg.userMessageIndex)}
+                  style={[styles.optionRow, selectedMessageId === null && styles.optionRowSelected]}
+                  onPress={() => setSelectedMessageId(null)}
                 >
                   <Text
                     style={[
                       styles.optionLabel,
-                      styles.cutoffMessageText,
-                      selectedCutoffIndex === msg.userMessageIndex && styles.optionLabelSelected,
+                      selectedMessageId === null && styles.optionLabelSelected,
+                    ]}
+                  >
+                    Entire conversation
+                  </Text>
+                  {selectedMessageId === null ? (
+                    <Check color={theme.colors.primaryForeground} size={16} />
+                  ) : null}
+                </Pressable>
+              ) : null}
+
+              {userMessages.map((message) => (
+                <Pressable
+                  key={message.id}
+                  style={[
+                    styles.optionRow,
+                    selectedMessageId === message.id && styles.optionRowSelected,
+                  ]}
+                  onPress={() => {
+                    setSelectedMessageId(message.id);
+                    if (isEditVariant) {
+                      setDraftPrompt(message.text);
+                    }
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.optionLabel,
+                      styles.optionMessageLabel,
+                      selectedMessageId === message.id && styles.optionLabelSelected,
                     ]}
                     numberOfLines={2}
                   >
-                    {msg.text}
+                    {message.text}
                   </Text>
-                  {selectedCutoffIndex === msg.userMessageIndex ? (
+                  {selectedMessageId === message.id ? (
                     <Check color={theme.colors.primaryForeground} size={16} />
                   ) : null}
                 </Pressable>
               ))}
             </View>
-          </>
+          </View>
+        ) : null}
+
+        {isEditVariant ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Edited prompt</Text>
+            <Text style={styles.sectionHint}>
+              The new branch sends this prompt after rebuilding context from the earlier
+              conversation.
+            </Text>
+            <AdaptiveTextInput
+              style={styles.textarea}
+              value={draftPrompt}
+              onChangeText={setDraftPrompt}
+              multiline
+              numberOfLines={6}
+              textAlignVertical="top"
+              placeholder="Update the message for the new branch"
+              placeholderTextColor={theme.colors.foregroundMuted}
+            />
+          </View>
         ) : null}
 
         {forkError ? <Text style={styles.errorText}>{forkError}</Text> : null}
@@ -259,7 +294,12 @@ export function HandoffSheet({
             size="md"
             leftIcon={isForking ? undefined : GitFork}
             onPress={handleFork}
-            disabled={!selectedProvider || !isConnected || isForking}
+            disabled={
+              !selectedProvider ||
+              !isConnected ||
+              isForking ||
+              (isEditVariant && (!selectedMessageId || draftPrompt.trim().length === 0))
+            }
           >
             {isForking ? (
               <View style={styles.loadingRow}>
@@ -267,22 +307,21 @@ export function HandoffSheet({
                 <Text style={styles.loadingText}>Forking…</Text>
               </View>
             ) : (
-              "Hand off"
+              submitLabel
             )}
           </Button>
         </View>
-      </ScrollView>
+      </View>
     </AdaptiveModalSheet>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
-  scrollView: {
-    flex: 1,
+  content: {
+    gap: 20,
   },
-  scrollContent: {
-    padding: theme.spacing[6],
-    gap: theme.spacing[4],
+  section: {
+    gap: theme.spacing[2],
   },
   sectionTitle: {
     color: theme.colors.foreground,
@@ -291,23 +330,15 @@ const styles = StyleSheet.create((theme) => ({
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
-  sectionTitleSpaced: {
-    marginTop: theme.spacing[4],
-  },
   sectionHint: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
-    marginTop: -theme.spacing[2],
-    marginBottom: theme.spacing[2],
   },
   emptyText: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
   },
-  providerList: {
-    gap: theme.spacing[2],
-  },
-  cutoffList: {
+  optionList: {
     gap: theme.spacing[2],
   },
   optionRow: {
@@ -341,20 +372,29 @@ const styles = StyleSheet.create((theme) => ({
   optionLabelSelected: {
     color: theme.colors.primaryForeground,
   },
-  cutoffMessageText: {
+  optionMessageLabel: {
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.normal,
+  },
+  textarea: {
+    minHeight: 140,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.lg,
+    paddingHorizontal: theme.spacing[4],
+    paddingVertical: theme.spacing[3],
+    color: theme.colors.foreground,
+    backgroundColor: theme.colors.surface1,
+    fontSize: theme.fontSize.base,
   },
   errorText: {
     color: theme.colors.destructive,
     fontSize: theme.fontSize.sm,
-    marginTop: theme.spacing[2],
   },
   footer: {
     flexDirection: "row",
     justifyContent: "flex-end",
     gap: theme.spacing[3],
-    marginTop: theme.spacing[4],
   },
   loadingRow: {
     flexDirection: "row",
