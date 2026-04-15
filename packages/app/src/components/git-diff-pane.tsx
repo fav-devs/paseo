@@ -6,6 +6,7 @@ import {
   ActivityIndicator,
   Pressable,
   FlatList,
+  PanResponder,
   TextInput,
   type LayoutChangeEvent,
   type NativeSyntheticEvent,
@@ -69,6 +70,10 @@ import { buildWorkspaceExplorerStateKey } from "@/hooks/use-file-explorer-action
 import { isWeb, isNative } from "@/constants/platform";
 
 export type { GitActionId, GitAction, GitActions } from "@/components/git-actions-policy";
+
+const GRAPH_HEIGHT_DEFAULT = 220;
+const GRAPH_HEIGHT_MIN = 100;
+const GRAPH_HEIGHT_MAX = 420;
 
 function openURLInNewTab(url: string): void {
   void openExternalUrl(url);
@@ -302,6 +307,7 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   const toast = useToast();
   const closeToAgent = usePanelStore((state) => state.closeToAgent);
   const [commitMessage, setCommitMessage] = useState("");
+  const [graphHeight, setGraphHeight] = useState(GRAPH_HEIGHT_DEFAULT);
   const [diffModeOverride, setDiffModeOverride] = useState<"uncommitted" | "base" | null>(null);
   const [postShipArchiveSuggested, setPostShipArchiveSuggested] = useState(false);
   const [shipDefault, setShipDefault] = useState<"merge" | "pr">("merge");
@@ -474,6 +480,34 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   const headerHeightByPathRef = useRef<Record<string, number>>({});
   const bodyHeightByPathRef = useRef<Record<string, number>>({});
   const defaultHeaderHeightRef = useRef<number>(44);
+  const graphHeightRef = useRef(graphHeight);
+  const graphResizeStartHeightRef = useRef(graphHeight);
+
+  useEffect(() => {
+    graphHeightRef.current = graphHeight;
+  }, [graphHeight]);
+
+  const graphResizePanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dy) > 2,
+        onPanResponderGrant: () => {
+          graphResizeStartHeightRef.current = graphHeightRef.current;
+        },
+        onPanResponderMove: (_, gestureState) => {
+          const nextHeight = Math.max(
+            GRAPH_HEIGHT_MIN,
+            Math.min(GRAPH_HEIGHT_MAX, graphResizeStartHeightRef.current + gestureState.dy),
+          );
+          if (nextHeight !== graphHeightRef.current) {
+            graphHeightRef.current = nextHeight;
+            setGraphHeight(nextHeight);
+          }
+        },
+      }),
+    [],
+  );
   const handleRefresh = useCallback(() => {
     setIsManualRefresh(true);
     void refreshDiff();
@@ -1236,58 +1270,6 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
             </Button>
           </View>
 
-          <View style={styles.graphSection}>
-            <View style={styles.graphSectionHeader}>
-              <View style={styles.diffSectionTitleGroup}>
-                <Text style={styles.sectionEyebrow}>Graph</Text>
-                <View style={styles.diffSectionNameRow}>
-                  <Text style={styles.diffSectionTitle}>Recent commits</Text>
-                  <View style={styles.countBadge}>
-                    <Text style={styles.countBadgeText}>{historyEntries.length}</Text>
-                  </View>
-                </View>
-              </View>
-            </View>
-
-            {isHistoryLoading ? (
-              <Text style={styles.graphMessage}>Loading history…</Text>
-            ) : historyErrorMessage ? (
-              <Text style={styles.graphErrorText}>{historyErrorMessage}</Text>
-            ) : historyEntries.length === 0 ? (
-              <Text style={styles.graphMessage}>No commit history yet.</Text>
-            ) : (
-              <View style={styles.graphList}>
-                {historyEntries.map((entry) => (
-                  <View key={entry.hash} style={styles.graphRow}>
-                    <Text style={styles.graphAscii}>{entry.graph || "*"}</Text>
-                    <View style={styles.graphContent}>
-                      <View style={styles.graphSubjectRow}>
-                        <Text style={styles.graphSubject} numberOfLines={1}>
-                          {entry.subject}
-                        </Text>
-                        <Text style={styles.graphMetaMuted}>{entry.shortHash}</Text>
-                      </View>
-                      <Text style={styles.graphMetaText} numberOfLines={1}>
-                        {entry.authorName} • {entry.authoredRelative}
-                      </Text>
-                      {entry.refs.length > 0 ? (
-                        <View style={styles.graphRefsRow}>
-                          {entry.refs.slice(0, 3).map((ref) => (
-                            <View key={`${entry.hash}-${ref}`} style={styles.graphRefBadge}>
-                              <Text style={styles.graphRefText} numberOfLines={1}>
-                                {ref}
-                              </Text>
-                            </View>
-                          ))}
-                        </View>
-                      ) : null}
-                    </View>
-                  </View>
-                ))}
-              </View>
-            )}
-          </View>
-
           <View style={styles.diffStatusContainer}>
             <View style={styles.diffSectionHeader}>
               <View style={styles.diffSectionTitleGroup}>
@@ -1519,6 +1501,78 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
                 ) : null}
               </View>
             </View>
+          </View>
+
+          <View style={styles.graphSection}>
+            <View style={styles.graphSectionHeader}>
+              <View style={styles.diffSectionTitleGroup}>
+                <Text style={styles.sectionEyebrow}>Graph</Text>
+                <View style={styles.diffSectionNameRow}>
+                  <Text style={styles.diffSectionTitle}>Recent commits</Text>
+                  <View style={styles.countBadge}>
+                    <Text style={styles.countBadgeText}>{historyEntries.length}</Text>
+                  </View>
+                </View>
+              </View>
+            </View>
+
+            {isHistoryLoading ? (
+              <Text style={styles.graphMessage}>Loading history…</Text>
+            ) : historyErrorMessage ? (
+              <Text style={styles.graphErrorText}>{historyErrorMessage}</Text>
+            ) : historyEntries.length === 0 ? (
+              <Text style={styles.graphMessage}>No commit history yet.</Text>
+            ) : (
+              <View style={styles.graphListContainer}>
+                <FlatList
+                  data={historyEntries}
+                  keyExtractor={(entry) => entry.hash}
+                  style={[styles.graphList, { height: graphHeight }]}
+                  nestedScrollEnabled
+                  initialNumToRender={8}
+                  maxToRenderPerBatch={10}
+                  windowSize={5}
+                  renderItem={({ item: entry }) => (
+                    <View style={styles.graphRow}>
+                      <Text style={styles.graphAscii}>{entry.graph || "*"}</Text>
+                      <View style={styles.graphContent}>
+                        <View style={styles.graphSubjectRow}>
+                          <Text style={styles.graphSubject} numberOfLines={1}>
+                            {entry.subject}
+                          </Text>
+                          <Text style={styles.graphMetaMuted}>{entry.shortHash}</Text>
+                        </View>
+                        <Text style={styles.graphMetaText} numberOfLines={1}>
+                          {entry.authorName} • {entry.authoredRelative}
+                        </Text>
+                        {entry.refs.length > 0 ? (
+                          <View style={styles.graphRefsRow}>
+                            {entry.refs.slice(0, 3).map((ref) => (
+                              <View key={`${entry.hash}-${ref}`} style={styles.graphRefBadge}>
+                                <Text style={styles.graphRefText} numberOfLines={1}>
+                                  {ref}
+                                </Text>
+                              </View>
+                            ))}
+                          </View>
+                        ) : null}
+                      </View>
+                    </View>
+                  )}
+                />
+                {!isMobile ? (
+                  <View
+                    style={[
+                      styles.graphResizeHandleTouch,
+                      isWeb && ({ cursor: "row-resize" } as any),
+                    ]}
+                    {...graphResizePanResponder.panHandlers}
+                  >
+                    <View style={styles.graphResizeHandle} />
+                  </View>
+                ) : null}
+              </View>
+            )}
           </View>
         </View>
       ) : null}
@@ -1781,12 +1835,26 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "space-between",
     gap: theme.spacing[2],
   },
+  graphListContainer: {
+    gap: theme.spacing[1],
+  },
   graphList: {
     borderWidth: 1,
     borderColor: theme.colors.border,
     borderRadius: theme.borderRadius.lg,
     overflow: "hidden",
     backgroundColor: theme.colors.background,
+  },
+  graphResizeHandleTouch: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: theme.spacing[1],
+  },
+  graphResizeHandle: {
+    width: 56,
+    height: 4,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.border,
   },
   graphRow: {
     flexDirection: "row",
