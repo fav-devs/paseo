@@ -4,6 +4,7 @@ import {
   Text,
   Pressable,
   Platform,
+  ActivityIndicator,
   type GestureResponderEvent,
   type LayoutChangeEvent,
   type TextStyle,
@@ -16,10 +17,12 @@ import {
   type HighlightStyle as HighlightStyleKey,
 } from "@getpaseo/highlight";
 import {
+  useCheckoutDiffQuery,
   type ParsedDiffFile,
   type DiffLine,
   type HighlightToken,
 } from "@/hooks/use-checkout-diff-query";
+import { useCheckoutStatusQuery } from "@/hooks/use-checkout-status-query";
 import { Fonts } from "@/constants/theme";
 import {
   buildSplitDiffRows,
@@ -27,6 +30,7 @@ import {
   type SplitDiffRow,
 } from "@/utils/diff-layout";
 import { buildHunkLineChatReference } from "@/utils/chat-reference-token";
+import { buildAbsoluteExplorerPath } from "@/utils/explorer-paths";
 import { lineNumberGutterWidth } from "@/components/code-insets";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { DiffScroll } from "./diff-scroll";
@@ -44,6 +48,8 @@ export interface GitDiffFileBodyProps {
   file: ParsedDiffFile;
   layout: "unified" | "split";
   wrapLines: boolean;
+  serverId: string;
+  cwd: string;
   hunkActionMode: HunkChatActionMode;
   onClearArmedLine?: () => void;
   onAddHunkReference?: (reference: string) => void;
@@ -125,6 +131,190 @@ export function ChatReferenceButton({
         <Text style={styles.tooltipText}>{tooltipLabel}</Text>
       </TooltipContent>
     </Tooltip>
+  );
+}
+
+function NestedDiffFileHeader({
+  file,
+  isExpanded,
+  onToggle,
+}: {
+  file: ParsedDiffFile;
+  isExpanded: boolean;
+  onToggle: (path: string) => void;
+}) {
+  return (
+    <Pressable
+      onPress={() => {
+        onToggle(file.path);
+      }}
+      style={({ pressed }) => [
+        styles.nestedFileHeader,
+        isExpanded && styles.nestedFileHeaderExpanded,
+        pressed && styles.nestedFileHeaderPressed,
+      ]}
+    >
+      <View style={styles.nestedFileHeaderLeft}>
+        <Text style={styles.nestedFileName}>{file.path.split("/").pop()}</Text>
+        <Text style={styles.nestedFileDir} numberOfLines={1}>
+          {file.path.includes("/") ? ` ${file.path.slice(0, file.path.lastIndexOf("/"))}` : ""}
+        </Text>
+        {file.isNew ? (
+          <View style={styles.fileBadgeAdded}>
+            <Text style={styles.fileBadgeAddedText}>New</Text>
+          </View>
+        ) : null}
+        {file.isDeleted ? (
+          <View style={styles.fileBadgeRemoved}>
+            <Text style={styles.fileBadgeRemovedText}>Deleted</Text>
+          </View>
+        ) : null}
+      </View>
+      <View style={styles.nestedFileHeaderRight}>
+        {file.isSubmodule ? (
+          <>
+            {file.submodule?.isDirty ? <Text style={styles.addLineNumberText}>+dirty</Text> : null}
+            <Text style={styles.addLineNumberText}>
+              +{file.submodule?.newCommit?.slice(0, 7) ?? "?"}
+            </Text>
+            <Text style={styles.removeLineNumberText}>
+              -{file.submodule?.oldCommit?.slice(0, 7) ?? "?"}
+            </Text>
+          </>
+        ) : (
+          <>
+            <Text style={styles.addLineNumberText}>+{file.additions}</Text>
+            <Text style={styles.removeLineNumberText}>-{file.deletions}</Text>
+          </>
+        )}
+      </View>
+    </Pressable>
+  );
+}
+
+function NestedDiffList({
+  serverId,
+  cwd,
+  layout,
+  wrapLines,
+  hunkActionMode,
+  onAddHunkReference,
+}: {
+  serverId: string;
+  cwd: string;
+  layout: "unified" | "split";
+  wrapLines: boolean;
+  hunkActionMode: HunkChatActionMode;
+  onAddHunkReference?: (reference: string) => void;
+}) {
+  const { status, isLoading: isStatusLoading } = useCheckoutStatusQuery({ serverId, cwd });
+  const gitStatus = status && status.isGit ? status : null;
+  const baseRef = gitStatus?.baseRef ?? undefined;
+  const hasUncommittedChanges = Boolean(gitStatus?.isDirty);
+  const diffMode = hasUncommittedChanges ? "uncommitted" : "base";
+  const { files, isLoading: isDiffLoading } = useCheckoutDiffQuery({
+    serverId,
+    cwd,
+    mode: diffMode,
+    baseRef,
+    enabled: Boolean(gitStatus),
+  });
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+
+  const handleToggle = useCallback((path: string) => {
+    setExpandedPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  }, []);
+
+  if (isStatusLoading || isDiffLoading) {
+    return (
+      <View style={styles.nestedDiffLoading}>
+        <ActivityIndicator size="small" />
+      </View>
+    );
+  }
+
+  if (files.length === 0) {
+    return (
+      <View style={styles.nestedDiffEmpty}>
+        <Text style={styles.nestedDiffEmptyText}>No changes in submodule</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.nestedDiffList}>
+      {files.map((nestedFile) => {
+        const isExpanded = expandedPaths.has(nestedFile.path);
+        return (
+          <View key={nestedFile.path}>
+            <NestedDiffFileHeader
+              file={nestedFile}
+              isExpanded={isExpanded}
+              onToggle={handleToggle}
+            />
+            {isExpanded ? (
+              <GitDiffFileBody
+                file={nestedFile}
+                layout={layout}
+                wrapLines={wrapLines}
+                serverId={serverId}
+                cwd={cwd}
+                hunkActionMode={hunkActionMode}
+                onAddHunkReference={onAddHunkReference}
+              />
+            ) : null}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function SubmoduleDiffBody({
+  file,
+  cwd,
+  serverId,
+  layout,
+  wrapLines,
+  hunkActionMode,
+  onAddHunkReference,
+}: {
+  file: ParsedDiffFile;
+  cwd: string;
+  serverId: string;
+  layout: "unified" | "split";
+  wrapLines: boolean;
+  hunkActionMode: HunkChatActionMode;
+  onAddHunkReference?: (reference: string) => void;
+}) {
+  const { theme } = useUnistyles();
+  const submodulePath = buildAbsoluteExplorerPath({
+    workspaceRoot: cwd,
+    entryPath: file.path,
+  });
+
+  return (
+    <View style={styles.submoduleBody}>
+      {file.submodule?.logSummary ? (
+        <Text style={styles.submoduleLogSummary(theme)}>{file.submodule.logSummary}</Text>
+      ) : null}
+      <NestedDiffList
+        serverId={serverId}
+        cwd={submodulePath}
+        layout={layout}
+        wrapLines={wrapLines}
+        hunkActionMode={hunkActionMode}
+        onAddHunkReference={onAddHunkReference}
+      />
+    </View>
   );
 }
 
@@ -490,6 +680,8 @@ const GitDiffFileBody = memo(function GitDiffFileBody({
   file,
   layout,
   wrapLines,
+  serverId,
+  cwd,
   hunkActionMode,
   onClearArmedLine,
   onAddHunkReference,
@@ -566,6 +758,20 @@ const GitDiffFileBody = memo(function GitDiffFileBody({
       testID={testID}
     >
       {(() => {
+        if (file.isSubmodule) {
+          return (
+            <SubmoduleDiffBody
+              file={file}
+              cwd={cwd}
+              serverId={serverId}
+              layout={layout}
+              wrapLines={wrapLines}
+              hunkActionMode={hunkActionMode}
+              onAddHunkReference={onAddHunkReference}
+            />
+          );
+        }
+
         if (file.status === "too_large" || file.status === "binary") {
           return (
             <View style={styles.statusMessageContainer}>
@@ -821,6 +1027,103 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
     fontStyle: "italic",
+  },
+  submoduleBody: {
+    padding: theme.spacing[4],
+    gap: theme.spacing[3],
+    borderTopWidth: theme.borderWidth[1],
+    borderTopColor: theme.colors.border,
+    backgroundColor: theme.colors.surface1,
+  },
+  submoduleLogSummary: (t: typeof theme) => ({
+    fontSize: t.fontSize.xs,
+    color: t.colors.foregroundMuted,
+    lineHeight: t.fontSize.xs * 1.5,
+  }),
+  nestedDiffList: {
+    marginTop: theme.spacing[2],
+    borderRadius: theme.borderRadius.base,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    overflow: "hidden",
+  },
+  nestedDiffLoading: {
+    padding: theme.spacing[4],
+    alignItems: "center",
+  },
+  nestedDiffEmpty: {
+    padding: theme.spacing[4],
+    alignItems: "center",
+  },
+  nestedDiffEmptyText: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+  },
+  nestedFileHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing[1],
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[2],
+    backgroundColor: theme.colors.surface2,
+    borderBottomWidth: theme.borderWidth[1],
+    borderBottomColor: theme.colors.border,
+  },
+  nestedFileHeaderExpanded: {
+    backgroundColor: theme.colors.surface1,
+  },
+  nestedFileHeaderPressed: {
+    opacity: 0.7,
+  },
+  nestedFileHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    flex: 1,
+    minWidth: 0,
+  },
+  nestedFileHeaderRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    flexShrink: 0,
+  },
+  nestedFileName: {
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.normal,
+    color: theme.colors.foreground,
+    flexShrink: 0,
+  },
+  nestedFileDir: {
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.normal,
+    color: theme.colors.foregroundMuted,
+    flex: 1,
+  },
+  fileBadgeAdded: {
+    backgroundColor: "rgba(46, 160, 67, 0.2)",
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+    borderRadius: theme.borderRadius.md,
+    flexShrink: 0,
+  },
+  fileBadgeAddedText: {
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.normal,
+    color: theme.colors.diffAddition,
+  },
+  fileBadgeRemoved: {
+    backgroundColor: "rgba(248, 81, 73, 0.2)",
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+    borderRadius: theme.borderRadius.md,
+    flexShrink: 0,
+  },
+  fileBadgeRemovedText: {
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.normal,
+    color: theme.colors.diffDeletion,
   },
   tooltipText: {
     fontSize: theme.fontSize.xs,

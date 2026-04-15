@@ -161,8 +161,22 @@ const DiffFileHeader = memo(function DiffFileHeader({
             )}
           </View>
           <View style={styles.fileHeaderRight}>
-            <Text style={styles.additions}>+{file.additions}</Text>
-            <Text style={styles.deletions}>-{file.deletions}</Text>
+            {file.isSubmodule ? (
+              <>
+                {file.submodule?.isDirty ? <Text style={styles.additions}>+dirty</Text> : null}
+                <Text style={styles.additions}>
+                  +{file.submodule?.newCommit?.slice(0, 7) ?? "?"}
+                </Text>
+                <Text style={styles.deletions}>
+                  -{file.submodule?.oldCommit?.slice(0, 7) ?? "?"}
+                </Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.additions}>+{file.additions}</Text>
+                <Text style={styles.deletions}>-{file.deletions}</Text>
+              </>
+            )}
           </View>
         </Pressable>
         {onAddFileReference ? (
@@ -699,6 +713,8 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
           onAddHunkReference={handleAddHunkReference}
           onBodyHeightChange={handleBodyHeightChange}
           testID={`diff-file-${item.fileIndex}-body`}
+          cwd={cwd}
+          serverId={serverId}
         />
       );
     },
@@ -711,6 +727,8 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
       handleToggleExpanded,
       hunkActionMode,
       wrapLines,
+      cwd,
+      serverId,
     ],
   );
 
@@ -1457,6 +1475,37 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.diffDeletion,
+  },
+  submoduleBody: {
+    padding: theme.spacing[4],
+    gap: theme.spacing[3],
+    borderTopWidth: theme.borderWidth[1],
+    borderTopColor: theme.colors.border,
+    backgroundColor: theme.colors.surface1,
+  },
+  submoduleLogSummary: (t: typeof theme) => ({
+    fontSize: t.fontSize.xs,
+    color: t.colors.foregroundMuted,
+    lineHeight: t.fontSize.xs * 1.5,
+  }),
+  nestedDiffList: {
+    marginTop: theme.spacing[2],
+    borderRadius: theme.borderRadius.base,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    overflow: "hidden",
+  },
+  nestedDiffLoading: {
+    padding: theme.spacing[4],
+    alignItems: "center",
+  },
+  nestedDiffEmpty: {
+    padding: theme.spacing[4],
+    alignItems: "center",
+  },
+  nestedDiffEmptyText: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
   },
   diffContent: {
     borderTopWidth: theme.borderWidth[1],
