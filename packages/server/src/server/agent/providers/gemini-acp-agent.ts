@@ -51,10 +51,6 @@ export class GeminiACPAgentClient extends ACPAgentClient {
     });
   }
 
-  override async isAvailable(): Promise<boolean> {
-    return super.isAvailable();
-  }
-
   async getDiagnostic(): Promise<{ diagnostic: string }> {
     try {
       const available = await this.isAvailable();
