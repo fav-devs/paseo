@@ -749,6 +749,131 @@ describe("ACPAgentSession", () => {
     ]);
   });
 
+  test("emits usage_updated for ACP usage updates and merges final prompt usage", async () => {
+    const session = createSession();
+    const events: AgentStreamEvent[] = [];
+    (session as any).sessionId = "session-1";
+    (session as any).activeForegroundTurnId = "turn-1";
+
+    session.subscribe((event) => {
+      events.push(event);
+    });
+
+    await session.sessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "usage_update",
+        size: 200_000,
+        used: 12_345,
+        cost: { amount: 0.0123, currency: "USD" },
+      } as any,
+    });
+
+    (session as any).handlePromptResponse(
+      {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 10,
+          cachedReadTokens: 3,
+          outputTokens: 7,
+        },
+      },
+      "turn-1",
+    );
+
+    expect(events).toContainEqual({
+      type: "usage_updated",
+      provider: "claude-acp",
+      usage: {
+        contextWindowMaxTokens: 200_000,
+        contextWindowUsedTokens: 12_345,
+        totalCostUsd: 0.0123,
+      },
+      turnId: "turn-1",
+    });
+    expect(events).toContainEqual({
+      type: "turn_completed",
+      provider: "claude-acp",
+      usage: {
+        contextWindowMaxTokens: 200_000,
+        contextWindowUsedTokens: 12_345,
+        totalCostUsd: 0.0123,
+        inputTokens: 10,
+        cachedInputTokens: 3,
+        outputTokens: 7,
+      },
+      turnId: "turn-1",
+    });
+  });
+
+  test("resets ACP usage between turns", async () => {
+    const session = createSession();
+    (session as any).currentTurnUsage = {
+      inputTokens: 99,
+      outputTokens: 88,
+    };
+    (session as any).connection = {
+      prompt: vi.fn().mockResolvedValue({ stopReason: "end_turn", usage: undefined }),
+    };
+    (session as any).sessionId = "session-1";
+
+    await session.startTurn("hello");
+
+    expect((session as any).currentTurnUsage).toBeUndefined();
+  });
+
+  test("splits large Gemini assistant chunks into smaller deltas", async () => {
+    const session = new ACPAgentSession(
+      {
+        provider: "gemini",
+        cwd: "/tmp/paseo-acp-test",
+      },
+      {
+        provider: "gemini",
+        logger: createTestLogger(),
+        defaultCommand: ["gemini", "--acp"],
+        defaultModes: [],
+        capabilities: {
+          supportsStreaming: true,
+          supportsSessionPersistence: true,
+          supportsDynamicModes: true,
+          supportsMcpServers: true,
+          supportsReasoningStream: true,
+          supportsToolInvocations: true,
+        },
+      },
+    );
+    const events: Array<{ type: string; item?: { type: string; text?: string } }> = [];
+    (session as any).sessionId = "session-1";
+
+    session.subscribe((event) => {
+      events.push(event as { type: string; item?: { type: string; text?: string } });
+    });
+
+    await session.sessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "assistant-1",
+        content: {
+          type: "text",
+          text: "line 1 alpha beta gamma\nline 2 alpha beta gamma\nline 3 alpha beta gamma",
+        },
+      } as any,
+    });
+
+    const timeline = events
+      .filter((event) => event.type === "timeline")
+      .map((event) => event.item)
+      .filter(Boolean);
+
+    expect(timeline.length).toBeGreaterThan(1);
+    expect(timeline.every((item) => item?.type === "assistant_message")).toBe(true);
+    expect(timeline.map((item) => item?.text ?? "").join("")).toBe(
+      "line 1 alpha beta gamma\nline 2 alpha beta gamma\nline 3 alpha beta gamma",
+    );
+  });
+
   test("startTurn returns before the ACP prompt settles and completes later via subscribers", async () => {
     const session = createSession();
     const events: Array<{ type: string; turnId?: string }> = [];

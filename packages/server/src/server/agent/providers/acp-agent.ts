@@ -214,6 +214,35 @@ export function mapACPUsage(usage: Usage | null | undefined): AgentUsage | undef
   };
 }
 
+function mergeAgentUsage(
+  current: AgentUsage | undefined,
+  next: AgentUsage | undefined,
+): AgentUsage | undefined {
+  if (!next) {
+    return current;
+  }
+
+  return {
+    ...current,
+    ...Object.fromEntries(Object.entries(next).filter(([, value]) => value !== undefined)),
+  };
+}
+
+function mapACPUsageUpdate(update: UsageUpdate): AgentUsage | undefined {
+  const totalCostUsd =
+    update.cost?.currency?.toUpperCase() === "USD" && typeof update.cost.amount === "number"
+      ? update.cost.amount
+      : undefined;
+
+  const usage: AgentUsage = {
+    contextWindowMaxTokens: update.size,
+    contextWindowUsedTokens: update.used,
+    ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
+  };
+
+  return usage;
+}
+
 export function deriveModesFromACP(
   fallbackModes: AgentMode[],
   modeState?: { availableModes?: SessionMode[] | null; currentModeId?: string | null } | null,
@@ -818,6 +847,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     const turnId = randomUUID();
     const messageId = randomUUID();
     this.activeForegroundTurnId = turnId;
+    this.currentTurnUsage = undefined;
     this.suppressUserEchoMessageId = messageId;
     this.suppressUserEchoText = extractPromptText(prompt);
     this.emitBootstrapThreadEvent();
@@ -1412,7 +1442,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   private translateSessionUpdate(update: SessionUpdate): AgentStreamEvent[] {
     switch (update.sessionUpdate) {
       case "user_message_chunk": {
-        const item = this.createMessageTimelineItem("user_message", update);
+        const [item] = this.createMessageTimelineItems("user_message", update);
         if (!item) {
           return [];
         }
@@ -1427,12 +1457,12 @@ export class ACPAgentSession implements AgentSession, ACPClient {
         return [this.wrapTimeline(item)];
       }
       case "agent_message_chunk": {
-        const item = this.createMessageTimelineItem("assistant_message", update);
-        return item ? [this.wrapTimeline(item)] : [];
+        const items = this.createMessageTimelineItems("assistant_message", update);
+        return items.map((item) => this.wrapTimeline(item));
       }
       case "agent_thought_chunk": {
-        const item = this.createMessageTimelineItem("reasoning", update);
-        return item ? [this.wrapTimeline(item)] : [];
+        const items = this.createMessageTimelineItems("reasoning", update);
+        return items.map((item) => this.wrapTimeline(item));
       }
       case "tool_call": {
         let snapshot = mergeToolSnapshot(update.toolCallId, update);
@@ -1478,20 +1508,20 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     }
   }
 
-  private createMessageTimelineItem(
+  private createMessageTimelineItems(
     type: "user_message" | "assistant_message" | "reasoning",
     update: Extract<
       SessionUpdate,
       { sessionUpdate: "user_message_chunk" | "agent_message_chunk" | "agent_thought_chunk" }
     >,
-  ):
+  ): Array<
     | { type: "user_message"; text: string; messageId?: string }
     | { type: "assistant_message"; text: string }
     | { type: "reasoning"; text: string }
-    | null {
+  > {
     const chunkText = contentBlockToText(update.content);
     if (!chunkText) {
-      return null;
+      return [];
     }
     const key = `${type}:${update.messageId ?? "default"}`;
     const state = this.messageAssemblies.get(key) ?? { text: "" };
@@ -1499,12 +1529,15 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.messageAssemblies.set(key, state);
 
     if (type === "user_message") {
-      return { type: "user_message", text: state.text, messageId: update.messageId ?? undefined };
+      return [{ type: "user_message", text: state.text, messageId: update.messageId ?? undefined }];
     }
     if (type === "assistant_message") {
-      return { type: "assistant_message", text: chunkText };
+      return splitAssistantTimelineChunks(this.provider, chunkText).map((text) => ({
+        type: "assistant_message" as const,
+        text,
+      }));
     }
-    return { type: "reasoning", text: chunkText };
+    return [{ type: "reasoning", text: chunkText }];
   }
 
   private handleCurrentModeUpdate(update: CurrentModeUpdate): void {
@@ -1543,11 +1576,22 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   }
 
   private handleUsageUpdate(update: UsageUpdate): void {
-    void update;
+    const usage = mergeAgentUsage(this.currentTurnUsage, mapACPUsageUpdate(update));
+    if (!usage) {
+      return;
+    }
+
+    this.currentTurnUsage = usage;
+    this.pushEvent({
+      type: "usage_updated",
+      provider: this.provider,
+      usage,
+      turnId: this.activeForegroundTurnId ?? undefined,
+    });
   }
 
   private handlePromptResponse(response: PromptResponse, turnId: string): void {
-    this.currentTurnUsage = mapACPUsage(response.usage) ?? this.currentTurnUsage;
+    this.currentTurnUsage = mergeAgentUsage(this.currentTurnUsage, mapACPUsage(response.usage));
 
     switch (response.stopReason) {
       case "cancelled":
@@ -1706,6 +1750,41 @@ function deriveCurrentConfigValue(
       entry.type === "select" && entry.category === category,
   );
   return option?.currentValue ?? null;
+}
+
+function splitAssistantTimelineChunks(provider: string, text: string): string[] {
+  if (provider !== "gemini" || text.length <= 48) {
+    return [text];
+  }
+
+  const tokens = text.match(/\S+\s*|\s+/g);
+  if (!tokens || tokens.length <= 1) {
+    return [text];
+  }
+
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const token of tokens) {
+    const next = `${current}${token}`;
+    const shouldFlush =
+      current.length > 0 &&
+      (next.length > 32 || (token.includes("\n") && current.trim().length > 0));
+
+    if (shouldFlush) {
+      chunks.push(current);
+      current = token;
+      continue;
+    }
+
+    current = next;
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  return chunks.length > 0 ? chunks : [text];
 }
 
 function normalizeMcpServers(servers?: Record<string, McpServerConfig>): McpServer[] {
