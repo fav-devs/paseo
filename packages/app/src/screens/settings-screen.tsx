@@ -60,6 +60,7 @@ import { LocalDaemonSection } from "@/desktop/components/desktop-updates-section
 import { PairDeviceSection } from "@/desktop/components/pair-device-section";
 import { isElectronRuntime } from "@/desktop/host";
 import { useDesktopAppUpdater } from "@/desktop/updates/use-desktop-app-updater";
+import { useExpoOtaUpdater } from "@/hooks/use-expo-ota-updater";
 import { formatVersionWithPrefix } from "@/desktop/updates/desktop-updates";
 import { resolveAppVersion } from "@/utils/app-version";
 import { settingsStyles } from "@/styles/settings";
@@ -860,7 +861,87 @@ function AboutSection({ appVersionText, isDesktopApp }: AboutSectionProps) {
           </View>
           <Text style={styles.aboutValue}>{appVersionText}</Text>
         </View>
-        {isDesktopApp ? <DesktopAppUpdateRow /> : null}
+        {isDesktopApp ? <DesktopAppUpdateRow /> : <ExpoOtaUpdateRow />}
+      </View>
+    </View>
+  );
+}
+
+function ExpoOtaUpdateRow() {
+  const {
+    showUi,
+    isOtaEnabled,
+    statusLabel,
+    infoMessage,
+    errorMessage,
+    isBusy,
+    canReload,
+    channelLabel,
+    runtimeVersionLabel,
+    currentUpdateId,
+    checkAndDownload,
+    applyReload,
+  } = useExpoOtaUpdater();
+
+  const handleCheckAndDownload = useCallback(() => {
+    void checkAndDownload();
+  }, [checkAndDownload]);
+
+  const handleReload = useCallback(() => {
+    void confirmDialog({
+      title: "Restart to update",
+      message: "The app will restart to load the new JavaScript bundle.",
+      confirmLabel: "Restart",
+      cancelLabel: "Cancel",
+    })
+      .then((confirmed) => {
+        if (confirmed) {
+          void applyReload();
+        }
+      })
+      .catch((error) => {
+        console.error("[Settings] Failed to open OTA reload confirmation", error);
+        Alert.alert("Error", "Unable to open the confirmation dialog.");
+      });
+  }, [applyReload]);
+
+  if (!showUi) {
+    return null;
+  }
+
+  const metaLineParts: string[] = [];
+  if (runtimeVersionLabel) {
+    metaLineParts.push(`Runtime ${runtimeVersionLabel}`);
+  }
+  if (channelLabel) {
+    metaLineParts.push(`Channel ${channelLabel}`);
+  }
+  if (currentUpdateId) {
+    metaLineParts.push(`Update id ${currentUpdateId.slice(0, 8)}…`);
+  }
+  const metaLine = metaLineParts.length > 0 ? metaLineParts.join(" · ") : null;
+
+  return (
+    <View style={[styles.audioRow, styles.audioRowBorder]}>
+      <View style={styles.audioRowContent}>
+        <Text style={styles.audioRowTitle}>Over-the-air update (EAS)</Text>
+        <Text style={styles.aboutHintText}>{statusLabel}</Text>
+        {metaLine ? <Text style={styles.aboutHintText}>{metaLine}</Text> : null}
+        {infoMessage ? <Text style={styles.aboutHintText}>{infoMessage}</Text> : null}
+        {errorMessage ? <Text style={styles.aboutErrorText}>{errorMessage}</Text> : null}
+      </View>
+      <View style={styles.aboutUpdateActions}>
+        <Button
+          variant="outline"
+          size="sm"
+          onPress={handleCheckAndDownload}
+          disabled={isBusy || !isOtaEnabled}
+        >
+          {isBusy ? "Working…" : "Check & download"}
+        </Button>
+        <Button variant="default" size="sm" onPress={handleReload} disabled={isBusy || !canReload}>
+          Restart to apply
+        </Button>
       </View>
     </View>
   );
