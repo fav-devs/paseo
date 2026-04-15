@@ -140,6 +140,23 @@ const CURSOR_MODES: AgentProviderModeDefinition[] = [
   },
 ];
 
+const GEMINI_MODES: AgentProviderModeDefinition[] = [
+  {
+    id: "agent",
+    label: "Agent",
+    description: "Standard Gemini CLI ACP mode for coding tasks",
+    icon: "ShieldAlert",
+    colorTier: "moderate",
+  },
+  {
+    id: "plan",
+    label: "Plan",
+    description: "Read-only planning and analysis without applying edits",
+    icon: "ShieldCheck",
+    colorTier: "planning",
+  },
+];
+
 export const AGENT_PROVIDER_DEFINITIONS: AgentProviderDefinition[] = [
   {
     id: "claude",
@@ -197,6 +214,13 @@ export const AGENT_PROVIDER_DEFINITIONS: AgentProviderDefinition[] = [
       "Cursor Agent via headless CLI (`agent -p --force`); install the `agent` binary and run `agent login`",
     defaultModeId: "agent",
     modes: CURSOR_MODES,
+  },
+  {
+    id: "gemini",
+    label: "Gemini",
+    description: "Google Gemini CLI via ACP (`gemini --acp`)",
+    defaultModeId: "agent",
+    modes: GEMINI_MODES,
   },
 ];
 

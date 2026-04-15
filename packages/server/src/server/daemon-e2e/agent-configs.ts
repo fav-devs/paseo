@@ -60,6 +60,13 @@ export const agentConfigs = {
     provider: "pi",
     thinkingOptionId: "medium",
   },
+  gemini: {
+    provider: "gemini",
+    modes: {
+      full: "agent",
+      ask: "agent",
+    },
+  },
 } as const satisfies Record<string, AgentTestConfig>;
 
 export type AgentProvider = keyof typeof agentConfigs;
@@ -132,6 +139,8 @@ export function isProviderAvailable(provider: AgentProvider): Promise<boolean> {
             Boolean(process.env.OPENROUTER_API_KEY) ||
             existsSync(join(homedir(), ".pi", "agent", "auth.json")))
         );
+      case "gemini":
+        return await isCommandAvailable("gemini");
     }
   })();
 
@@ -142,4 +151,11 @@ export function isProviderAvailable(provider: AgentProvider): Promise<boolean> {
 /**
  * Helper to run a test for each provider.
  */
-export const allProviders: AgentProvider[] = ["claude", "codex", "copilot", "opencode", "pi"];
+export const allProviders: AgentProvider[] = [
+  "claude",
+  "codex",
+  "copilot",
+  "opencode",
+  "pi",
+  "gemini",
+];

@@ -11,6 +11,7 @@ const PROVIDER_ICONS: Record<string, typeof Bot> = {
   copilot: CopilotIcon as unknown as typeof Bot,
   opencode: OpenCodeIcon as unknown as typeof Bot,
   pi: PiIcon as unknown as typeof Bot,
+  gemini: Bot,
 };
 
 export function getProviderIcon(provider: string): typeof Bot {

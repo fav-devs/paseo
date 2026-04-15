@@ -168,6 +168,7 @@ const PROVIDER_BINARIES: { label: string; binary: string }[] = [
   { label: "Claude", binary: "claude" },
   { label: "Codex", binary: "codex" },
   { label: "Cursor", binary: "agent" },
+  { label: "Gemini", binary: "gemini" },
   { label: "OpenCode", binary: "opencode" },
 ];
 

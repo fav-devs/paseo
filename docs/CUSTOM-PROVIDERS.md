@@ -34,7 +34,7 @@ Provider IDs must be lowercase alphanumeric with hyphens (`/^[a-z][a-z0-9-]*$/`)
 
 ## Extending a built-in provider
 
-Use `extends` to create a new provider entry that inherits from a built-in provider (claude, codex, copilot, opencode, pi). The new provider gets its own entry in the provider list, with its own label, environment, and model definitions.
+Use `extends` to create a new provider entry that inherits from a built-in provider (claude, codex, copilot, opencode, pi, gemini). The new provider gets its own entry in the provider list, with its own label, environment, and model definitions.
 
 ```json
 {
@@ -462,7 +462,7 @@ Each entry in the `models` array:
 
 ### Valid `extends` values
 
-Built-in providers: `claude`, `codex`, `copilot`, `opencode`, `pi`
+Built-in providers: `claude`, `codex`, `copilot`, `opencode`, `pi`, `gemini`
 
 Special value: `acp` — creates a generic ACP provider (requires `command`)
 
