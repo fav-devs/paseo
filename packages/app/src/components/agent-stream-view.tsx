@@ -43,6 +43,7 @@ import type { PendingPermission } from "@/types/shared";
 import type {
   AgentPermissionAction,
   AgentPermissionResponse,
+  AgentProvider,
 } from "@server/server/agent/agent-sdk-types";
 import type { AgentScreenAgent } from "@/hooks/use-agent-screen-state-machine";
 import { useSessionStore } from "@/stores/session-store";
@@ -68,6 +69,7 @@ import { MAX_CONTENT_WIDTH } from "@/constants/layout";
 import { normalizeInlinePathTarget } from "@/utils/inline-path";
 import { prepareWorkspaceTab } from "@/utils/workspace-navigation";
 import { useStableEvent } from "@/hooks/use-stable-event";
+import { buildRewindCommand } from "@/utils/conversation-branch";
 import {
   getWorkingIndicatorDotStrength,
   WORKING_INDICATOR_CYCLE_MS,
@@ -92,6 +94,9 @@ export interface AgentStreamViewProps {
   routeBottomAnchorRequest?: BottomAnchorRouteRequest | null;
   isAuthoritativeHistoryReady?: boolean;
   onOpenWorkspaceFile?: (input: { filePath: string }) => void;
+  currentProvider?: AgentProvider | null;
+  onForkMessage?: (input: { messageId: string; text: string }) => void;
+  onEditMessageAsBranch?: (input: { messageId: string; text: string }) => void;
 }
 
 const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamViewProps>(
@@ -105,6 +110,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       routeBottomAnchorRequest = null,
       isAuthoritativeHistoryReady = true,
       onOpenWorkspaceFile,
+      currentProvider,
+      onForkMessage,
+      onEditMessageAsBranch,
     },
     ref,
   ) {
@@ -221,6 +229,15 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         isMobileBreakpoint: isMobile,
       });
     }, [isMobile, streamHead, streamItems]);
+    const latestUserMessageId = useMemo(() => {
+      for (let index = streamItems.length - 1; index >= 0; index -= 1) {
+        const item = streamItems[index];
+        if (item?.kind === "user_message") {
+          return item.id;
+        }
+      }
+      return null;
+    }, [streamItems]);
     useImperativeHandle(
       ref,
       () => ({
@@ -316,11 +333,22 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             const isLastInGroup = belowItem?.kind !== "user_message";
             return (
               <UserMessage
+                id={item.id}
                 message={item.text}
                 images={item.images}
                 timestamp={item.timestamp.getTime()}
                 isFirstInGroup={isFirstInGroup}
                 isLastInGroup={isLastInGroup}
+                onForkFromHere={onForkMessage}
+                onEditAsBranch={
+                  buildRewindCommand({
+                    provider: currentProvider,
+                    selectedMessageId: item.id,
+                    latestUserMessageId,
+                  }) !== null
+                    ? onEditMessageAsBranch
+                    : undefined
+                }
               />
             );
           }

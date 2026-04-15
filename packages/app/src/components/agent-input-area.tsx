@@ -1,5 +1,5 @@
 import { View, Pressable, Text, ActivityIndicator } from "react-native";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useShallow } from "zustand/shallow";
@@ -14,6 +14,8 @@ import {
   type DraftAgentStatusBarProps,
 } from "./agent-status-bar";
 import { AgentQuotaBadge } from "./agent-quota-badge";
+import { AgentProviderComposerChip } from "./agent-provider-composer-chip";
+import { AgentUsageSummaryChip } from "./agent-usage-summary-chip";
 import { ContextWindowMeter } from "./context-window-meter";
 import { useImageAttachmentPicker } from "@/hooks/use-image-attachment-picker";
 import { useSessionStore } from "@/stores/session-store";
@@ -54,6 +56,8 @@ import { useAppSettings } from "@/hooks/use-settings";
 import { isWeb, isNative } from "@/constants/platform";
 import { markActiveChatComposer, registerActiveChatComposer } from "@/utils/active-chat-composer";
 import { buildComposerInsertResult } from "@/utils/composer-text-insert";
+import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
+import { resolveProviderDisplayLabel } from "@/utils/provider-definitions";
 
 type QueuedMessage = {
   id: string;
@@ -142,16 +146,28 @@ export function AgentInputArea({
 
   const { settings: appSettings } = useAppSettings();
 
+  const { entries: providerSnapshotEntries } = useProvidersSnapshot(serverId);
+
   const agentState = useSessionStore(
     useShallow((state) => {
       const agent = state.sessions[serverId]?.agents?.get(agentId) ?? null;
       return {
         status: agent?.status ?? null,
+        provider: agent?.provider ?? null,
+        lastUsage: agent?.lastUsage,
         contextWindowMaxTokens: agent?.lastUsage?.contextWindowMaxTokens ?? null,
         contextWindowUsedTokens: agent?.lastUsage?.contextWindowUsedTokens ?? null,
         lastQuota: agent?.lastQuota,
       };
     }),
+  );
+
+  const providerDisplayLabel = useMemo(
+    () =>
+      agentState.provider
+        ? resolveProviderDisplayLabel(agentState.provider, providerSnapshotEntries)
+        : null,
+    [agentState.provider, providerSnapshotEntries],
   );
 
   const queuedMessagesRaw = useSessionStore((state) =>
@@ -719,11 +735,26 @@ export function AgentInputArea({
 
   const beforeVoiceContent = (
     <View style={styles.footerIndicators}>
-      {agentState.lastQuota ? <AgentQuotaBadge quota={agentState.lastQuota} /> : null}
+      {agentState.provider && providerDisplayLabel ? (
+        <AgentProviderComposerChip providerId={agentState.provider} label={providerDisplayLabel} />
+      ) : null}
+      {agentState.lastUsage ? (
+        <AgentUsageSummaryChip
+          usage={agentState.lastUsage}
+          providerLabel={providerDisplayLabel ?? undefined}
+        />
+      ) : null}
+      {agentState.lastQuota ? (
+        <AgentQuotaBadge
+          quota={agentState.lastQuota}
+          providerLabel={providerDisplayLabel ?? undefined}
+        />
+      ) : null}
       {contextWindowMaxTokens !== null && contextWindowUsedTokens !== null ? (
         <ContextWindowMeter
           maxTokens={contextWindowMaxTokens}
           usedTokens={contextWindowUsedTokens}
+          providerLabel={providerDisplayLabel ?? undefined}
         />
       ) : null}
     </View>
@@ -894,6 +925,7 @@ const styles = StyleSheet.create(((theme: Theme) => ({
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: theme.spacing[2],
   },
   realtimeVoiceButton: {

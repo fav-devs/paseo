@@ -81,6 +81,13 @@ function resolveWorkspaceAgentTabLabel(title: string | null | undefined): string
   return normalized;
 }
 
+interface BranchSheetState {
+  variant: "fork" | "edit";
+  initialFromMessageId: string | null;
+  initialPrompt: string;
+  initialTargetProvider: Agent["provider"] | null;
+}
+
 function useAgentPanelDescriptor(
   target: { kind: "agent"; agentId: string },
   context: { serverId: string },
@@ -251,7 +258,7 @@ function AgentPanelBody({
   const router = useRouter();
   const panelToast = useToastHost();
   const { isArchivingAgent } = useArchiveAgent();
-  const [isHandoffSheetOpen, setIsHandoffSheetOpen] = useState(false);
+  const [branchSheetState, setBranchSheetState] = useState<BranchSheetState | null>(null);
   const streamViewRef = useRef<AgentStreamViewHandle>(null);
   const addImagesRef = useRef<((images: ImageAttachment[]) => void) | null>(null);
   const clearOnAgentBlurRef = useRef<() => void>(() => {});
@@ -279,13 +286,24 @@ function AgentPanelBody({
 
   const handleForked = useCallback(
     (newAgentId: string) => {
+      if (newAgentId === agentId) {
+        return;
+      }
       const route = buildHostAgentDetailRoute(serverId, newAgentId);
       if (route !== "/") {
         router.navigate(route as Parameters<typeof router.navigate>[0]);
       }
     },
-    [router, serverId],
+    [agentId, router, serverId],
   );
+
+  const openBranchSheet = useCallback((next: BranchSheetState) => {
+    setBranchSheetState(next);
+  }, []);
+
+  const closeBranchSheet = useCallback(() => {
+    setBranchSheetState(null);
+  }, []);
 
   const agentState = useSessionStore(
     useShallow((state) => {
@@ -789,6 +807,29 @@ function AgentPanelBody({
                 routeBottomAnchorRequest={routeBottomAnchorRequest}
                 isAuthoritativeHistoryReady={hasAppliedAuthoritativeHistory}
                 onOpenWorkspaceFile={onOpenWorkspaceFile}
+                currentProvider={agentState.provider}
+                onForkMessage={({ messageId }) => {
+                  if (!agentState.provider) {
+                    return;
+                  }
+                  openBranchSheet({
+                    variant: "fork",
+                    initialFromMessageId: messageId,
+                    initialPrompt: "",
+                    initialTargetProvider: agentState.provider,
+                  });
+                }}
+                onEditMessageAsBranch={({ messageId, text }) => {
+                  if (!agentState.provider) {
+                    return;
+                  }
+                  openBranchSheet({
+                    variant: "edit",
+                    initialFromMessageId: messageId,
+                    initialPrompt: text,
+                    initialTargetProvider: agentState.provider,
+                  });
+                }}
               />
             </ReanimatedAnimated.View>
           </View>
@@ -827,7 +868,17 @@ function AgentPanelBody({
             <ArchivedAgentCallout
               serverId={serverId}
               agentId={agentId}
-              onHandoff={isConnected ? () => setIsHandoffSheetOpen(true) : undefined}
+              onHandoff={
+                isConnected && agentState.provider
+                  ? () =>
+                      openBranchSheet({
+                        variant: "fork",
+                        initialFromMessageId: null,
+                        initialPrompt: "",
+                        initialTargetProvider: agentState.provider,
+                      })
+                  : undefined
+              }
             />
           ) : null}
 
@@ -857,13 +908,17 @@ function AgentPanelBody({
 
       {agentId && agentState.provider ? (
         <HandoffSheet
-          visible={isHandoffSheetOpen}
-          onClose={() => setIsHandoffSheetOpen(false)}
+          visible={branchSheetState !== null}
+          onClose={closeBranchSheet}
           serverId={serverId}
           sourceAgentId={agentId}
           currentProvider={agentState.provider}
           streamItems={streamItems}
           onForked={handleForked}
+          variant={branchSheetState?.variant ?? "fork"}
+          initialFromMessageId={branchSheetState?.initialFromMessageId ?? null}
+          initialPrompt={branchSheetState?.initialPrompt ?? ""}
+          initialTargetProvider={branchSheetState?.initialTargetProvider ?? agentState.provider}
         />
       ) : null}
     </View>

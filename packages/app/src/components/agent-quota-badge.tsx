@@ -6,6 +6,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 
 type AgentQuotaBadgeProps = {
   quota: AgentQuota;
+  /** Shown in the tooltip (e.g. Claude, Codex). */
+  providerLabel?: string;
 };
 
 function formatUtilization(utilization: number | undefined): string | null {
@@ -53,7 +55,7 @@ function formatResetDate(resetsAt: string | undefined): string | null {
   return resetDate.toLocaleString();
 }
 
-export function AgentQuotaBadge({ quota }: AgentQuotaBadgeProps) {
+export function AgentQuotaBadge({ quota, providerLabel }: AgentQuotaBadgeProps) {
   const { theme } = useUnistyles();
   const countdown = formatResetCountdown(quota.resetsAt);
   const resetDate = formatResetDate(quota.resetsAt);
@@ -99,7 +101,7 @@ export function AgentQuotaBadge({ quota }: AgentQuotaBadgeProps) {
             },
           ]}
           accessibilityRole="text"
-          accessibilityLabel={`Provider quota ${tone.label}${countdown ? `, ${countdown}` : ""}`}
+          accessibilityLabel={`${providerLabel ? `${providerLabel} ` : ""}Provider quota ${tone.label}${countdown ? `, ${countdown}` : ""}`}
         >
           <tone.Icon size={12} color={tone.icon} />
           <Text style={[styles.label, { color: tone.text }]} numberOfLines={1}>
@@ -109,7 +111,9 @@ export function AgentQuotaBadge({ quota }: AgentQuotaBadgeProps) {
       </TooltipTrigger>
       <TooltipContent side="top" align="center" offset={8}>
         <View style={styles.tooltipContent}>
-          <Text style={styles.tooltipTitle}>Provider quota</Text>
+          <Text style={styles.tooltipTitle}>
+            {providerLabel ? `${providerLabel} · Rate limit` : "Provider quota"}
+          </Text>
           <Text style={styles.tooltipText}>{`Status: ${tone.label}`}</Text>
           {quota.limitKind ? (
             <Text style={styles.tooltipText}>{`Window: ${quota.limitKind}`}</Text>

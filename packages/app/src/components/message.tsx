@@ -38,6 +38,8 @@ import {
   CheckSquare,
   X,
   Copy,
+  GitFork,
+  PencilLine,
   TriangleAlertIcon,
   Scissors,
   MicVocal,
@@ -88,12 +90,15 @@ import type { DaemonClient } from "@server/client/daemon-client";
 import { isWeb, isNative } from "@/constants/platform";
 
 interface UserMessageProps {
+  id?: string;
   message: string;
   images?: UserMessageImageAttachment[];
   timestamp: number;
   isFirstInGroup?: boolean;
   isLastInGroup?: boolean;
   disableOuterSpacing?: boolean;
+  onForkFromHere?: (input: { messageId: string; text: string }) => void;
+  onEditAsBranch?: (input: { messageId: string; text: string }) => void;
 }
 
 const MessageOuterSpacingContext = createContext(false);
@@ -313,8 +318,13 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface1,
   },
   copyButton: {
-    alignSelf: "flex-end",
     padding: theme.spacing[1],
+  },
+  actionRow: {
+    flexDirection: "row",
+    alignSelf: "flex-end",
+    alignItems: "center",
+    gap: theme.spacing[1],
     marginTop: theme.spacing[2],
   },
   copyButtonHidden: {
@@ -334,20 +344,23 @@ function UserMessageAttachmentThumbnail({ image }: { image: UserMessageImageAtta
 }
 
 export const UserMessage = memo(function UserMessage({
+  id,
   message,
   images = [],
   timestamp,
   isFirstInGroup = true,
   isLastInGroup = true,
   disableOuterSpacing,
+  onForkFromHere,
+  onEditAsBranch,
 }: UserMessageProps) {
   const isCompact = useIsCompactFormFactor();
   const [messageHovered, setMessageHovered] = useState(false);
-  const [copyButtonHovered, setCopyButtonHovered] = useState(false);
+  const [actionButtonsHovered, setActionButtonsHovered] = useState(false);
   const resolvedDisableOuterSpacing = useDisableOuterSpacing(disableOuterSpacing);
   const hasText = message.trim().length > 0;
   const hasImages = images.length > 0;
-  const showCopyButton = hasText && (isCompact || messageHovered || copyButtonHovered);
+  const showActions = hasText && (isCompact || isNative || messageHovered || actionButtonsHovered);
 
   return (
     <View
@@ -387,17 +400,37 @@ export const UserMessage = memo(function UserMessage({
           ) : null}
         </View>
         {hasText ? (
-          <TurnCopyButton
-            getContent={() => message}
-            containerStyle={[
-              userMessageStylesheet.copyButton,
-              showCopyButton
+          <View
+            style={[
+              userMessageStylesheet.actionRow,
+              showActions
                 ? userMessageStylesheet.copyButtonVisible
                 : userMessageStylesheet.copyButtonHidden,
             ]}
-            accessibilityLabel="Copy message"
-            onHoverChange={setCopyButtonHovered}
-          />
+          >
+            {id && onForkFromHere ? (
+              <TurnIconButton
+                icon={GitFork}
+                onPress={() => onForkFromHere({ messageId: id, text: message })}
+                accessibilityLabel="Fork conversation from this message"
+                onHoverChange={setActionButtonsHovered}
+              />
+            ) : null}
+            {id && onEditAsBranch ? (
+              <TurnIconButton
+                icon={PencilLine}
+                onPress={() => onEditAsBranch({ messageId: id, text: message })}
+                accessibilityLabel="Edit this message as a new branch"
+                onHoverChange={setActionButtonsHovered}
+              />
+            ) : null}
+            <TurnCopyButton
+              getContent={() => message}
+              containerStyle={userMessageStylesheet.copyButton}
+              accessibilityLabel="Copy message"
+              onHoverChange={setActionButtonsHovered}
+            />
+          </View>
         ) : null}
       </Pressable>
     </View>
@@ -739,6 +772,40 @@ interface TurnCopyButtonProps {
   copiedAccessibilityLabel?: string;
   onHoverChange?: (hovered: boolean) => void;
 }
+
+interface TurnIconButtonProps {
+  icon: ComponentType<{ size?: number; color?: string }>;
+  onPress: () => void;
+  containerStyle?: StyleProp<ViewStyle>;
+  accessibilityLabel: string;
+  onHoverChange?: (hovered: boolean) => void;
+}
+
+const TurnIconButton = memo(function TurnIconButton({
+  icon: Icon,
+  onPress,
+  containerStyle,
+  accessibilityLabel,
+  onHoverChange,
+}: TurnIconButtonProps) {
+  return (
+    <Pressable
+      onPress={onPress}
+      onHoverIn={() => onHoverChange?.(true)}
+      onHoverOut={() => onHoverChange?.(false)}
+      style={[turnCopyButtonStylesheet.container, containerStyle]}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+    >
+      {({ hovered }) => {
+        const iconColor = hovered
+          ? turnCopyButtonStylesheet.iconHoveredColor.color
+          : turnCopyButtonStylesheet.iconColor.color;
+        return <Icon size={18} color={iconColor} />;
+      }}
+    </Pressable>
+  );
+});
 
 export const TurnCopyButton = memo(function TurnCopyButton({
   getContent,

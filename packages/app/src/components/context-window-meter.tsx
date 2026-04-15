@@ -2,10 +2,13 @@ import { Pressable, Text, View } from "react-native";
 import Svg, { Circle } from "react-native-svg";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { formatTokenCountShort } from "@/utils/format-tokens";
 
 type ContextWindowMeterProps = {
   maxTokens: number;
   usedTokens: number;
+  /** Optional label for the tooltip title (e.g. Claude). */
+  providerLabel?: string;
 };
 
 const SVG_SIZE = 20;
@@ -33,16 +36,6 @@ function clampPercentage(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
-function formatTokenCount(value: number): string {
-  if (value >= 1_000_000) {
-    return `${Math.round(value / 1_000_000)}m`;
-  }
-  if (value >= 1_000) {
-    return `${Math.round(value / 1_000)}k`;
-  }
-  return Math.round(value).toString();
-}
-
 function getMeterColors(
   percentage: number,
   theme: ReturnType<typeof useUnistyles>["theme"],
@@ -57,7 +50,11 @@ function getMeterColors(
   return { progress: theme.colors.foregroundMuted, track };
 }
 
-export function ContextWindowMeter({ maxTokens, usedTokens }: ContextWindowMeterProps) {
+export function ContextWindowMeter({
+  maxTokens,
+  usedTokens,
+  providerLabel,
+}: ContextWindowMeterProps) {
   const { theme } = useUnistyles();
   const percentage = getUsagePercentage(maxTokens, usedTokens);
 
@@ -110,11 +107,13 @@ export function ContextWindowMeter({ maxTokens, usedTokens }: ContextWindowMeter
       </TooltipTrigger>
       <TooltipContent side="top" align="center" offset={8}>
         <View style={styles.tooltipContent}>
-          <Text style={styles.tooltipTitle}>Context window</Text>
+          <Text style={styles.tooltipTitle}>
+            {providerLabel ? `${providerLabel} · Context window` : "Context window"}
+          </Text>
           <Text style={styles.tooltipText}>{`${roundedPercentage}% used`}</Text>
           <Text
             style={styles.tooltipDetail}
-          >{`${formatTokenCount(usedTokens)} / ${formatTokenCount(maxTokens)} tokens`}</Text>
+          >{`${formatTokenCountShort(usedTokens)} / ${formatTokenCountShort(maxTokens)} tokens`}</Text>
         </View>
       </TooltipContent>
     </Tooltip>

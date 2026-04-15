@@ -12,7 +12,7 @@ import type { Theme } from "@/styles/theme";
 interface ArchivedAgentCalloutProps {
   serverId: string;
   agentId: string;
-  /** Optional callback to open the provider handoff sheet. */
+  /** Optional callback to open the branch / provider handoff sheet. */
   onHandoff?: () => void;
 }
 

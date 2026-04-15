@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Text, View, Pressable } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { Check, GitFork } from "lucide-react-native";
+import { AlertTriangle, Check, GitFork, RotateCcw } from "lucide-react-native";
 import { AdaptiveModalSheet, AdaptiveTextInput } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { getProviderIcon } from "@/components/provider-icons";
@@ -9,7 +9,11 @@ import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import type { AgentProvider, AgentSessionConfig } from "@server/server/agent/agent-sdk-types";
 import type { StreamItem } from "@/types/stream";
-import { extractBranchableUserMessages } from "@/utils/conversation-branch";
+import {
+  buildRewindCommand,
+  extractBranchableUserMessages,
+  supportsNativeRewind,
+} from "@/utils/conversation-branch";
 
 export interface HandoffSheetProps {
   visible: boolean;
@@ -70,12 +74,6 @@ export function HandoffSheet({
     setForkError(null);
   }, [currentProvider, initialFromMessageId, initialPrompt, initialTargetProvider, visible]);
 
-  const title = isEditVariant ? "Edit as new branch" : "Fork conversation";
-  const submitLabel = isEditVariant ? "Create branch" : "Fork";
-  const contextHint = isEditVariant
-    ? "Keep everything before the selected message, then send your edited version as the next prompt."
-    : "Keep the conversation up to the selected user message and drop later turns in the new branch.";
-
   const targetProviders = useMemo(() => {
     const readyProviders = new Map<
       AgentProvider,
@@ -108,6 +106,47 @@ export function HandoffSheet({
   }, [currentProvider, providerEntries]);
 
   const userMessages = useMemo(() => extractBranchableUserMessages(streamItems), [streamItems]);
+  const latestUserMessageId = userMessages.at(-1)?.id ?? null;
+  const isProviderSwitch = selectedProvider !== null && selectedProvider !== currentProvider;
+  const rewindCommand = useMemo(
+    () =>
+      buildRewindCommand({
+        provider: currentProvider,
+        selectedMessageId,
+        latestUserMessageId,
+      }),
+    [currentProvider, latestUserMessageId, selectedMessageId],
+  );
+  const canNativeRewind =
+    isEditVariant &&
+    !isProviderSwitch &&
+    supportsNativeRewind(currentProvider) &&
+    rewindCommand !== null;
+  const title = isEditVariant
+    ? isProviderSwitch
+      ? "Hand off edited prompt"
+      : canNativeRewind
+        ? "Rewind and rerun"
+        : "Native rewind unavailable"
+    : isProviderSwitch
+      ? "Hand off conversation"
+      : "Fork conversation";
+  const submitLabel = isEditVariant
+    ? isProviderSwitch
+      ? "Hand off"
+      : "Rewind and rerun"
+    : isProviderSwitch
+      ? "Hand off"
+      : "Fork";
+  const contextHint = isEditVariant
+    ? isProviderSwitch
+      ? "Changing providers creates a handoff. The new agent keeps earlier context and starts from your edited prompt."
+      : canNativeRewind
+        ? "This uses the provider's native rewind support, restores tracked files, and reruns from your edited prompt."
+        : "This provider session cannot natively rewind this selected turn. Switch providers to hand off instead."
+    : isProviderSwitch
+      ? "Switching providers creates a handoff that carries over the selected conversation context."
+      : "Keep the conversation up to the selected user message and drop later turns in the new branch.";
 
   const handleClose = useCallback(() => {
     if (isForking) {
@@ -117,7 +156,7 @@ export function HandoffSheet({
     onClose();
   }, [isForking, onClose]);
 
-  const handleFork = useCallback(async () => {
+  const handleSubmit = useCallback(async () => {
     if (!client || !selectedProvider || isForking) {
       return;
     }
@@ -131,6 +170,18 @@ export function HandoffSheet({
     setForkError(null);
 
     try {
+      if (isEditVariant && !isProviderSwitch) {
+        if (!rewindCommand) {
+          throw new Error("Native rewind is not available for this selected message.");
+        }
+        await client.sendAgentMessage(sourceAgentId, rewindCommand);
+        await client.waitForFinish(sourceAgentId, 120000);
+        await client.sendAgentMessage(sourceAgentId, trimmedPrompt);
+        onForked(sourceAgentId);
+        handleClose();
+        return;
+      }
+
       const targetConfig: Partial<AgentSessionConfig> = {};
       const result = await client.forkAgent({
         sourceAgentId,
@@ -149,12 +200,15 @@ export function HandoffSheet({
       setIsForking(false);
     }
   }, [
+    canNativeRewind,
     client,
     draftPrompt,
     handleClose,
     isEditVariant,
     isForking,
+    isProviderSwitch,
     onForked,
+    rewindCommand,
     selectedMessageId,
     selectedProvider,
     sourceAgentId,
@@ -171,8 +225,9 @@ export function HandoffSheet({
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Target provider</Text>
           <Text style={styles.sectionHint}>
-            Create the new branch on {formatProviderLabel(currentProvider)} or switch to another
-            ready provider.
+            {isEditVariant
+              ? "Stay on the current provider to use native rewind when available, or switch providers to hand off the conversation."
+              : `Create the new conversation on ${formatProviderLabel(currentProvider)} or switch providers to hand off.`}
           </Text>
           {targetProviders.length === 0 ? (
             <Text style={styles.emptyText}>No providers are available on this host right now.</Text>
@@ -208,7 +263,9 @@ export function HandoffSheet({
 
         {userMessages.length > 0 ? (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Branch point</Text>
+            <Text style={styles.sectionTitle}>
+              {isEditVariant && !isProviderSwitch ? "Rewind point" : "Conversation point"}
+            </Text>
             <Text style={styles.sectionHint}>{contextHint}</Text>
             <View style={styles.optionList}>
               {!isEditVariant ? (
@@ -267,8 +324,9 @@ export function HandoffSheet({
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Edited prompt</Text>
             <Text style={styles.sectionHint}>
-              The new branch sends this prompt after rebuilding context from the earlier
-              conversation.
+              {isProviderSwitch
+                ? "The new provider receives this edited prompt after rebuilding context from the earlier conversation."
+                : "After rewinding, the current provider reruns the conversation from this edited prompt."}
             </Text>
             <AdaptiveTextInput
               style={styles.textarea}
@@ -277,9 +335,19 @@ export function HandoffSheet({
               multiline
               numberOfLines={6}
               textAlignVertical="top"
-              placeholder="Update the message for the new branch"
+              placeholder="Update the message to rerun"
               placeholderTextColor={theme.colors.foregroundMuted}
             />
+          </View>
+        ) : null}
+
+        {isEditVariant && !isProviderSwitch && !canNativeRewind ? (
+          <View style={styles.warningCard}>
+            <AlertTriangle size={16} color={theme.colors.destructive} />
+            <Text style={styles.warningText}>
+              Native rewind is currently surfaced for Claude only when Paseo can address the
+              selected message. For older local turns, switch providers to hand off instead.
+            </Text>
           </View>
         ) : null}
 
@@ -292,19 +360,24 @@ export function HandoffSheet({
           <Button
             variant="default"
             size="md"
-            leftIcon={isForking ? undefined : GitFork}
-            onPress={handleFork}
+            leftIcon={isForking ? undefined : canNativeRewind ? RotateCcw : GitFork}
+            onPress={handleSubmit}
             disabled={
               !selectedProvider ||
               !isConnected ||
               isForking ||
-              (isEditVariant && (!selectedMessageId || draftPrompt.trim().length === 0))
+              (isEditVariant &&
+                (!selectedMessageId ||
+                  draftPrompt.trim().length === 0 ||
+                  (!isProviderSwitch && !canNativeRewind)))
             }
           >
             {isForking ? (
               <View style={styles.loadingRow}>
                 <ActivityIndicator size="small" color={theme.colors.primaryForeground} />
-                <Text style={styles.loadingText}>Forking…</Text>
+                <Text style={styles.loadingText}>
+                  {canNativeRewind && !isProviderSwitch ? "Rewinding…" : "Forking…"}
+                </Text>
               </View>
             ) : (
               submitLabel
@@ -389,6 +462,21 @@ const styles = StyleSheet.create((theme) => ({
   },
   errorText: {
     color: theme.colors.destructive,
+    fontSize: theme.fontSize.sm,
+  },
+  warningCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: theme.spacing[2],
+    padding: theme.spacing[3],
+    borderRadius: theme.borderRadius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.borderAccent,
+    backgroundColor: theme.colors.surface2,
+  },
+  warningText: {
+    flex: 1,
+    color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
   },
   footer: {

@@ -1,5 +1,6 @@
-import type { ProviderSnapshotEntry, AgentProvider } from "@server/server/agent/agent-sdk-types";
+import type { ProviderSnapshotEntry } from "@server/server/agent/agent-sdk-types";
 import {
+  AGENT_PROVIDER_DEFINITIONS,
   type AgentModeColorTier,
   type AgentModeIcon,
   type AgentProviderDefinition,
@@ -37,6 +38,21 @@ export function resolveProviderLabel(
   snapshotEntries: ProviderSnapshotEntry[] | undefined,
 ): string {
   return snapshotEntries?.find((entry) => entry.provider === provider)?.label ?? provider;
+}
+
+/** Prefer daemon snapshot labels, then built-in manifest names (e.g. Claude), else the raw id. */
+export function resolveProviderDisplayLabel(
+  provider: string,
+  snapshotEntries: ProviderSnapshotEntry[] | undefined,
+): string {
+  const fromSnapshot = snapshotEntries?.find((entry) => entry.provider === provider)?.label;
+  if (fromSnapshot) {
+    return fromSnapshot;
+  }
+  const builtin = AGENT_PROVIDER_DEFINITIONS.find(
+    (definition) => definition.id === provider,
+  )?.label;
+  return builtin ?? provider;
 }
 
 export function resolveProviderDefinition(
