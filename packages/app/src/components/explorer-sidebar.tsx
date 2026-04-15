@@ -11,7 +11,7 @@ import { useIsFocused } from "@react-navigation/native";
 import Animated, { useAnimatedStyle, useSharedValue, runOnJS } from "react-native-reanimated";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { X } from "lucide-react-native";
+import { Activity, X } from "lucide-react-native";
 import {
   usePanelStore,
   MIN_EXPLORER_SIDEBAR_WIDTH,
@@ -22,6 +22,7 @@ import { useExplorerSidebarAnimation } from "@/contexts/explorer-sidebar-animati
 import { HEADER_INNER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout";
 import { GitDiffPane } from "./git-diff-pane";
 import { FileExplorerPane } from "./file-explorer-pane";
+import { SystemMonitorPane } from "./system-monitor-pane";
 import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { useWindowControlsPadding } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
@@ -381,6 +382,25 @@ function SidebarContent({
               Files
             </Text>
           </Pressable>
+          <Pressable
+            testID="explorer-tab-system-monitor"
+            style={[styles.tab, resolvedTab === "system-monitor" && styles.tabActive]}
+            onPress={() => onTabPress("system-monitor")}
+          >
+            <Activity
+              size={14}
+              color={
+                resolvedTab === "system-monitor"
+                  ? theme.colors.foreground
+                  : theme.colors.foregroundMuted
+              }
+            />
+            <Text
+              style={[styles.tabText, resolvedTab === "system-monitor" && styles.tabTextActive]}
+            >
+              System
+            </Text>
+          </Pressable>
         </View>
         <View style={styles.headerRightSection}>
           {isMobile && (
@@ -409,6 +429,7 @@ function SidebarContent({
             onOpenFile={onOpenFile}
           />
         )}
+        {resolvedTab === "system-monitor" && <SystemMonitorPane serverId={serverId} />}
       </View>
     </View>
   );

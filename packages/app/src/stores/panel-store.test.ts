@@ -44,6 +44,20 @@ describe("panel-store explorer tab resolution", () => {
     ).toBe("files");
   });
 
+  it("restores a stored system monitor tab for git checkouts", () => {
+    const key = buildExplorerCheckoutKey(serverId, cwd)!;
+    expect(
+      resolveExplorerTabForCheckout({
+        serverId,
+        cwd,
+        isGit: true,
+        explorerTabByCheckout: {
+          [key]: "system-monitor",
+        },
+      }),
+    ).toBe("system-monitor");
+  });
+
   it("falls back to default when stored tab is invalid", () => {
     const key = buildExplorerCheckoutKey(serverId, cwd)!;
     expect(
@@ -70,5 +84,19 @@ describe("panel-store explorer tab resolution", () => {
         },
       }),
     ).toBe("files");
+  });
+
+  it("preserves system monitor for non-git checkouts", () => {
+    const key = buildExplorerCheckoutKey(serverId, cwd)!;
+    expect(
+      resolveExplorerTabForCheckout({
+        serverId,
+        cwd,
+        isGit: false,
+        explorerTabByCheckout: {
+          [key]: "system-monitor",
+        },
+      }),
+    ).toBe("system-monitor");
   });
 });
