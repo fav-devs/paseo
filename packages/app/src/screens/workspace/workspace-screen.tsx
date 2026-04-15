@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Clipboard from "expo-clipboard";
 import {
   Activity,
+  AudioLines,
   CopyX,
   ArrowLeftToLine,
   ArrowRightToLine,
@@ -793,11 +794,13 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
 
   const mobileView = usePanelStore((state) => state.mobileView);
   const desktopFileExplorerOpen = usePanelStore((state) => state.desktop.fileExplorerOpen);
+  const explorerTab = usePanelStore((state) => state.explorerTab);
   const toggleFileExplorer = usePanelStore((state) => state.toggleFileExplorer);
   const openFileExplorer = usePanelStore((state) => state.openFileExplorer);
   const activateExplorerTabForCheckout = usePanelStore(
     (state) => state.activateExplorerTabForCheckout,
   );
+  const setExplorerTabForCheckout = usePanelStore((state) => state.setExplorerTabForCheckout);
   const closeToAgent = usePanelStore((state) => state.closeToAgent);
   const setActiveExplorerCheckout = usePanelStore((state) => state.setActiveExplorerCheckout);
 
@@ -833,6 +836,17 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
     }
     openExplorerForWorkspace();
   }, [isExplorerOpen, openExplorerForWorkspace, toggleFileExplorer]);
+
+  const handleOpenSpotifyPlayer = useCallback(() => {
+    if (!activeExplorerCheckout) {
+      return;
+    }
+    setExplorerTabForCheckout({
+      ...activeExplorerCheckout,
+      tab: "spotify",
+    });
+    openFileExplorer();
+  }, [activeExplorerCheckout, openFileExplorer, setExplorerTabForCheckout]);
 
   const explorerOpenGesture = useExplorerOpenGesture({
     enabled: isMobile && mobileView === "agent",
@@ -2187,6 +2201,48 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
                       onRunAction={handleRunProjectAction}
                     />
                   ) : null}
+                  <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+                    <TooltipTrigger asChild>
+                      <Pressable
+                        testID="workspace-spotify-preview"
+                        accessibilityRole="button"
+                        accessibilityLabel="Open Spotify player"
+                        accessibilityState={{
+                          expanded: isExplorerOpen && explorerTab === "spotify",
+                        }}
+                        onPress={handleOpenSpotifyPlayer}
+                        style={({ hovered, pressed }) => [
+                          styles.spotifyPreviewButton,
+                          (hovered || pressed || (isExplorerOpen && explorerTab === "spotify")) &&
+                            styles.sourceControlButtonHovered,
+                        ]}
+                      >
+                        <AudioLines
+                          size={isMobile ? theme.iconSize.lg : theme.iconSize.md}
+                          color={
+                            isExplorerOpen && explorerTab === "spotify"
+                              ? theme.colors.foreground
+                              : theme.colors.foregroundMuted
+                          }
+                        />
+                        {!isMobile ? (
+                          <Text
+                            style={[
+                              styles.spotifyPreviewLabel,
+                              isExplorerOpen && explorerTab === "spotify"
+                                ? styles.spotifyPreviewLabelActive
+                                : null,
+                            ]}
+                          >
+                            /player
+                          </Text>
+                        ) : null}
+                      </Pressable>
+                    </TooltipTrigger>
+                    <TooltipContent side="left" align="center" offset={8}>
+                      <Text style={styles.explorerTooltipText}>Open Spotify player</Text>
+                    </TooltipContent>
+                  </Tooltip>
                   {!isMobile ? (
                     <WorkspaceOpenInEditorButton
                       serverId={normalizedServerId}
@@ -2521,6 +2577,24 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: Math.ceil(theme.fontSize.sm * 1.5) + theme.spacing[1] * 2,
     minWidth: Math.ceil(theme.fontSize.sm * 1.5) + theme.spacing[1] * 2,
     borderRadius: theme.borderRadius.md,
+  },
+  spotifyPreviewButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: theme.spacing[2],
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+    minHeight: Math.ceil(theme.fontSize.sm * 1.5) + theme.spacing[1] * 2,
+    borderRadius: theme.borderRadius.md,
+  },
+  spotifyPreviewLabel: {
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.medium,
+    color: theme.colors.foregroundMuted,
+  },
+  spotifyPreviewLabelActive: {
+    color: theme.colors.foreground,
   },
   sourceControlButtonWithStats: {
     paddingHorizontal: theme.spacing[3],
