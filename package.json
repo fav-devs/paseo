@@ -14,7 +14,8 @@
   ],
   "scripts": {
     "dev": "./scripts/dev.sh",
-    "dev:tui": "node scripts/dev-tui.mjs",
+    "dev:tui": "node scripts/dev-tui.mjs --remote",
+    "dev:tui:local": "node scripts/dev-tui.mjs",
     "dev:tui:remote": "node scripts/dev-tui.mjs --remote",
     "dev:win": "powershell ./scripts/dev.ps1",
     "dev:server": "npm run dev --workspace=@getpaseo/server",

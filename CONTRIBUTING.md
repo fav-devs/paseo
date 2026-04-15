@@ -1,4 +1,4 @@
-# Contributing to Paseo
+# Contributing to Paso
 
 Thanks for taking the time to contribute.
 

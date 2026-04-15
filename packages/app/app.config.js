@@ -27,6 +27,9 @@ export default {
     runtimeVersion: {
       policy: "appVersion",
     },
+    updates: {
+      url: "https://u.expo.dev/3520a041-9964-4390-9019-e3cc9e31c27f",
+    },
     ios: {
       supportsTablet: true,
       infoPlist: {

@@ -90,7 +90,8 @@ function derivePaseoHome() {
         encoding: "utf-8",
         timeout: 3000,
       }).trim();
-      const name = path.basename(toplevel)
+      const name = path
+        .basename(toplevel)
         .toLowerCase()
         .replace(/[^a-z0-9-]/g, "-")
         .replace(/-+/g, "-")
@@ -105,8 +106,7 @@ function derivePaseoHome() {
 
 const PASEO_HOME = derivePaseoHome();
 const PASEO_LOCAL_MODELS_DIR =
-  process.env.PASEO_LOCAL_MODELS_DIR ??
-  path.join(homedir(), ".paseo", "models", "local-speech");
+  process.env.PASEO_LOCAL_MODELS_DIR ?? path.join(homedir(), ".paseo", "models", "local-speech");
 
 mkdirSync(PASEO_LOCAL_MODELS_DIR, { recursive: true });
 
@@ -314,7 +314,10 @@ function spawnService(svc) {
       svc.proc = null;
       svc.exitCode = exitCode;
       svc.status = exitCode === 0 || signal === 15 ? "stopped" : "error";
-      pushLine(svc, `${DIM}■ exited ${exitCode != null ? `code=${exitCode}` : `signal=${signal}`}${RESET}`);
+      pushLine(
+        svc,
+        `${DIM}■ exited ${exitCode != null ? `code=${exitCode}` : `signal=${signal}`}${RESET}`,
+      );
       scheduleRender(true);
     });
 
@@ -416,7 +419,11 @@ function ingestChunk(svc, chunk) {
           const localUrl = localMatch[1];
           const host = REMOTE_MODE ? TAILSCALE_IP : "localhost";
           const port = new URL(localUrl).port || "8090";
-          metroUrl = { web: `http://${host}:${port}`, expo: `exp://${host}:${port}`, tunnel: false };
+          metroUrl = {
+            web: `http://${host}:${port}`,
+            expo: `exp://${host}:${port}`,
+            tunnel: false,
+          };
           injectMetroReady(svc, metroUrl);
           return;
         }
@@ -525,15 +532,10 @@ function render() {
       }${RESET}`
     : "";
   const scrollBadge =
-    clampedScroll > 0
-      ? `  ${DIM}↑ ${clampedScroll} lines${RESET}`
-      : `  ${DIM}following${RESET}`;
+    clampedScroll > 0 ? `  ${DIM}↑ ${clampedScroll} lines${RESET}` : `  ${DIM}following${RESET}`;
   const homeLabel = `${DIM}${PASEO_HOME}${RESET}`;
   const left = `  ${selLabel} ${selState}${scrollBadge}`;
-  const statusPad = Math.max(
-    0,
-    W - stripAnsi(left).length - stripAnsi(homeLabel).length - 1,
-  );
+  const statusPad = Math.max(0, W - stripAnsi(left).length - stripAnsi(homeLabel).length - 1);
   p(left + " ".repeat(statusPad) + homeLabel + "\x1b[K");
 
   process.stdout.write(out.join(""));
@@ -636,7 +638,10 @@ function setupInput() {
       const svc = services[selectedIdx];
       if (svc) {
         svc.restarts++;
-        if (svc.key === "metro") { metroUrl = null; metroTunnelMode = false; }
+        if (svc.key === "metro") {
+          metroUrl = null;
+          metroTunnelMode = false;
+        }
         pushLine(svc, `${DIM}↺ restarting...${RESET}`);
         spawnService(svc);
         scheduleRender(true);
@@ -671,7 +676,9 @@ function killService(svc) {
       try {
         process.kill(-pid, "SIGTERM");
       } catch {
-        try { process.kill(pid, "SIGTERM"); } catch {}
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {}
       }
     }
   } catch {}
@@ -690,8 +697,12 @@ function cleanup() {
   killAll();
 
   // Restore terminal state
-  try { process.stdout.write("\x1b[?25h\x1b[?1049l"); } catch {}
-  try { if (process.stdin.isTTY) process.stdin.setRawMode(false); } catch {}
+  try {
+    process.stdout.write("\x1b[?25h\x1b[?1049l");
+  } catch {}
+  try {
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+  } catch {}
 
   process.exit(0);
 }
@@ -715,7 +726,9 @@ process.stdout.on("resize", () => {
   const rows = Math.max(24, (process.stdout.rows || 30) - 4);
   for (const svc of services) {
     if (svc.usePty && svc.proc) {
-      try { svc.proc.resize(cols, rows); } catch {}
+      try {
+        svc.proc.resize(cols, rows);
+      } catch {}
     }
   }
   scheduleRender(true);
@@ -737,7 +750,10 @@ if (REMOTE_MODE) {
     pushLine(daemonSvc, `\x1b[32m✦ Remote mode — Tailscale IP: ${TAILSCALE_IP}${RESET}`);
     pushLine(daemonSvc, `${DIM}  Daemon:   ${DAEMON_HOST}${RESET}`);
     pushLine(daemonSvc, `${DIM}  App:      http://${TAILSCALE_IP}:8090${RESET}`);
-    pushLine(daemonSvc, `${DIM}  Electron: EXPO_DEV_URL=http://${TAILSCALE_IP}:8090 npx electron packages/desktop${RESET}`);
+    pushLine(
+      daemonSvc,
+      `${DIM}  Electron: EXPO_DEV_URL=http://${TAILSCALE_IP}:8090 npx electron packages/desktop${RESET}`,
+    );
   }
 }
 
