@@ -111,6 +111,9 @@ function buildConnectionFailureCopy(
     detail = "Connection refused. Is the server running at this address?";
   } else if (rawLower.includes("enotfound") || rawLower.includes("not found")) {
     detail = "Host not found. Check the hostname and try again.";
+  } else if (rawLower.includes("maximum call stack") || rawLower.includes("too much recursion")) {
+    detail =
+      "The connection client hit an internal error while connecting. Try again, use a different browser tab, or check the browser console for details. If this persists, the server may be sending an unexpected WebSocket payload.";
   } else if (rawLower.includes("ehostunreach") || rawLower.includes("host is unreachable")) {
     detail = "Host is unreachable. Check your network and firewall.";
   } else if (

@@ -15,6 +15,33 @@ function normalizeNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/** Avoid throwing when Error.message / String() hits a poisoned or recursive value. */
+function safeErrorText(error: unknown): string {
+  if (error instanceof Error) {
+    try {
+      const message = error.message;
+      if (typeof message === "string" && message.trim().length > 0) {
+        return message.trim();
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      if (typeof error.name === "string" && error.name.length > 0) {
+        return error.name;
+      }
+    } catch {
+      // ignore
+    }
+    return "Error";
+  }
+  try {
+    return String(error);
+  } catch {
+    return "Unknown error";
+  }
+}
+
 function pickBestReason(reason: string | null, lastError: string | null): string {
   const genericReason =
     reason &&
@@ -136,10 +163,14 @@ export function connectAndProbe(
         })
         .catch((error) => {
           clearTimeout(timer);
-          const reason = normalizeNonEmptyString(
-            error instanceof Error ? error.message : String(error),
-          );
-          const lastError = normalizeNonEmptyString(client.lastError);
+          const reason = normalizeNonEmptyString(safeErrorText(error));
+          let lastErrorRaw: string | null = null;
+          try {
+            lastErrorRaw = client.lastError;
+          } catch {
+            lastErrorRaw = null;
+          }
+          const lastError = normalizeNonEmptyString(lastErrorRaw);
           const message = pickBestReason(reason, lastError);
           void client.close().catch(() => undefined);
           reject(new DaemonConnectionTestError(message, { reason, lastError }));

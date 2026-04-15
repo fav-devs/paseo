@@ -597,6 +597,17 @@ function hashForLog(value: string): string {
   return `h_${Math.abs(hash).toString(16)}`;
 }
 
+function safeErrorText(error: unknown): string {
+  if (error instanceof Error && typeof error.message === "string") {
+    return error.message;
+  }
+  try {
+    return String(error);
+  } catch {
+    return "Unknown error";
+  }
+}
+
 function toReasonCode(reason: string | null | undefined): string | null {
   if (!reason) {
     return null;
@@ -3852,7 +3863,14 @@ export class DaemonClient {
       return;
     }
 
-    const parsed = WSOutboundMessageSchema.safeParse(parsedJson);
+    let parsed: ReturnType<typeof WSOutboundMessageSchema.safeParse>;
+    try {
+      parsed = WSOutboundMessageSchema.safeParse(parsedJson);
+    } catch (error) {
+      const msgType = (parsedJson as { type?: string })?.type ?? "unknown";
+      this.logger.warn({ msgType, error: safeErrorText(error) }, "Message validation threw");
+      return;
+    }
     if (!parsed.success) {
       const msgType = (parsedJson as { type?: string })?.type ?? "unknown";
       this.logger.warn({ msgType, error: parsed.error.message }, "Message validation failed");

@@ -107,7 +107,13 @@ export function decodeMessageData(data: unknown): string | null {
     }
   }
   if (typeof (data as { toString?: () => string }).toString === "function") {
-    return (data as { toString: () => string }).toString();
+    try {
+      const asString = (data as { toString: () => string }).toString();
+      return typeof asString === "string" ? asString : null;
+    } catch {
+      // Poisoned or recursive `toString` (or non-string return) — ignore.
+      return null;
+    }
   }
   return null;
 }
