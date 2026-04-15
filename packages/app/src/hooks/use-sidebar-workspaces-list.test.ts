@@ -33,6 +33,7 @@ function workspace(
     name: input.name,
     status: input.status,
     diffStat: null,
+    projectActions: [],
   };
 }
 

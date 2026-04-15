@@ -1421,6 +1421,7 @@ export class Session {
   private buildPersistedProjectRecord(input: {
     workspaceId: string;
     placement: ProjectPlacementPayload;
+    actions?: PersistedProjectRecord["actions"];
     createdAt: string;
     updatedAt: string;
   }): PersistedProjectRecord {
@@ -1432,6 +1433,7 @@ export class Session {
       }),
       kind: deriveProjectKind(input.placement.checkout),
       displayName: input.placement.projectName,
+      actions: input.actions,
       createdAt: input.createdAt,
       updatedAt: input.updatedAt,
       archivedAt: null,
@@ -1491,6 +1493,7 @@ export class Session {
     const nextProjectRecord = this.buildPersistedProjectRecord({
       workspaceId: resolvedWorkspaceId,
       placement,
+      actions: currentProjectRecord?.actions,
       createdAt: currentProjectRecord?.createdAt ?? nextProjectCreatedAt,
       updatedAt: now,
     });
@@ -1904,6 +1907,10 @@ export class Session {
 
           case "archive_workspace_request":
             await this.handleArchiveWorkspaceRequest(msg);
+            break;
+
+          case "update_project_actions_request":
+            await this.handleUpdateProjectActionsRequest(msg);
             break;
 
           case "file_explorer_request":
@@ -5590,6 +5597,7 @@ export class Session {
       status: "done",
       activityAt: null,
       diffStat: null,
+      projectActions: resolvedProjectRecord?.actions ?? [],
     };
   }
 
@@ -6199,6 +6207,15 @@ export class Session {
     await this.emitWorkspaceUpdatesForWorkspaceIds(uniqueWorkspaceIds);
   }
 
+  private async emitWorkspaceUpdatesForProjectId(projectId: string): Promise<void> {
+    const activeWorkspaceIds = (await this.workspaceRegistry.list())
+      .filter((workspace) => workspace.projectId === projectId && !workspace.archivedAt)
+      .map((workspace) => workspace.workspaceId);
+    await this.emitWorkspaceUpdatesForWorkspaceIds(activeWorkspaceIds, {
+      skipReconcile: true,
+    });
+  }
+
   private async handleFetchAgents(
     request: Extract<SessionInboundMessage, { type: "fetch_agents_request" }>,
   ): Promise<void> {
@@ -6480,6 +6497,7 @@ export class Session {
       {
         paseoHome: this.paseoHome,
         emitWorkspaceUpdateForCwd: (cwd) => this.emitWorkspaceUpdateForCwd(cwd),
+        projectRegistry: this.projectRegistry,
         sessionLogger: this.sessionLogger,
         terminalManager: this.terminalManager,
       },
@@ -6522,6 +6540,51 @@ export class Session {
           requestId: request.requestId,
           workspaceId: request.workspaceId,
           archivedAt: null,
+          error: message,
+        },
+      });
+    }
+  }
+
+  private async handleUpdateProjectActionsRequest(
+    request: Extract<SessionInboundMessage, { type: "update_project_actions_request" }>,
+  ): Promise<void> {
+    try {
+      const existing = await this.projectRegistry.get(request.projectId);
+      if (!existing || existing.archivedAt) {
+        throw new Error(`Project not found: ${request.projectId}`);
+      }
+
+      const updatedAt = new Date().toISOString();
+      await this.projectRegistry.upsert({
+        ...existing,
+        actions: request.actions,
+        updatedAt,
+        archivedAt: null,
+      });
+
+      await this.emitWorkspaceUpdatesForProjectId(request.projectId);
+      this.emit({
+        type: "update_project_actions_response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          actions: request.actions,
+          error: null,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update project actions";
+      this.sessionLogger.error(
+        { err: error, projectId: request.projectId },
+        "Failed to update project actions",
+      );
+      this.emit({
+        type: "update_project_actions_response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          actions: request.actions,
           error: message,
         },
       });

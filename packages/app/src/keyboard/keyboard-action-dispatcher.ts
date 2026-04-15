@@ -24,6 +24,7 @@ export type KeyboardActionId =
   | "workspace.pane.move-tab.down"
   | "workspace.pane.close"
   | "workspace.terminal.new"
+  | "workspace.project-action.run"
   | "worktree.new"
   | "worktree.archive";
 
@@ -51,6 +52,7 @@ export type KeyboardActionDefinition =
   | { id: "workspace.pane.move-tab.down"; scope: KeyboardActionScope }
   | { id: "workspace.pane.close"; scope: KeyboardActionScope }
   | { id: "workspace.terminal.new"; scope: KeyboardActionScope }
+  | { id: "workspace.project-action.run"; scope: KeyboardActionScope; actionId: string }
   | { id: "worktree.new"; scope: KeyboardActionScope }
   | { id: "worktree.archive"; scope: KeyboardActionScope };
 

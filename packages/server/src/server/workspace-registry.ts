@@ -6,12 +6,14 @@ import type { Logger } from "pino";
 import { z } from "zod";
 
 import type { PersistedProjectKind, PersistedWorkspaceKind } from "./workspace-registry-model.js";
+import { ProjectActionPayloadSchema, type ProjectActionPayload } from "../shared/messages.js";
 
 const PersistedProjectRecordSchema = z.object({
   projectId: z.string(),
   rootPath: z.string(),
   kind: z.enum(["git", "non_git"]),
   displayName: z.string(),
+  actions: z.array(ProjectActionPayloadSchema).optional().default([]),
   createdAt: z.string(),
   updatedAt: z.string(),
   archivedAt: z.string().nullable(),
@@ -56,7 +58,7 @@ type RegistryRecord = PersistedProjectRecord | PersistedWorkspaceRecord;
 class FileBackedRegistry<TRecord extends RegistryRecord> {
   private readonly filePath: string;
   private readonly logger: Logger;
-  private readonly schema: z.ZodSchema<TRecord>;
+  private readonly schema: z.ZodType<TRecord, z.ZodTypeDef, unknown>;
   private readonly getId: (record: TRecord) => string;
   private loaded = false;
   private readonly cache = new Map<string, TRecord>();
@@ -65,7 +67,7 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
   constructor(options: {
     filePath: string;
     logger: Logger;
-    schema: z.ZodSchema<TRecord>;
+    schema: z.ZodType<TRecord, z.ZodTypeDef, unknown>;
     getId: (record: TRecord) => string;
     component: string;
   }) {
@@ -202,6 +204,7 @@ export function createPersistedProjectRecord(input: {
   rootPath: string;
   kind: PersistedProjectKind;
   displayName: string;
+  actions?: ProjectActionPayload[];
   createdAt: string;
   updatedAt: string;
   archivedAt?: string | null;

@@ -22,6 +22,7 @@ import type {
 import type {
   FileDownloadTokenResponse,
   GitSetupOptions,
+  ProjectActionPayload,
   ServerInfoStatusPayload,
   ProjectPlacementPayload,
   ServerCapabilities,
@@ -123,6 +124,7 @@ export interface WorkspaceDescriptor {
   name: string;
   status: WorkspaceDescriptorPayload["status"];
   diffStat: { additions: number; deletions: number } | null;
+  projectActions: ProjectActionPayload[];
 }
 
 export function normalizeWorkspaceDescriptor(
@@ -138,6 +140,7 @@ export function normalizeWorkspaceDescriptor(
     name: payload.name,
     status: payload.status,
     diffStat: payload.diffStat ?? null,
+    projectActions: payload.projectActions ?? [],
   };
 }
 
@@ -153,6 +156,7 @@ export function mergeWorkspaceSnapshotWithExisting(input: {
   return {
     ...incoming,
     diffStat: incoming.diffStat ?? existing.diffStat,
+    projectActions: incoming.projectActions,
   };
 }
 

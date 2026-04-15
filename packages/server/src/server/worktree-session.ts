@@ -19,6 +19,7 @@ import type {
 } from "./workspace-registry.js";
 import type { WorkspaceGitService } from "./workspace-git-service.js";
 import { normalizeWorkspaceId as normalizePersistedWorkspaceId } from "./workspace-registry-model.js";
+import { getWorkspaceCreationProjectAction } from "./project-actions.js";
 import { createAgentWorktree } from "./worktree-bootstrap.js";
 import type { TerminalManager } from "../terminal/terminal-manager.js";
 import { getCurrentBranch, resolveRepositoryDefaultBranch } from "../utils/checkout-git.js";
@@ -93,6 +94,7 @@ type RegisterPendingWorktreeWorkspaceDependencies = {
 type CreatePaseoWorktreeInBackgroundDependencies = {
   paseoHome?: string;
   emitWorkspaceUpdateForCwd: (cwd: string) => Promise<void>;
+  projectRegistry: Pick<ProjectRegistry, "list">;
   sessionLogger: Logger;
   terminalManager: TerminalManager | null;
 };
@@ -634,7 +636,17 @@ export async function runWorktreeSetupInBackground(
   let setupTerminalId: string | null = null;
 
   try {
-    const setupCommands = getWorktreeSetupCommands(options.worktreePath);
+    const configuredSetupCommands = getWorktreeSetupCommands(options.worktreePath);
+    const projectRecord =
+      (await dependencies.projectRegistry.list()).find(
+        (record) => !record.archivedAt && record.rootPath === options.repoRoot,
+      ) ?? null;
+    const projectSetupAction = projectRecord
+      ? getWorkspaceCreationProjectAction(projectRecord.actions)
+      : null;
+    const setupCommands = projectSetupAction
+      ? [...configuredSetupCommands, projectSetupAction.command]
+      : configuredSetupCommands;
     if (setupCommands.length > 0 && dependencies.terminalManager) {
       const runtimeEnv = await resolveWorktreeRuntimeEnv({
         worktreePath: options.worktreePath,

@@ -43,6 +43,7 @@ import { SplitContainer } from "@/components/split-container";
 import { SourceControlPanelIcon } from "@/components/icons/source-control-panel-icon";
 import { WorkspaceGitActions } from "@/screens/workspace/workspace-git-actions";
 import { WorkspaceOpenInEditorButton } from "@/screens/workspace/workspace-open-in-editor-button";
+import { WorkspaceProjectActions } from "@/screens/workspace/workspace-project-actions";
 import { ExplorerSidebarAnimationProvider } from "@/contexts/explorer-sidebar-animation-context";
 import { useToast } from "@/contexts/toast-context";
 import { useExplorerOpenGesture } from "@/hooks/use-explorer-open-gesture";
@@ -70,7 +71,7 @@ import {
   checkoutStatusQueryKey,
   type CheckoutStatusPayload,
 } from "@/hooks/use-checkout-status-query";
-import type { ListTerminalsResponse } from "@server/shared/messages";
+import type { ListTerminalsResponse, ProjectActionPayload } from "@server/shared/messages";
 import { upsertTerminalListEntry } from "@/utils/terminal-list";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
@@ -1056,6 +1057,63 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
 
   const activeTabId = focusedPaneTabState.activeTabId;
   const activeTab = focusedPaneTabState.activeTab;
+  const handleRunProjectAction = useCallback(
+    async (action: ProjectActionPayload) => {
+      if (!client || !isConnected) {
+        toast.show("Host is not connected");
+        return;
+      }
+      if (!isAbsolutePath(normalizedWorkspaceId)) {
+        toast.show("Workspace path is unavailable");
+        return;
+      }
+
+      try {
+        const activeTerminalId =
+          activeTab?.descriptor.target.kind === "terminal"
+            ? activeTab.descriptor.target.terminalId
+            : null;
+        let terminalId: string | null = activeTerminalId ?? terminals[0]?.id ?? null;
+        if (!terminalId) {
+          const payload = await createTerminalMutation.mutateAsync(undefined);
+          terminalId = payload.terminal?.id ?? null;
+        }
+        if (!terminalId) {
+          throw new Error("Unable to create a terminal for this action.");
+        }
+
+        if (persistenceKey) {
+          const tabId = openWorkspaceTab(persistenceKey, {
+            kind: "terminal",
+            terminalId,
+          });
+          if (tabId) {
+            focusWorkspaceTab(persistenceKey, tabId);
+          }
+        }
+
+        client.sendTerminalInput(terminalId, {
+          type: "input",
+          data: `${action.command}\r`,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to run action.";
+        toast.show(message);
+      }
+    },
+    [
+      activeTab,
+      client,
+      createTerminalMutation,
+      focusWorkspaceTab,
+      isConnected,
+      normalizedWorkspaceId,
+      openWorkspaceTab,
+      persistenceKey,
+      terminals,
+      toast,
+    ],
+  );
 
   useEffect(() => {
     if (!activeTabId || !persistenceKey) {
@@ -1557,6 +1615,16 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
         case "workspace.terminal.new":
           handleCreateTerminal();
           return true;
+        case "workspace.project-action.run": {
+          const actionToRun =
+            workspaceDescriptor?.projectActions.find(
+              (projectAction) => projectAction.id === action.actionId,
+            ) ?? null;
+          if (actionToRun) {
+            void handleRunProjectAction(actionToRun);
+          }
+          return true;
+        }
         case "workspace.tab.close-current":
           if (activeTabId) {
             void handleCloseTabById(activeTabId);
@@ -1590,8 +1658,10 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
       handleCloseTabById,
       handleCreateDraftTab,
       handleCreateTerminal,
+      handleRunProjectAction,
       navigateToTabId,
       tabs,
+      workspaceDescriptor,
     ],
   );
 
@@ -1702,6 +1772,7 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
       "workspace.tab.navigate-index",
       "workspace.tab.navigate-relative",
       "workspace.terminal.new",
+      "workspace.project-action.run",
     ] as const,
     enabled: Boolean(normalizedServerId && normalizedWorkspaceId),
     priority: 100,
@@ -2075,6 +2146,14 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
               }
               right={
                 <View style={styles.headerRight}>
+                  {workspaceDescriptor ? (
+                    <WorkspaceProjectActions
+                      serverId={normalizedServerId}
+                      projectId={workspaceDescriptor.projectId}
+                      actions={workspaceDescriptor.projectActions}
+                      onRunAction={handleRunProjectAction}
+                    />
+                  ) : null}
                   {!isMobile ? (
                     <WorkspaceOpenInEditorButton
                       serverId={normalizedServerId}

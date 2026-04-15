@@ -44,6 +44,7 @@ import type {
   OpenInEditorResponseMessage,
   OpenProjectResponseMessage,
   ArchiveWorkspaceResponseMessage,
+  UpdateProjectActionsResponseMessage,
   ListCommandsResponse,
   ListProviderFeaturesResponseMessage,
   ListProviderModelsResponseMessage,
@@ -65,6 +66,7 @@ import type {
   EditorTargetId,
   SystemMonitorResponse,
   ForkAgentResponseMessage,
+  ProjectActionPayload,
 } from "../shared/messages.js";
 import type {
   AgentPermissionRequest,
@@ -489,6 +491,7 @@ type ListAvailableEditorsPayload = ListAvailableEditorsResponseMessage["payload"
 type OpenInEditorPayload = OpenInEditorResponseMessage["payload"];
 type OpenProjectPayload = OpenProjectResponseMessage["payload"];
 type ArchiveWorkspacePayload = ArchiveWorkspaceResponseMessage["payload"];
+type UpdateProjectActionsPayload = UpdateProjectActionsResponseMessage["payload"];
 export type EditorTargetDescriptor = ListAvailableEditorsPayload["editors"][number];
 
 export type FetchAgentResult = {
@@ -1401,6 +1404,23 @@ export class DaemonClient {
         workspaceId,
       },
       responseType: "archive_workspace_response",
+      timeout: 10000,
+    });
+  }
+
+  async updateProjectActions(
+    projectId: string,
+    actions: ProjectActionPayload[],
+    requestId?: string,
+  ): Promise<UpdateProjectActionsPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "update_project_actions_request",
+        projectId,
+        actions,
+      },
+      responseType: "update_project_actions_response",
       timeout: 10000,
     });
   }

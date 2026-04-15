@@ -1273,6 +1273,13 @@ export const ArchiveWorkspaceRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const UpdateProjectActionsRequestSchema = z.object({
+  type: z.literal("update_project_actions_request"),
+  projectId: z.string(),
+  actions: z.array(z.lazy(() => ProjectActionPayloadSchema)),
+  requestId: z.string(),
+});
+
 // Highlighted diff token schema
 // Note: style can be a compound class name (e.g., "heading meta") from the syntax highlighter
 const HighlightTokenSchema = z.object({
@@ -1547,6 +1554,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   OpenInEditorRequestSchema,
   OpenProjectRequestSchema,
   ArchiveWorkspaceRequestSchema,
+  UpdateProjectActionsRequestSchema,
   FileExplorerRequestSchema,
   ProjectIconRequestSchema,
   FileDownloadTokenRequestSchema,
@@ -1969,6 +1977,24 @@ const WorkspaceGitHubRuntimePayloadSchema = z
   .optional()
   .nullable();
 
+export const ProjectActionIconSchema = z.enum([
+  "play",
+  "test",
+  "lint",
+  "configure",
+  "build",
+  "debug",
+]);
+
+export const ProjectActionPayloadSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  command: z.string(),
+  icon: ProjectActionIconSchema,
+  shortcut: z.string().nullable().optional(),
+  runOnWorkspaceCreate: z.boolean().optional().default(false),
+});
+
 export const WorkspaceDescriptorPayloadSchema = z.object({
   id: z.string(),
   projectId: z.string(),
@@ -1986,6 +2012,7 @@ export const WorkspaceDescriptorPayloadSchema = z.object({
     })
     .nullable()
     .optional(),
+  projectActions: z.array(ProjectActionPayloadSchema).optional().default([]),
   gitRuntime: WorkspaceGitRuntimePayloadSchema,
   githubRuntime: WorkspaceGitHubRuntimePayloadSchema,
 });
@@ -2112,6 +2139,16 @@ export const ArchiveWorkspaceResponseMessageSchema = z.object({
     requestId: z.string(),
     workspaceId: z.string(),
     archivedAt: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const UpdateProjectActionsResponseMessageSchema = z.object({
+  type: z.literal("update_project_actions_response"),
+  payload: z.object({
+    requestId: z.string(),
+    projectId: z.string(),
+    actions: z.array(ProjectActionPayloadSchema),
     error: z.string().nullable(),
   }),
 });
@@ -2888,6 +2925,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ListAvailableEditorsResponseMessageSchema,
   OpenInEditorResponseMessageSchema,
   ArchiveWorkspaceResponseMessageSchema,
+  UpdateProjectActionsResponseMessageSchema,
   FetchAgentResponseMessageSchema,
   FetchAgentTimelineResponseMessageSchema,
   CancelAgentResponseMessageSchema,
@@ -2989,6 +3027,8 @@ export type AgentStreamMessage = z.infer<typeof AgentStreamMessageSchema>;
 export type AgentStatusMessage = z.infer<typeof AgentStatusMessageSchema>;
 export type ProjectCheckoutLitePayload = z.infer<typeof ProjectCheckoutLitePayloadSchema>;
 export type ProjectPlacementPayload = z.infer<typeof ProjectPlacementPayloadSchema>;
+export type ProjectActionIcon = z.infer<typeof ProjectActionIconSchema>;
+export type ProjectActionPayload = z.infer<typeof ProjectActionPayloadSchema>;
 export type WorkspaceStateBucket = z.infer<typeof WorkspaceStateBucketSchema>;
 export type WorkspaceDescriptorPayload = z.infer<typeof WorkspaceDescriptorPayloadSchema>;
 export type KnownEditorTargetId = z.infer<typeof KnownEditorTargetIdSchema>;
@@ -3003,6 +3043,9 @@ export type ListAvailableEditorsResponseMessage = z.infer<
 >;
 export type OpenInEditorResponseMessage = z.infer<typeof OpenInEditorResponseMessageSchema>;
 export type ArchiveWorkspaceResponseMessage = z.infer<typeof ArchiveWorkspaceResponseMessageSchema>;
+export type UpdateProjectActionsResponseMessage = z.infer<
+  typeof UpdateProjectActionsResponseMessageSchema
+>;
 export type FetchAgentResponseMessage = z.infer<typeof FetchAgentResponseMessageSchema>;
 export type FetchAgentTimelineResponseMessage = z.infer<
   typeof FetchAgentTimelineResponseMessageSchema
@@ -3115,6 +3158,7 @@ export type LoopStopRequest = z.infer<typeof LoopStopRequestSchema>;
 export type ResumeAgentRequestMessage = z.infer<typeof ResumeAgentRequestMessageSchema>;
 export type DeleteAgentRequestMessage = z.infer<typeof DeleteAgentRequestMessageSchema>;
 export type UpdateAgentRequestMessage = z.infer<typeof UpdateAgentRequestMessageSchema>;
+export type UpdateProjectActionsRequest = z.infer<typeof UpdateProjectActionsRequestSchema>;
 export type SetAgentModeRequestMessage = z.infer<typeof SetAgentModeRequestMessageSchema>;
 export type SetAgentModelRequestMessage = z.infer<typeof SetAgentModelRequestMessageSchema>;
 export type SetAgentThinkingRequestMessage = z.infer<typeof SetAgentThinkingRequestMessageSchema>;
