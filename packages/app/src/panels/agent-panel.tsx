@@ -797,7 +797,7 @@ function AgentPanelBody({
             <AgentInputArea
               agentId={agentId}
               serverId={serverId}
-              isInputActive={isPaneFocused}
+              isPaneFocused={isPaneFocused}
               onActivateTab={onActivateTab}
               value={agentInputDraft.text}
               onChangeText={agentInputDraft.setText}

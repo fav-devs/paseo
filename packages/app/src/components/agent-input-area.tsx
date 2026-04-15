@@ -66,7 +66,7 @@ type ImageListUpdater = ImageAttachment[] | ((prev: ImageAttachment[]) => ImageA
 interface AgentInputAreaProps {
   agentId: string;
   serverId: string;
-  isInputActive: boolean;
+  isPaneFocused: boolean;
   onSubmitMessage?: (payload: MessagePayload) => Promise<void>;
   /** Externally controlled loading state. When true, disables the submit button. */
   isSubmitLoading?: boolean;
@@ -103,7 +103,7 @@ const MOBILE_MESSAGE_PLACEHOLDER = "Message, @files, /commands";
 export function AgentInputArea({
   agentId,
   serverId,
-  isInputActive,
+  isPaneFocused,
   onSubmitMessage,
   isSubmitLoading = false,
   blurOnSubmit = false,
@@ -295,11 +295,11 @@ export function AgentInputArea({
   }, [composerId, insertComposerText, onActivateTab]);
 
   useEffect(() => {
-    if (!isInputActive) {
+    if (!isPaneFocused) {
       return;
     }
     markActiveChatComposer(composerId);
-  }, [composerId, isInputActive]);
+  }, [composerId, isPaneFocused]);
 
   const submitMessage = useCallback(
     async (text: string, images?: ImageAttachment[]) => {
@@ -490,7 +490,7 @@ export function AgentInputArea({
 
   const handleKeyboardAction = useCallback(
     (action: KeyboardActionDefinition): boolean => {
-      if (!isInputActive) {
+      if (!isPaneFocused) {
         return false;
       }
 
@@ -530,7 +530,7 @@ export function AgentInputArea({
           return false;
       }
     },
-    [isInputActive],
+    [isPaneFocused],
   );
 
   useKeyboardActionHandler({
@@ -544,9 +544,9 @@ export function AgentInputArea({
       "message-input.voice-toggle",
       "message-input.voice-mute-toggle",
     ],
-    enabled: isInputActive,
+    enabled: isPaneFocused,
     priority: isMessageInputFocused ? 200 : 100,
-    isActive: () => isInputActive,
+    isActive: () => isPaneFocused,
     handle: handleKeyboardAction,
   });
 
@@ -806,7 +806,7 @@ export function AgentInputArea({
               autoFocus={autoFocus && isDesktopWebBreakpoint}
               autoFocusKey={`${serverId}:${agentId}`}
               disabled={isSubmitLoading}
-              isInputActive={isInputActive}
+              isPaneFocused={isPaneFocused}
               leftContent={leftContent}
               beforeVoiceContent={beforeVoiceContent}
               rightContent={rightContent}

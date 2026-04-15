@@ -351,7 +351,7 @@ export function WorkspaceDraftAgentTab({
           <AgentInputArea
             agentId={tabId}
             serverId={serverId}
-            isInputActive={isPaneFocused}
+            isPaneFocused={isPaneFocused}
             onActivateTab={handleActivateTab}
             onSubmitMessage={handleCreateFromInput}
             isSubmitLoading={isSubmitting}
