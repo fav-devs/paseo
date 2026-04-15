@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildExplorerCheckoutKey,
-  resolveExplorerTabForCheckout,
-} from "@/stores/explorer-tab-memory";
+import { buildExplorerCheckoutKey, resolveExplorerTabForCheckout } from "./explorer-tab-memory";
 
 describe("panel-store explorer tab resolution", () => {
   const serverId = "server-1";
@@ -72,6 +69,20 @@ describe("panel-store explorer tab resolution", () => {
     ).toBe("ports");
   });
 
+  it("restores a stored spotify tab for git checkouts", () => {
+    const key = buildExplorerCheckoutKey(serverId, cwd)!;
+    expect(
+      resolveExplorerTabForCheckout({
+        serverId,
+        cwd,
+        isGit: true,
+        explorerTabByCheckout: {
+          [key]: "spotify",
+        },
+      }),
+    ).toBe("spotify");
+  });
+
   it("falls back to default when stored tab is invalid", () => {
     const key = buildExplorerCheckoutKey(serverId, cwd)!;
     expect(
@@ -126,5 +137,19 @@ describe("panel-store explorer tab resolution", () => {
         },
       }),
     ).toBe("ports");
+  });
+
+  it("preserves spotify for non-git checkouts", () => {
+    const key = buildExplorerCheckoutKey(serverId, cwd)!;
+    expect(
+      resolveExplorerTabForCheckout({
+        serverId,
+        cwd,
+        isGit: false,
+        explorerTabByCheckout: {
+          [key]: "spotify",
+        },
+      }),
+    ).toBe("spotify");
   });
 });

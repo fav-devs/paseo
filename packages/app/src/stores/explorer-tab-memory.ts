@@ -1,8 +1,12 @@
-export type ExplorerTab = "changes" | "files" | "ports" | "system-monitor";
+export type ExplorerTab = "changes" | "files" | "ports" | "spotify" | "system-monitor";
 
 export function isExplorerTab(value: unknown): value is ExplorerTab {
   return (
-    value === "changes" || value === "files" || value === "ports" || value === "system-monitor"
+    value === "changes" ||
+    value === "files" ||
+    value === "ports" ||
+    value === "spotify" ||
+    value === "system-monitor"
   );
 }
 

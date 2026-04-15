@@ -11,7 +11,7 @@ import { useIsFocused } from "@react-navigation/native";
 import Animated, { useAnimatedStyle, useSharedValue, runOnJS } from "react-native-reanimated";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { Activity, Files, GitBranch, Network, X } from "lucide-react-native";
+import { Activity, AudioLines, Files, GitBranch, Network, X } from "lucide-react-native";
 import {
   usePanelStore,
   MIN_EXPLORER_SIDEBAR_WIDTH,
@@ -23,6 +23,7 @@ import { HEADER_INNER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout"
 import { GitDiffPane } from "./git-diff-pane";
 import { FileExplorerPane } from "./file-explorer-pane";
 import { PortForwardsPane } from "./port-forwards-pane";
+import { SpotifyPane } from "./spotify-pane";
 import { SystemMonitorPane } from "./system-monitor-pane";
 import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { useWindowControlsPadding } from "@/utils/desktop-window";
@@ -392,6 +393,14 @@ function SidebarContent({
             <Network size={16} color={tabIconColor("ports")} />
           </Pressable>
           <Pressable
+            accessibilityLabel="Spotify player"
+            testID="explorer-tab-spotify"
+            style={[styles.tab, resolvedTab === "spotify" && styles.tabActive]}
+            onPress={() => onTabPress("spotify")}
+          >
+            <AudioLines size={16} color={tabIconColor("spotify")} />
+          </Pressable>
+          <Pressable
             accessibilityLabel="System monitor"
             testID="explorer-tab-system-monitor"
             style={[styles.tab, resolvedTab === "system-monitor" && styles.tabActive]}
@@ -429,6 +438,9 @@ function SidebarContent({
         )}
         {resolvedTab === "ports" && (
           <PortForwardsPane serverId={serverId} workspaceId={workspaceRoot} />
+        )}
+        {resolvedTab === "spotify" && (
+          <SpotifyPane serverId={serverId} workspaceRoot={workspaceRoot} />
         )}
         {resolvedTab === "system-monitor" && <SystemMonitorPane serverId={serverId} />}
       </View>
