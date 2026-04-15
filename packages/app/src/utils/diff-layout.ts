@@ -182,20 +182,22 @@ export function buildSplitDiffRows(file: ParsedDiffFile): SplitDiffRow[] {
         pushPairRow({
           chatReference,
           hasChanges: true,
-          left: removalLine && removalIndex != null
-            ? toDisplayLine({
-                line: removalLine,
-                position: positions[removalIndex],
-                side: "left",
-              })
-            : null,
-          right: additionLine && additionIndex != null
-            ? toDisplayLine({
-                line: additionLine,
-                position: positions[additionIndex],
-                side: "right",
-              })
-            : null,
+          left:
+            removalLine && removalIndex != null
+              ? toDisplayLine({
+                  line: removalLine,
+                  position: positions[removalIndex],
+                  side: "left",
+                })
+              : null,
+          right:
+            additionLine && additionIndex != null
+              ? toDisplayLine({
+                  line: additionLine,
+                  position: positions[additionIndex],
+                  side: "right",
+                })
+              : null,
         });
       }
       pendingRemovalIndices = [];

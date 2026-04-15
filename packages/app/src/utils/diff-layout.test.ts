@@ -117,35 +117,33 @@ describe("buildSplitDiffRows", () => {
   });
 
   it("uses surrounding new-side context for delete-only split rows", () => {
-    const rows = buildSplitDiffRows(
-      {
-        path: "example.ts",
-        isNew: false,
-        isDeleted: false,
-        additions: 0,
-        deletions: 6,
-        status: "ok",
-        hunks: [
-          {
-            oldStart: 237,
-            oldCount: 8,
-            newStart: 239,
-            newCount: 2,
-            lines: [
-              { type: "header", content: "@@ -237,8 +239,2 @@" },
-              { type: "context", content: "before" },
-              { type: "remove", content: "deleted one" },
-              { type: "remove", content: "deleted two" },
-              { type: "remove", content: "deleted three" },
-              { type: "remove", content: "deleted four" },
-              { type: "remove", content: "deleted five" },
-              { type: "remove", content: "deleted six" },
-              { type: "context", content: "after" },
-            ],
-          },
-        ],
-      },
-    );
+    const rows = buildSplitDiffRows({
+      path: "example.ts",
+      isNew: false,
+      isDeleted: false,
+      additions: 0,
+      deletions: 6,
+      status: "ok",
+      hunks: [
+        {
+          oldStart: 237,
+          oldCount: 8,
+          newStart: 239,
+          newCount: 2,
+          lines: [
+            { type: "header", content: "@@ -237,8 +239,2 @@" },
+            { type: "context", content: "before" },
+            { type: "remove", content: "deleted one" },
+            { type: "remove", content: "deleted two" },
+            { type: "remove", content: "deleted three" },
+            { type: "remove", content: "deleted four" },
+            { type: "remove", content: "deleted five" },
+            { type: "remove", content: "deleted six" },
+            { type: "context", content: "after" },
+          ],
+        },
+      ],
+    });
 
     expect(rows[2]).toMatchObject({
       kind: "pair",

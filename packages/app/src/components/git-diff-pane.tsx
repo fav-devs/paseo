@@ -30,10 +30,7 @@ import {
   WrapText,
 } from "lucide-react-native";
 import { useCheckoutGitActionsStore } from "@/stores/checkout-git-actions-store";
-import {
-  useCheckoutDiffQuery,
-  type ParsedDiffFile,
-} from "@/hooks/use-checkout-diff-query";
+import { useCheckoutDiffQuery, type ParsedDiffFile } from "@/hooks/use-checkout-diff-query";
 import { useCheckoutStatusQuery } from "@/hooks/use-checkout-status-query";
 import { useCheckoutPrStatusQuery } from "@/hooks/use-checkout-pr-status-query";
 import { useChangesPreferences } from "@/hooks/use-changes-preferences";

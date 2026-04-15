@@ -21,7 +21,11 @@ import {
   type HighlightToken,
 } from "@/hooks/use-checkout-diff-query";
 import { Fonts } from "@/constants/theme";
-import { buildSplitDiffRows, type SplitDiffDisplayLine, type SplitDiffRow } from "@/utils/diff-layout";
+import {
+  buildSplitDiffRows,
+  type SplitDiffDisplayLine,
+  type SplitDiffRow,
+} from "@/utils/diff-layout";
 import { buildHunkLineChatReference } from "@/utils/chat-reference-token";
 import { lineNumberGutterWidth } from "@/components/code-insets";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -82,12 +86,7 @@ function HighlightedText({
   };
 
   return (
-    <Text
-      style={[
-        styles.diffLineText,
-        { lineHeight, ...getWrappedTextStyle(wrapLines) },
-      ]}
-    >
+    <Text style={[styles.diffLineText, { lineHeight, ...getWrappedTextStyle(wrapLines) }]}>
       {tokens.map((token, index) => (
         <Text key={index} style={{ color: getTokenColor(token.style), lineHeight }}>
           {token.text}
@@ -251,11 +250,7 @@ function DiffLineView({
 }) {
   if (line.type === "header") {
     return (
-      <DiffHunkHeaderRow
-        content={line.content || " "}
-        gutterWidth={gutterWidth}
-        testID={testID}
-      />
+      <DiffHunkHeaderRow content={line.content || " "} gutterWidth={gutterWidth} testID={testID} />
     );
   }
 
@@ -281,9 +276,7 @@ function DiffLineView({
       {({ hovered, pressed }) => {
         const showHunkAction =
           Boolean(onAddHunkReference) &&
-          (hunkActionMode === "tap-reveal"
-            ? armedLineKey === lineKey
-            : hovered || pressed);
+          (hunkActionMode === "tap-reveal" ? armedLineKey === lineKey : hovered || pressed);
 
         return (
           <>
@@ -634,7 +627,9 @@ const GitDiffFileBody = memo(function GitDiffFileBody({
                           }
                         : undefined
                     }
-                    testID={testID ? `${testID}-hunk-${row.hunkIndex}-line-${row.lineIndex}` : undefined}
+                    testID={
+                      testID ? `${testID}-hunk-${row.hunkIndex}-line-${row.lineIndex}` : undefined
+                    }
                   />
                 );
               });
