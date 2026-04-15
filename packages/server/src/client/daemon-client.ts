@@ -3823,7 +3823,30 @@ export class DaemonClient {
     this.connectTimeout = null;
   }
 
+  /** Guard against pathological JSON that can overflow the parser or Zod. */
+  private static readonly MAX_WS_TEXT_PAYLOAD_CHARS = 2_000_000;
+
+  private onTransportMessageError(error: unknown): void {
+    const text = safeErrorText(error);
+    this.lastErrorValue = text;
+    this.logger.warn({ error: text }, "handleTransportMessage failed");
+    this.disposeTransport(1001, "WebSocket message handler failed");
+    this.scheduleReconnect({
+      reason: text,
+      event: "TRANSPORT_MESSAGE_THROW",
+      reasonCode: "transport_message_error",
+    });
+  }
+
   private handleTransportMessage(data: unknown): void {
+    try {
+      this.handleTransportMessageImpl(data);
+    } catch (error) {
+      this.onTransportMessageError(error);
+    }
+  }
+
+  private handleTransportMessageImpl(data: unknown): void {
     const rawData =
       data && typeof data === "object" && "data" in data ? (data as { data: unknown }).data : data;
 
@@ -3835,10 +3858,14 @@ export class DaemonClient {
       void rawData
         .arrayBuffer()
         .then((buffer) => {
-          this.handleTransportMessage(buffer);
+          try {
+            this.handleTransportMessageImpl(buffer);
+          } catch (error) {
+            this.onTransportMessageError(error);
+          }
         })
-        .catch(() => {
-          // Ignore failed blob decoding and allow reconnect logic to recover.
+        .catch((error) => {
+          this.onTransportMessageError(error);
         });
       return;
     }
@@ -3856,10 +3883,20 @@ export class DaemonClient {
       return;
     }
 
+    if (payload.length > DaemonClient.MAX_WS_TEXT_PAYLOAD_CHARS) {
+      throw new Error("WebSocket text message too large");
+    }
+
     let parsedJson: unknown;
     try {
       parsedJson = JSON.parse(payload);
-    } catch {
+    } catch (error) {
+      const msg = safeErrorText(error);
+      if (msg.includes("stack") || msg.includes("Maximum call stack")) {
+        throw new Error(
+          "Server sent JSON the client could not parse (payload may be too deeply nested).",
+        );
+      }
       return;
     }
 
@@ -3873,7 +3910,13 @@ export class DaemonClient {
     }
     if (!parsed.success) {
       const msgType = (parsedJson as { type?: string })?.type ?? "unknown";
-      this.logger.warn({ msgType, error: parsed.error.message }, "Message validation failed");
+      let validationError: string;
+      try {
+        validationError = parsed.error.message;
+      } catch {
+        validationError = "Invalid message";
+      }
+      this.logger.warn({ msgType, error: validationError }, "Message validation failed");
       return;
     }
 
@@ -4062,7 +4105,11 @@ export class DaemonClient {
     const event = this.toEvent(msg);
     if (event) {
       for (const handler of this.eventListeners) {
-        handler(event);
+        try {
+          handler(event);
+        } catch {
+          // Listener bugs must not take down the transport.
+        }
       }
     }
 
@@ -4071,13 +4118,22 @@ export class DaemonClient {
 
   private resolveWaiters(msg: SessionOutboundMessage): void {
     for (const waiter of Array.from(this.waiters)) {
-      const result = waiter.predicate(msg);
+      let result: unknown;
+      try {
+        result = waiter.predicate(msg);
+      } catch {
+        continue;
+      }
       if (result !== null) {
         this.waiters.delete(waiter);
         if (waiter.timeoutHandle) {
           clearTimeout(waiter.timeoutHandle);
         }
-        waiter.resolve(result);
+        try {
+          waiter.resolve(result);
+        } catch {
+          // Resolver must not take down message handling.
+        }
       }
     }
   }

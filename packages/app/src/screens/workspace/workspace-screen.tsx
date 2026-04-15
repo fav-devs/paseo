@@ -1,7 +1,15 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useIsFocused } from "@react-navigation/native";
-import { ActivityIndicator, BackHandler, Keyboard, Pressable, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  BackHandler,
+  Image,
+  Keyboard,
+  Pressable,
+  Text,
+  View,
+} from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Clipboard from "expo-clipboard";
 import {
@@ -15,8 +23,12 @@ import {
   Ellipsis,
   EllipsisVertical,
   Network,
+  Pause,
   PanelRight,
+  Play,
   RotateCw,
+  SkipBack,
+  SkipForward,
   SquarePen,
   SquareTerminal,
   X,
@@ -60,6 +72,10 @@ import type { WorkspaceTab, WorkspaceTabTarget } from "@/stores/workspace-tabs-s
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
+import {
+  buildSpotifyPreviewWorkspaceKey,
+  useSpotifyPreviewStore,
+} from "@/stores/spotify-preview-store";
 import { decodeWorkspaceIdFromPathSegment } from "@/utils/host-routes";
 import { isAbsolutePath } from "@/utils/path";
 import { normalizeWorkspaceIdentity } from "@/utils/workspace-identity";
@@ -115,6 +131,10 @@ import {
 import { findAdjacentPane } from "@/utils/split-navigation";
 import { useIsCompactFormFactor, supportsDesktopPaneSplits } from "@/constants/layout";
 import { isWeb, isNative } from "@/constants/platform";
+import {
+  SPOTIFY_ACTION_KEYMAP,
+  SPOTIFY_TERMINAL_NAME,
+} from "@/components/spotify/spotify-cli-controls";
 
 const TERMINALS_QUERY_STALE_TIME = 5_000;
 const NEW_TAB_AGENT_OPTION_ID = "__new_tab_agent__";
@@ -847,6 +867,61 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
     });
     openFileExplorer();
   }, [activeExplorerCheckout, openFileExplorer, setExplorerTabForCheckout]);
+
+  const spotifyTerminalId = useMemo(
+    () => terminals.find((terminal) => terminal.name === SPOTIFY_TERMINAL_NAME)?.id ?? null,
+    [terminals],
+  );
+  const spotifyPreviewWorkspaceKey = useMemo(() => {
+    if (!normalizedServerId || !normalizedWorkspaceId) {
+      return null;
+    }
+    return buildSpotifyPreviewWorkspaceKey({
+      serverId: normalizedServerId,
+      workspaceRoot: normalizedWorkspaceId,
+    });
+  }, [normalizedServerId, normalizedWorkspaceId]);
+  const spotifyPreview = useSpotifyPreviewStore((state) =>
+    spotifyPreviewWorkspaceKey
+      ? (state.previewByWorkspace[spotifyPreviewWorkspaceKey] ?? null)
+      : null,
+  );
+  const setSpotifyPreview = useSpotifyPreviewStore((state) => state.setPreview);
+
+  const handleSpotifyHeaderControl = useCallback(
+    (action: "previous" | "playPause" | "next") => {
+      if (!client || !isConnected || !spotifyTerminalId) {
+        handleOpenSpotifyPlayer();
+        return;
+      }
+      client.sendTerminalInput(spotifyTerminalId, {
+        type: "input",
+        data: SPOTIFY_ACTION_KEYMAP[action],
+      });
+      if (action === "playPause" && spotifyPreview && normalizedServerId && normalizedWorkspaceId) {
+        setSpotifyPreview({
+          serverId: normalizedServerId,
+          workspaceRoot: normalizedWorkspaceId,
+          preview: {
+            title: spotifyPreview.title,
+            artist: spotifyPreview.artist,
+            albumImageUrl: spotifyPreview.albumImageUrl,
+            isPlaying: !spotifyPreview.isPlaying,
+          },
+        });
+      }
+    },
+    [
+      client,
+      handleOpenSpotifyPlayer,
+      isConnected,
+      normalizedServerId,
+      normalizedWorkspaceId,
+      setSpotifyPreview,
+      spotifyPreview,
+      spotifyTerminalId,
+    ],
+  );
 
   const explorerOpenGesture = useExplorerOpenGesture({
     enabled: isMobile && mobileView === "agent",
@@ -2217,26 +2292,83 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
                             styles.sourceControlButtonHovered,
                         ]}
                       >
-                        <AudioLines
-                          size={isMobile ? theme.iconSize.lg : theme.iconSize.md}
-                          color={
-                            isExplorerOpen && explorerTab === "spotify"
-                              ? theme.colors.foreground
-                              : theme.colors.foregroundMuted
-                          }
-                        />
-                        {!isMobile ? (
-                          <Text
-                            style={[
-                              styles.spotifyPreviewLabel,
+                        {isMobile ? (
+                          <AudioLines
+                            size={theme.iconSize.lg}
+                            color={
                               isExplorerOpen && explorerTab === "spotify"
-                                ? styles.spotifyPreviewLabelActive
-                                : null,
-                            ]}
-                          >
-                            /player
-                          </Text>
-                        ) : null}
+                                ? theme.colors.foreground
+                                : theme.colors.foregroundMuted
+                            }
+                          />
+                        ) : (
+                          <View style={styles.spotifyPreviewCompact}>
+                            <View style={styles.spotifyPreviewLeft}>
+                              {spotifyPreview?.albumImageUrl ? (
+                                <Image
+                                  source={{ uri: spotifyPreview.albumImageUrl }}
+                                  style={styles.spotifyPreviewArtworkImage}
+                                />
+                              ) : (
+                                <View style={styles.spotifyPreviewArtworkFallback}>
+                                  <AudioLines size={12} color={theme.colors.foregroundMuted} />
+                                </View>
+                              )}
+                              <Text
+                                numberOfLines={1}
+                                style={[
+                                  styles.spotifyPreviewLabel,
+                                  isExplorerOpen && explorerTab === "spotify"
+                                    ? styles.spotifyPreviewLabelActive
+                                    : null,
+                                ]}
+                              >
+                                {spotifyPreview?.title ?? "/player"}
+                              </Text>
+                            </View>
+                            <View style={styles.spotifyPreviewControls}>
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel="Previous track"
+                                style={styles.spotifyPreviewControlButton}
+                                onPress={(event) => {
+                                  event.stopPropagation();
+                                  handleSpotifyHeaderControl("previous");
+                                }}
+                              >
+                                <SkipBack size={12} color={theme.colors.foregroundMuted} />
+                              </Pressable>
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel={
+                                  spotifyPreview?.isPlaying ? "Pause track" : "Play track"
+                                }
+                                style={styles.spotifyPreviewPlayButton}
+                                onPress={(event) => {
+                                  event.stopPropagation();
+                                  handleSpotifyHeaderControl("playPause");
+                                }}
+                              >
+                                {spotifyPreview?.isPlaying ? (
+                                  <Pause size={12} color={theme.colors.background} />
+                                ) : (
+                                  <Play size={12} color={theme.colors.background} />
+                                )}
+                              </Pressable>
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel="Next track"
+                                style={styles.spotifyPreviewControlButton}
+                                onPress={(event) => {
+                                  event.stopPropagation();
+                                  handleSpotifyHeaderControl("next");
+                                }}
+                              >
+                                <SkipForward size={12} color={theme.colors.foregroundMuted} />
+                              </Pressable>
+                            </View>
+                          </View>
+                        )}
                       </Pressable>
                     </TooltipTrigger>
                     <TooltipContent side="left" align="center" offset={8}>
@@ -2581,17 +2713,69 @@ const styles = StyleSheet.create((theme) => ({
   spotifyPreviewButton: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "flex-start",
     gap: theme.spacing[2],
     paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[1],
     minHeight: Math.ceil(theme.fontSize.sm * 1.5) + theme.spacing[1] * 2,
     borderRadius: theme.borderRadius.md,
+    maxWidth: 260,
+  },
+  spotifyPreviewCompact: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing[2],
+    minWidth: 150,
+    maxWidth: 240,
+  },
+  spotifyPreviewLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    flex: 1,
+    minWidth: 0,
+  },
+  spotifyPreviewArtworkImage: {
+    width: 24,
+    height: 24,
+    borderRadius: theme.borderRadius.sm,
+    backgroundColor: theme.colors.surface2,
+  },
+  spotifyPreviewArtworkFallback: {
+    width: 24,
+    height: 24,
+    borderRadius: theme.borderRadius.sm,
+    backgroundColor: theme.colors.surface2,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  spotifyPreviewControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+  },
+  spotifyPreviewControlButton: {
+    width: 24,
+    height: 24,
+    borderRadius: theme.borderRadius.full,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  spotifyPreviewPlayButton: {
+    width: 24,
+    height: 24,
+    borderRadius: theme.borderRadius.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.foreground,
   },
   spotifyPreviewLabel: {
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
     color: theme.colors.foregroundMuted,
+    flex: 1,
+    minWidth: 0,
   },
   spotifyPreviewLabelActive: {
     color: theme.colors.foreground,

@@ -111,9 +111,16 @@ function buildConnectionFailureCopy(
     detail = "Connection refused. Is the server running at this address?";
   } else if (rawLower.includes("enotfound") || rawLower.includes("not found")) {
     detail = "Host not found. Check the hostname and try again.";
+  } else if (
+    rawLower.includes("too deeply nested") ||
+    rawLower.includes("could not parse") ||
+    rawLower.includes("message too large")
+  ) {
+    detail =
+      "The server sent a WebSocket payload the client could not accept (oversized or invalid JSON). That usually means nothing is listening with the Paseo protocol on that port, or another program is answering instead of the Paseo daemon.";
   } else if (rawLower.includes("maximum call stack") || rawLower.includes("too much recursion")) {
     detail =
-      "The connection client hit an internal error while connecting. Try again, use a different browser tab, or check the browser console for details. If this persists, the server may be sending an unexpected WebSocket payload.";
+      "The app hit a JavaScript stack error while handling the WebSocket (often bad or non-Paseo data on that port). Confirm the daemon is running and you are using its port (Paseo speaks WebSocket at path /ws). The Expo dev server on another port (for example :8090) uses a different socket such as /message for hot reload — that is not the daemon. If the port is correct, try from the same LAN or check firewall rules.";
   } else if (rawLower.includes("ehostunreach") || rawLower.includes("host is unreachable")) {
     detail = "Host is unreachable. Check your network and firewall.";
   } else if (
@@ -283,6 +290,16 @@ export function AddHostModal({
       testID="add-host-modal"
     >
       <Text style={styles.helper}>Enter the address of a Paseo server.</Text>
+      <Text style={styles.helper}>
+        Use host:port only (no ws://, no /ws). Do not open ws:// in the browser bar —
+        ERR_UNKNOWN_URL_SCHEME is expected there.
+      </Text>
+      <Text style={styles.helper}>
+        From npm run dev:tui (remote): the daemon listens on port 9239 and 0.0.0.0:9239 so Tailscale
+        clients can use your Tailscale IP:9239. dev:tui:local binds 127.0.0.1:9239 only (not
+        reachable from another machine). Plain npm run dev uses Portless with a different daemon
+        port — check that script’s output for the URL.
+      </Text>
 
       <View style={styles.field}>
         <Text style={styles.label}>Host</Text>

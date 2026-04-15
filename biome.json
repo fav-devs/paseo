@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!*.lock"]
+    "includes": ["**", "!*.lock", "!packages/spotify-web-client/**"]
   },
   "formatter": {
     "indentStyle": "space",
