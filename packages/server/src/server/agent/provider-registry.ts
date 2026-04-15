@@ -23,6 +23,7 @@ import type {
 import { ClaudeAgentClient } from "./providers/claude-agent.js";
 import { CodexAppServerAgentClient } from "./providers/codex-app-server-agent.js";
 import { CopilotACPAgentClient } from "./providers/copilot-acp-agent.js";
+import { CursorCliAgentClient } from "./providers/cursor-cli-agent.js";
 import { GenericACPAgentClient } from "./providers/generic-acp-agent.js";
 import { OpenCodeAgentClient, OpenCodeServerManager } from "./providers/opencode-agent.js";
 import { PiACPAgentClient } from "./providers/pi-acp-agent.js";
@@ -76,6 +77,11 @@ const PROVIDER_CLIENT_FACTORIES: Record<string, ProviderClientFactory> = {
   opencode: (logger, runtimeSettings) => new OpenCodeAgentClient(logger, runtimeSettings),
   pi: (logger, runtimeSettings) =>
     new PiACPAgentClient({
+      logger,
+      runtimeSettings,
+    }),
+  cursor: (logger, runtimeSettings) =>
+    new CursorCliAgentClient({
       logger,
       runtimeSettings,
     }),

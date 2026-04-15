@@ -42,6 +42,8 @@
     "dev:win:desktop": "npm run dev:win --workspace=@getpaseo/desktop",
     "build:desktop": "npm run version:sync-internal && npm run build:web --workspace=@getpaseo/app && npm run build --workspace=@getpaseo/desktop",
     "cli": "npx tsx packages/cli/src/index.js",
+    "link:cli": "npm link --workspace=@getpaseo/cli",
+    "link:cli:refresh": "npm install && npm run build:daemon && npm run link:cli && paseo --version",
     "version": "npm run version:sync-internal && npm run release:prepare && git add -A",
     "version:sync-internal": "node scripts/sync-workspace-versions.mjs",
     "release:prepare": "npm install --workspaces --include-workspace-root",

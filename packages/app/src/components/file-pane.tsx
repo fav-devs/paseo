@@ -497,11 +497,5 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: theme.fontSize.sm * 1.45,
     color: theme.colors.foreground,
     backgroundColor: theme.colors.surface0,
-    ...(isWeb
-      ? {
-          outlineStyle: "none",
-          whiteSpace: "pre",
-        }
-      : {}),
   },
 }));

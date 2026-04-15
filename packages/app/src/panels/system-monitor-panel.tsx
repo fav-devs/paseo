@@ -81,13 +81,13 @@ function ResourcesSection({ resources }: { resources: SystemResources }) {
     cpuPct > 80
       ? theme.colors.destructive
       : cpuPct > 50
-        ? (theme.colors.warning ?? theme.colors.foregroundMuted)
+        ? theme.colors.foregroundMuted
         : theme.colors.primary;
   const memColor =
     memPct > 85
       ? theme.colors.destructive
       : memPct > 65
-        ? (theme.colors.warning ?? theme.colors.foregroundMuted)
+        ? theme.colors.foregroundMuted
         : theme.colors.primary;
 
   return (

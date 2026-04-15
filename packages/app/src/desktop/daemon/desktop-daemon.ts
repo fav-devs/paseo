@@ -109,8 +109,32 @@ function parseDesktopPairingOffer(raw: unknown): DesktopPairingOffer {
   };
 }
 
+function extractHostFromEndpoint(rawEndpoint: string): string {
+  const withoutScheme = rawEndpoint.trim().replace(/^[a-z]+:\/\//i, "");
+  const authority = withoutScheme.split("/")[0] ?? "";
+  if (authority.startsWith("[")) {
+    const end = authority.indexOf("]");
+    if (end > 1) {
+      return authority.slice(1, end).toLowerCase();
+    }
+  }
+  const colonIndex = authority.lastIndexOf(":");
+  return (colonIndex >= 0 ? authority.slice(0, colonIndex) : authority).toLowerCase();
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
 export function shouldUseDesktopDaemon(): boolean {
-  return isElectronRuntime();
+  if (!isElectronRuntime()) {
+    return false;
+  }
+  const configuredEndpoint = process.env.EXPO_PUBLIC_LOCAL_DAEMON?.trim();
+  if (!configuredEndpoint) {
+    return true;
+  }
+  return isLoopbackHost(extractHostFromEndpoint(configuredEndpoint));
 }
 
 export async function getDesktopDaemonStatus(): Promise<DesktopDaemonStatus> {
