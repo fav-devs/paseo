@@ -61,4 +61,26 @@ describe("checkout-git-actions-store", () => {
     vi.advanceTimersByTime(1000);
     expect(store.getStatus({ serverId, cwd, actionId: "commit" })).toBe("idle");
   });
+
+  it("forwards an explicit commit message", async () => {
+    const client = {
+      checkoutCommit: vi.fn(async () => ({})),
+    };
+
+    useSessionStore.setState((state) => ({
+      ...state,
+      sessions: {
+        ...(state.sessions as any),
+        [serverId]: { client } as any,
+      },
+    }));
+
+    const store = useCheckoutGitActionsStore.getState();
+    await store.commit({ serverId, cwd, message: "Add tree view" });
+
+    expect(client.checkoutCommit).toHaveBeenCalledWith(cwd, {
+      addAll: true,
+      message: "Add tree view",
+    });
+  });
 });

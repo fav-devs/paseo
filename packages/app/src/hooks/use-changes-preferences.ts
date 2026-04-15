@@ -11,18 +11,21 @@ const changesPreferencesSchema = z.object({
   layout: z.enum(["unified", "split"]).optional(),
   wrapLines: z.boolean().optional(),
   hideWhitespace: z.boolean().optional(),
+  viewMode: z.enum(["flat", "tree"]).optional(),
 });
 
 export interface ChangesPreferences {
   layout: "unified" | "split";
   wrapLines: boolean;
   hideWhitespace: boolean;
+  viewMode: "flat" | "tree";
 }
 
 export const DEFAULT_CHANGES_PREFERENCES: ChangesPreferences = {
   layout: "unified",
   wrapLines: false,
   hideWhitespace: false,
+  viewMode: "flat",
 };
 
 async function loadLegacyWrapLinesPreference(): Promise<boolean | null> {

@@ -6,6 +6,7 @@ import {
   ActivityIndicator,
   Pressable,
   FlatList,
+  TextInput,
   type LayoutChangeEvent,
   type NativeSyntheticEvent,
   type NativeScrollEvent,
@@ -43,6 +44,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { GitHubIcon } from "@/components/icons/github-icon";
 import { buildGitActions, type GitActions } from "@/components/git-actions-policy";
@@ -202,9 +204,48 @@ interface GitDiffPaneProps {
   hideHeaderRow?: boolean;
 }
 
-type DiffFlatItem =
-  | { type: "header"; file: ParsedDiffFile; fileIndex: number; isExpanded: boolean }
-  | { type: "body"; file: ParsedDiffFile; fileIndex: number };
+type DiffListItem =
+  | { type: "directory"; path: string; name: string; depth: number }
+  | { type: "header"; file: ParsedDiffFile; fileIndex: number; isExpanded: boolean; depth: number }
+  | { type: "body"; file: ParsedDiffFile; fileIndex: number; depth: number };
+
+function buildTreeItems(input: {
+  files: ParsedDiffFile[];
+  expandedPaths: Set<string>;
+}): DiffListItem[] {
+  const emittedDirectories = new Set<string>();
+  const items: DiffListItem[] = [];
+  const sortedFiles = [...input.files].sort((left, right) => left.path.localeCompare(right.path));
+
+  for (const file of sortedFiles) {
+    const fileIndex = input.files.findIndex((entry) => entry.path === file.path);
+    const segments = file.path.split("/").filter(Boolean);
+    const directorySegments = segments.slice(0, -1);
+
+    directorySegments.forEach((_, index) => {
+      const path = directorySegments.slice(0, index + 1).join("/");
+      if (emittedDirectories.has(path)) {
+        return;
+      }
+      emittedDirectories.add(path);
+      items.push({
+        type: "directory",
+        path,
+        name: directorySegments[index] ?? path,
+        depth: index,
+      });
+    });
+
+    const depth = directorySegments.length;
+    const isExpanded = input.expandedPaths.has(file.path);
+    items.push({ type: "header", file, fileIndex, isExpanded, depth });
+    if (isExpanded) {
+      items.push({ type: "body", file, fileIndex, depth });
+    }
+  }
+
+  return items;
+}
 
 export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDiffPaneProps) {
   const { theme } = useUnistyles();
@@ -215,6 +256,7 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   const router = useRouter();
   const toast = useToast();
   const closeToAgent = usePanelStore((state) => state.closeToAgent);
+  const [commitMessage, setCommitMessage] = useState("");
   const [diffModeOverride, setDiffModeOverride] = useState<"uncommitted" | "base" | null>(null);
   const [postShipArchiveSuggested, setPostShipArchiveSuggested] = useState(false);
   const [shipDefault, setShipDefault] = useState<"merge" | "pr">("merge");
@@ -237,6 +279,13 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   const handleToggleHideWhitespace = useCallback(() => {
     void updateChangesPreferences({ hideWhitespace: !changesPreferences.hideWhitespace });
   }, [changesPreferences.hideWhitespace, updateChangesPreferences]);
+
+  const handleViewModeChange = useCallback(
+    (nextViewMode: "flat" | "tree") => {
+      void updateChangesPreferences({ viewMode: nextViewMode });
+    },
+    [updateChangesPreferences],
+  );
 
   const handleInsertChatReference = useCallback(
     (reference: string) => {
@@ -359,7 +408,7 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
     (state) => state.setDiffExpandedPathsForWorkspace,
   );
   const expandedPaths = useMemo(() => new Set(expandedPathsArray ?? []), [expandedPathsArray]);
-  const diffListRef = useRef<FlatList<DiffFlatItem>>(null);
+  const diffListRef = useRef<FlatList<DiffListItem>>(null);
   const scrollbar = useWebScrollViewScrollbar(diffListRef, {
     enabled: showDesktopWebScrollbar,
   });
@@ -414,21 +463,26 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   );
 
   const { flatItems, stickyHeaderIndices } = useMemo(() => {
-    const items: DiffFlatItem[] = [];
+    const items: DiffListItem[] = [];
     const stickyIndices: number[] = [];
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const isExpanded = expandedPaths.has(file.path);
-      items.push({ type: "header", file, fileIndex: i, isExpanded });
+      items.push({ type: "header", file, fileIndex: i, isExpanded, depth: 0 });
       if (isExpanded) {
         stickyIndices.push(items.length - 1);
       }
       if (isExpanded) {
-        items.push({ type: "body", file, fileIndex: i });
+        items.push({ type: "body", file, fileIndex: i, depth: 0 });
       }
     }
     return { flatItems: items, stickyHeaderIndices: stickyIndices };
   }, [expandedPaths, files]);
+  const diffItems = useMemo(
+    () =>
+      changesPreferences.viewMode === "tree" ? buildTreeItems({ files, expandedPaths }) : flatItems,
+    [changesPreferences.viewMode, expandedPaths, files, flatItems],
+  );
 
   const handleHeaderHeightChange = useCallback((path: string, height: number) => {
     if (!Number.isFinite(height) || height <= 0) {
@@ -595,14 +649,20 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   );
 
   const handleCommit = useCallback(() => {
-    void runCommit({ serverId, cwd })
+    const trimmedCommitMessage = commitMessage.trim();
+    void runCommit({
+      serverId,
+      cwd,
+      message: trimmedCommitMessage || undefined,
+    })
       .then(() => {
+        setCommitMessage("");
         toastActionSuccess("Committed");
       })
       .catch((err) => {
         toastActionError(err, "Failed to commit");
       });
-  }, [cwd, runCommit, serverId, toastActionError, toastActionSuccess]);
+  }, [commitMessage, cwd, runCommit, serverId, toastActionError, toastActionSuccess]);
 
   const handlePull = useCallback(() => {
     void runPull({ serverId, cwd })
@@ -690,32 +750,67 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
       });
   }, [cwd, router, runArchiveWorktree, serverId, status, toast, toastActionError]);
 
-  const renderFlatItem = useCallback(
-    ({ item }: { item: DiffFlatItem }) => {
+  const renderDiffItem = useCallback(
+    ({ item }: { item: DiffListItem }) => {
+      if (item.type === "directory") {
+        return (
+          <View
+            style={[
+              styles.treeDirectoryRow,
+              {
+                paddingLeft: theme.spacing[3] + item.depth * theme.spacing[3],
+              },
+            ]}
+          >
+            <Text style={styles.treeDirectoryLabel}>{item.name}</Text>
+          </View>
+        );
+      }
+
       if (item.type === "header") {
         return (
-          <DiffFileHeader
-            file={item.file}
-            isExpanded={item.isExpanded}
-            onToggle={handleToggleExpanded}
-            onAddFileReference={handleAddFileReference}
-            onHeaderHeightChange={handleHeaderHeightChange}
-            testID={`diff-file-${item.fileIndex}`}
-          />
+          <View
+            style={
+              item.depth > 0
+                ? {
+                    paddingLeft: theme.spacing[3] + item.depth * theme.spacing[3],
+                  }
+                : undefined
+            }
+          >
+            <DiffFileHeader
+              file={item.file}
+              isExpanded={item.isExpanded}
+              onToggle={handleToggleExpanded}
+              onAddFileReference={handleAddFileReference}
+              onHeaderHeightChange={handleHeaderHeightChange}
+              testID={`diff-file-${item.fileIndex}`}
+            />
+          </View>
         );
       }
       return (
-        <GitDiffFileBody
-          file={item.file}
-          layout={effectiveLayout}
-          wrapLines={wrapLines}
-          hunkActionMode={hunkActionMode}
-          onAddHunkReference={handleAddHunkReference}
-          onBodyHeightChange={handleBodyHeightChange}
-          testID={`diff-file-${item.fileIndex}-body`}
-          cwd={cwd}
-          serverId={serverId}
-        />
+        <View
+          style={
+            item.depth > 0
+              ? {
+                  paddingLeft: theme.spacing[3] + item.depth * theme.spacing[3],
+                }
+              : undefined
+          }
+        >
+          <GitDiffFileBody
+            file={item.file}
+            layout={effectiveLayout}
+            wrapLines={wrapLines}
+            hunkActionMode={hunkActionMode}
+            onAddHunkReference={handleAddHunkReference}
+            onBodyHeightChange={handleBodyHeightChange}
+            testID={`diff-file-${item.fileIndex}-body`}
+            cwd={cwd}
+            serverId={serverId}
+          />
+        </View>
       );
     },
     [
@@ -729,13 +824,16 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
       wrapLines,
       cwd,
       serverId,
+      theme.spacing,
     ],
   );
 
-  const flatKeyExtractor = useCallback(
-    (item: DiffFlatItem) => `${item.type}-${item.file.path}`,
-    [],
-  );
+  const diffKeyExtractor = useCallback((item: DiffListItem) => {
+    if (item.type === "directory") {
+      return `directory-${item.path}`;
+    }
+    return `${item.type}-${item.file.path}`;
+  }, []);
 
   const hasChanges = files.length > 0;
   const diffErrorMessage =
@@ -776,6 +874,8 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
     (postShipArchiveSuggested || isMergedPullRequest);
 
   const commitDisabled = actionsDisabled || commitStatus === "pending";
+  const trimmedCommitMessage = commitMessage.trim();
+  const commitBoxDisabled = commitDisabled || !hasUncommittedChanges;
   const pullDisabled = actionsDisabled || pullStatus === "pending";
   const prDisabled = actionsDisabled || prCreateStatus === "pending";
   const mergeDisabled = actionsDisabled || mergeStatus === "pending";
@@ -832,11 +932,18 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
     bodyContent = (
       <FlatList
         ref={diffListRef}
-        data={flatItems}
-        renderItem={renderFlatItem}
-        keyExtractor={flatKeyExtractor}
-        stickyHeaderIndices={stickyHeaderIndices}
-        extraData={{ expandedPathsArray, effectiveLayout, wrapLines }}
+        data={diffItems}
+        renderItem={renderDiffItem}
+        keyExtractor={diffKeyExtractor}
+        stickyHeaderIndices={
+          changesPreferences.viewMode === "flat" ? stickyHeaderIndices : undefined
+        }
+        extraData={{
+          expandedPathsArray,
+          effectiveLayout,
+          viewMode: changesPreferences.viewMode,
+          wrapLines,
+        }}
         style={styles.scrollView}
         contentContainerStyle={styles.contentContainer}
         testID="git-diff-scroll"
@@ -849,7 +956,7 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
         refreshing={isManualRefresh && isDiffFetching}
         // Mixed-height rows (header + potentially very large body) are prone to clipping artifacts.
         // Keep a larger render window and disable clipping to avoid bodies disappearing mid-scroll.
-        removeClippedSubviews={false}
+        removeClippedSubviews={changesPreferences.viewMode === "flat" ? false : undefined}
         initialNumToRender={12}
         maxToRenderPerBatch={12}
         windowSize={10}
@@ -860,6 +967,12 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   useEffect(() => {
     setPostShipArchiveSuggested(false);
   }, [cwd]);
+
+  useEffect(() => {
+    if (!hasUncommittedChanges) {
+      setCommitMessage("");
+    }
+  }, [hasUncommittedChanges]);
 
   // ==========================================================================
   // Git Actions (Data-Oriented)
@@ -1034,6 +1147,42 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
               </DropdownMenuContent>
             </DropdownMenu>
             <View style={styles.diffStatusButtons}>
+              {files.length > 0 ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    style={({ hovered, pressed, open }) => [
+                      styles.diffModeTrigger,
+                      hovered && styles.diffModeTriggerHovered,
+                      (pressed || open) && styles.diffModeTriggerPressed,
+                    ]}
+                    testID="changes-view-mode"
+                    accessibilityRole="button"
+                    accessibilityLabel="View mode"
+                  >
+                    <Text style={styles.diffStatusText} numberOfLines={1}>
+                      {changesPreferences.viewMode === "tree" ? "Tree" : "Flat"}
+                    </Text>
+                    <ChevronDown size={12} color={theme.colors.foregroundMuted} />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" width={180} testID="changes-view-mode-menu">
+                    <DropdownMenuItem
+                      testID="changes-view-mode-flat"
+                      selected={changesPreferences.viewMode === "flat"}
+                      onSelect={() => handleViewModeChange("flat")}
+                    >
+                      Flat
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      testID="changes-view-mode-tree"
+                      selected={changesPreferences.viewMode === "tree"}
+                      onSelect={() => handleViewModeChange("tree")}
+                    >
+                      Tree
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
               {canUseSplitLayout ? (
                 <View style={styles.toggleButtonGroup}>
                   <Tooltip delayDuration={300}>
@@ -1181,6 +1330,36 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
       ) : null}
 
       {prErrorMessage ? <Text style={styles.actionErrorText}>{prErrorMessage}</Text> : null}
+
+      {isGit ? (
+        <View style={styles.commitComposer}>
+          <TextInput
+            accessibilityLabel="Commit message"
+            testID="changes-commit-message-input"
+            value={commitMessage}
+            onChangeText={setCommitMessage}
+            placeholder="Commit message"
+            placeholderTextColor={theme.colors.foregroundMuted}
+            editable={!commitBoxDisabled}
+            multiline
+            numberOfLines={2}
+            style={[
+              styles.commitInput,
+              commitBoxDisabled && styles.commitInputDisabled,
+              !isMobile && styles.commitInputDesktop,
+            ]}
+          />
+          <Button
+            testID="changes-commit-button"
+            size="sm"
+            variant="default"
+            disabled={commitBoxDisabled || trimmedCommitMessage.length === 0}
+            onPress={handleCommit}
+          >
+            Commit
+          </Button>
+        </View>
+      ) : null}
 
       <View style={styles.diffContainer}>
         {bodyContent}
@@ -1332,6 +1511,36 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     color: theme.colors.destructive,
   },
+  commitComposer: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: theme.spacing[2],
+    paddingHorizontal: theme.spacing[3],
+    paddingTop: theme.spacing[2],
+    paddingBottom: theme.spacing[2],
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  commitInput: {
+    flex: 1,
+    minHeight: 40,
+    maxHeight: 88,
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[2],
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface1,
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    textAlignVertical: "top",
+  },
+  commitInputDesktop: {
+    minHeight: 36,
+  },
+  commitInputDisabled: {
+    opacity: 0.6,
+  },
   diffContainer: {
     flex: 1,
     minHeight: 0,
@@ -1384,6 +1593,15 @@ const styles = StyleSheet.create((theme) => ({
   },
   fileSectionHeaderContainer: {
     overflow: "hidden",
+  },
+  treeDirectoryRow: {
+    paddingRight: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+  },
+  treeDirectoryLabel: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+    fontWeight: theme.fontWeight.medium,
   },
   fileSectionHeaderExpanded: {
     backgroundColor: theme.colors.surface1,
