@@ -39,6 +39,59 @@ Run agents in parallel on your own machines. Ship from your phone or your desk.
 - **Cross-device:** iOS, Android, desktop, web, and CLI. Start work at your desk, check in from your phone, script it from the terminal.
 - **Privacy-first:** Paseo doesn't have any telemetry, tracking, or forced log-ins.
 
+## Fork Status and Upstream Sync
+
+This repository is an active fork of [`getpaseo/paseo`](https://github.com/getpaseo/paseo) with additional product and workflow features.
+
+- **Current divergence:** `main` is **69 commits ahead** of `upstream/main`.
+- **Upstream base used for this fork history:** `918949c7` (`fix: file preview shows stale content when re-opening a file (#411)`).
+- **Fork remote:** [`fav-devs/paseo`](https://github.com/fav-devs/paseo)
+- **Upstream remote:** [`getpaseo/paseo`](https://github.com/getpaseo/paseo)
+
+### Notable fork additions after divergence
+
+- **Agent/provider platform**
+  - Cursor CLI provider via headless agent CLI.
+  - Gemini ACP provider wiring + provider visibility and mode compatibility fixes.
+  - Provider handoff (`fork_agent`) and conversation branch rewind/handoff helpers.
+  - Quota snapshot plumbing + quota usage UI/chips.
+- **Workspace UX and tools**
+  - Spotify explorer pane + compact header preview controls.
+  - Changes sidebar enhancements and commit graph.
+  - Workspace port forwarding UI.
+  - File explorer search.
+  - Explorer system monitor tab.
+  - Project-scoped workspace actions.
+  - Markdown rendering in file pane and earlier minimal editor groundwork.
+- **Server/runtime hardening**
+  - Cursor transcript replay restore + sanitization + dedupe.
+  - Attachment persistence (`.context/attachments/` for image/PDF payloads).
+  - Connection path hardening for malformed/poisoned payloads.
+  - Direct host endpoint matching fixes for app connectivity.
+- **Dev/release workflows**
+  - TUI runner + remote Tailscale workflow scripts.
+  - EAS/Expo identity and config adjustments.
+  - Utility scripts for merging upstream PRs in Bash/PowerShell.
+
+### Upstream PRs already merged into this fork
+
+This fork has already merged selected upstream work, including:
+
+- **PR #218**: merged with conflict resolution.
+- **PR #247**: merged with conflict resolution (and revert/cleanup in follow-up commits).
+- **PR #280**: Cursor CLI provider merge and follow-up fixes.
+- **PR #427**: Markdown file rendering in the file pane.
+- **PR #434**: Git submodule diff support.
+
+### Merging more upstream PRs
+
+When syncing more upstream PRs, prefer replaying merge commits in small batches and resolving conflicts feature-by-feature. In practice:
+
+1. fetch latest `upstream/main`;
+2. cherry-pick or merge targeted upstream PR branches/commits;
+3. run focused typecheck/tests for touched packages;
+4. document the merged PRs and conflict notes in this section.
+
 ## Getting Started
 
 Paseo runs a local server called the daemon that manages your coding agents. Clients like the desktop app, mobile app, web app, and CLI connect to it.
