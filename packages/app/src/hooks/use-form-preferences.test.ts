@@ -25,6 +25,31 @@ describe("mergeProviderPreferences", () => {
     });
   });
 
+  it("stores an explicit new-agent mode without dropping the remembered last-used mode", () => {
+    expect(
+      mergeProviderPreferences({
+        preferences: {
+          provider: "claude",
+          providerPreferences: {
+            claude: {
+              mode: "acceptEdits",
+            },
+          },
+        },
+        provider: "claude",
+        updates: { newAgentMode: "plan" },
+      }),
+    ).toEqual({
+      provider: "claude",
+      providerPreferences: {
+        claude: {
+          mode: "acceptEdits",
+          newAgentMode: "plan",
+        },
+      },
+    });
+  });
+
   it("merges thinking preferences by model without dropping existing entries", () => {
     expect(
       mergeProviderPreferences({

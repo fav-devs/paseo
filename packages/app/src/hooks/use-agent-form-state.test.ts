@@ -219,6 +219,77 @@ describe("useAgentFormState", () => {
       expect(resolved.thinkingOptionId).toBe("xhigh");
     });
 
+    it("prefers an explicit new-agent mode over the remembered last-used mode", () => {
+      const resolved = __private__.resolveFormState(
+        undefined,
+        {
+          provider: "claude",
+          providerPreferences: {
+            claude: {
+              mode: "acceptEdits",
+              newAgentMode: "plan",
+            },
+          },
+        },
+        null,
+        {
+          serverId: false,
+          provider: false,
+          modeId: false,
+          model: false,
+          thinkingOptionId: false,
+          workingDir: false,
+        },
+        {
+          serverId: null,
+          provider: "claude",
+          modeId: "",
+          model: "",
+          thinkingOptionId: "",
+          workingDir: "",
+        },
+        new Set<string>(),
+        claudeProviderMap,
+      );
+
+      expect(resolved.modeId).toBe("plan");
+    });
+
+    it("falls back to the remembered last-used mode when no explicit default is configured", () => {
+      const resolved = __private__.resolveFormState(
+        undefined,
+        {
+          provider: "claude",
+          providerPreferences: {
+            claude: {
+              mode: "acceptEdits",
+            },
+          },
+        },
+        null,
+        {
+          serverId: false,
+          provider: false,
+          modeId: false,
+          model: false,
+          thinkingOptionId: false,
+          workingDir: false,
+        },
+        {
+          serverId: null,
+          provider: "claude",
+          modeId: "",
+          model: "",
+          thinkingOptionId: "",
+          workingDir: "",
+        },
+        new Set<string>(),
+        claudeProviderMap,
+      );
+
+      expect(resolved.modeId).toBe("acceptEdits");
+    });
+
     it("falls back to model default when saved thinking preference is invalid", () => {
       const resolved = __private__.resolveFormState(
         undefined,

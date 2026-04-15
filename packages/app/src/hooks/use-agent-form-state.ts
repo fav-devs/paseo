@@ -160,6 +160,29 @@ function resolveThinkingOptionId(args: {
   return effectiveModel?.defaultThinkingOptionId ?? thinkingOptions[0]?.id ?? "";
 }
 
+function resolveProviderModeId(args: {
+  providerDef: AgentProviderDefinition | undefined;
+  providerPrefs: ProviderPreferences | undefined;
+  requestedModeId?: string;
+}): string {
+  const { providerDef, providerPrefs, requestedModeId } = args;
+  const validModeIds = providerDef?.modes.map((mode) => mode.id) ?? [];
+
+  if (requestedModeId && validModeIds.includes(requestedModeId)) {
+    return requestedModeId;
+  }
+
+  if (providerPrefs?.newAgentMode && validModeIds.includes(providerPrefs.newAgentMode)) {
+    return providerPrefs.newAgentMode;
+  }
+
+  if (providerPrefs?.mode && validModeIds.includes(providerPrefs.mode)) {
+    return providerPrefs.mode;
+  }
+
+  return providerDef?.defaultModeId ?? validModeIds[0] ?? "";
+}
+
 /**
  * Pure function that resolves form state from multiple data sources.
  * Priority: explicit (URL params) > provider defaults > lightweight app prefs > fallback
@@ -201,19 +224,14 @@ function resolveFormState(
 
   // 2. Resolve modeId (depends on provider)
   if (!userModified.modeId) {
-    const validModeIds = providerDef?.modes.map((m) => m.id) ?? [];
-
-    if (
-      typeof initialValues?.modeId === "string" &&
-      initialValues.modeId.length > 0 &&
-      validModeIds.includes(initialValues.modeId)
-    ) {
-      result.modeId = initialValues.modeId;
-    } else if (providerPrefs?.mode && validModeIds.includes(providerPrefs.mode)) {
-      result.modeId = providerPrefs.mode;
-    } else {
-      result.modeId = providerDef?.defaultModeId ?? validModeIds[0] ?? "";
-    }
+    result.modeId = resolveProviderModeId({
+      providerDef,
+      providerPrefs,
+      requestedModeId:
+        typeof initialValues?.modeId === "string" && initialValues.modeId.length > 0
+          ? initialValues.modeId
+          : undefined,
+    });
   }
 
   // 3. Resolve model (depends on provider + availableModels)
@@ -517,11 +535,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
           ? preferredModel
           : defaultModelId;
 
-      const validModeIds = providerDef?.modes.map((m) => m.id) ?? [];
-      const nextModeId =
-        providerPrefs?.mode && validModeIds.includes(providerPrefs.mode)
-          ? providerPrefs.mode
-          : (providerDef?.defaultModeId ?? "");
+      const nextModeId = resolveProviderModeId({ providerDef, providerPrefs });
 
       const preferredThinking = nextModelId
         ? (providerPrefs?.thinkingByModel?.[nextModelId]?.trim() ?? "")
@@ -558,6 +572,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
       }
       const providerDef = selectableProviderDefinitionMap.get(provider);
       const providerModels = allProviderModels.get(provider) ?? null;
+      const providerPrefs = preferences?.providerPreferences?.[provider];
       const normalizedModelId = normalizeSelectedModelId(modelId);
       const nextModelId = normalizedModelId || resolveDefaultModelId(providerModels);
       const nextThinkingOptionId = resolveThinkingOptionId({
@@ -570,13 +585,18 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
         ...prev,
         provider,
         model: nextModelId,
-        modeId: providerDef?.defaultModeId ?? "",
+        modeId: resolveProviderModeId({ providerDef, providerPrefs }),
         thinkingOptionId: nextThinkingOptionId,
       }));
       setUserModified((prev) => ({ ...prev, provider: true, model: true }));
       void updatePreferences({ provider });
     },
-    [allProviderModels, selectableProviderDefinitionMap, updatePreferences],
+    [
+      allProviderModels,
+      preferences?.providerPreferences,
+      selectableProviderDefinitionMap,
+      updatePreferences,
+    ],
   );
 
   const setModeFromUser = useCallback((modeId: string) => {

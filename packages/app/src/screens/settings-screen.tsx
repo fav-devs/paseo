@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import type { MutableRefObject, ComponentType } from "react";
 import { View, Text, ScrollView, Alert, Pressable } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
@@ -23,6 +23,7 @@ import {
   Puzzle,
   Blocks,
   Smartphone,
+  Check,
 } from "lucide-react-native";
 import { useAppSettings, type AppSettings, type SendBehavior } from "@/hooks/use-settings";
 import { THEME_SWATCHES, type ThemeName } from "@/styles/theme";
@@ -73,6 +74,11 @@ import { ProviderDiagnosticSheet } from "@/components/provider-diagnostic-sheet"
 import { StatusBadge } from "@/components/ui/status-badge";
 import { buildProviderDefinitions } from "@/utils/provider-definitions";
 import { isWeb } from "@/constants/platform";
+import { mergeProviderPreferences, useFormPreferences } from "@/hooks/use-form-preferences";
+import {
+  AGENT_PROVIDER_DEFINITIONS,
+  type AgentProviderDefinition,
+} from "@server/server/agent/provider-manifest";
 
 // ---------------------------------------------------------------------------
 // Section definitions
@@ -518,6 +524,179 @@ interface ProvidersSectionProps {
   routeServerId: string;
 }
 
+interface PermissionsSectionProps {
+  routeServerId: string;
+  isDesktopApp: boolean;
+}
+
+function resolveDefaultPermissionModeSummary(args: {
+  provider: AgentProviderDefinition;
+  configuredModeId: string | undefined;
+}): { label: string; description: string } {
+  const configuredMode = args.configuredModeId
+    ? args.provider.modes.find((mode) => mode.id === args.configuredModeId)
+    : undefined;
+
+  if (configuredMode) {
+    return {
+      label: configuredMode.label,
+      description:
+        configuredMode.description ?? "New agents for this provider start in this permission mode.",
+    };
+  }
+
+  return {
+    label: "Remember last used",
+    description:
+      "Falls back to the last mode you used for this provider, then the provider default.",
+  };
+}
+
+function PermissionsSection({ routeServerId, isDesktopApp }: PermissionsSectionProps) {
+  const { theme } = useUnistyles();
+  const isConnected = useHostRuntimeIsConnected(routeServerId);
+  const { entries } = useProvidersSnapshot(routeServerId);
+  const { preferences, updatePreferences } = useFormPreferences();
+  const [modePickerProviderId, setModePickerProviderId] = useState<string | null>(null);
+
+  const providerDefinitions = useMemo(() => {
+    const sourceDefinitions =
+      isConnected && entries && entries.length > 0
+        ? buildProviderDefinitions(entries)
+        : AGENT_PROVIDER_DEFINITIONS;
+
+    return sourceDefinitions.filter((provider) => provider.modes.length > 0);
+  }, [entries, isConnected]);
+
+  const selectedProvider =
+    providerDefinitions.find((provider) => provider.id === modePickerProviderId) ?? null;
+
+  const handleSelectDefaultMode = useCallback(
+    (providerId: string, modeId?: string) => {
+      void updatePreferences((current) =>
+        mergeProviderPreferences({
+          preferences: current,
+          provider: providerId,
+          updates: { newAgentMode: modeId },
+        }),
+      );
+      setModePickerProviderId(null);
+    },
+    [updatePreferences],
+  );
+
+  return (
+    <>
+      <View style={settingsStyles.section}>
+        <Text style={settingsStyles.sectionTitle}>New agent permission defaults</Text>
+        <View style={[settingsStyles.card, styles.audioCard]}>
+          {providerDefinitions.map((provider, index) => {
+            const configuredModeId = preferences.providerPreferences?.[provider.id]?.newAgentMode;
+            const summary = resolveDefaultPermissionModeSummary({
+              provider,
+              configuredModeId,
+            });
+            const ProviderIcon = getProviderIcon(provider.id);
+
+            return (
+              <Pressable
+                key={provider.id}
+                onPress={() => setModePickerProviderId(provider.id)}
+                style={({ pressed }) => [
+                  styles.audioRow,
+                  index > 0 ? styles.audioRowBorder : null,
+                  pressed ? styles.selectableRowPressed : null,
+                ]}
+              >
+                <View style={styles.audioRowContent}>
+                  <View
+                    style={{ flexDirection: "row", alignItems: "center", gap: theme.spacing[2] }}
+                  >
+                    <ProviderIcon size={theme.iconSize.sm} color={theme.colors.foreground} />
+                    <Text style={styles.audioRowTitle}>{provider.label}</Text>
+                  </View>
+                  <Text style={styles.audioRowSubtitle}>{summary.label}</Text>
+                  <Text style={styles.aboutHintText}>{summary.description}</Text>
+                </View>
+                <ChevronDown size={theme.iconSize.md} color={theme.colors.foregroundMuted} />
+              </Pressable>
+            );
+          })}
+        </View>
+        {!isConnected ? (
+          <Text style={styles.aboutHintText}>
+            Showing built-in providers. Connect to a host to configure custom providers too.
+          </Text>
+        ) : null}
+      </View>
+
+      {isDesktopApp ? <DesktopPermissionsSection /> : null}
+
+      {selectedProvider ? (
+        <AdaptiveModalSheet
+          title={`${selectedProvider.label} default mode`}
+          visible
+          onClose={() => setModePickerProviderId(null)}
+        >
+          <Text style={styles.permissionDefaultsIntro}>
+            Choose which permission mode new {selectedProvider.label} agents start with.
+          </Text>
+
+          <View style={styles.permissionOptionList}>
+            <Pressable
+              onPress={() => handleSelectDefaultMode(selectedProvider.id)}
+              style={({ pressed }) => [
+                styles.permissionOption,
+                !preferences.providerPreferences?.[selectedProvider.id]?.newAgentMode
+                  ? styles.permissionOptionSelected
+                  : null,
+                pressed ? styles.selectableRowPressed : null,
+              ]}
+            >
+              <View style={styles.permissionOptionContent}>
+                <Text style={styles.permissionOptionTitle}>Remember last used</Text>
+                <Text style={styles.permissionOptionDescription}>
+                  Falls back to the last mode you used for this provider, then the provider default.
+                </Text>
+              </View>
+              {!preferences.providerPreferences?.[selectedProvider.id]?.newAgentMode ? (
+                <Check size={theme.iconSize.md} color={theme.colors.primary} />
+              ) : null}
+            </Pressable>
+
+            {selectedProvider.modes.map((mode) => {
+              const isSelected =
+                preferences.providerPreferences?.[selectedProvider.id]?.newAgentMode === mode.id;
+
+              return (
+                <Pressable
+                  key={mode.id}
+                  onPress={() => handleSelectDefaultMode(selectedProvider.id, mode.id)}
+                  style={({ pressed }) => [
+                    styles.permissionOption,
+                    isSelected ? styles.permissionOptionSelected : null,
+                    pressed ? styles.selectableRowPressed : null,
+                  ]}
+                >
+                  <View style={styles.permissionOptionContent}>
+                    <Text style={styles.permissionOptionTitle}>{mode.label}</Text>
+                    {mode.description ? (
+                      <Text style={styles.permissionOptionDescription}>{mode.description}</Text>
+                    ) : null}
+                  </View>
+                  {isSelected ? (
+                    <Check size={theme.iconSize.md} color={theme.colors.primary} />
+                  ) : null}
+                </Pressable>
+              );
+            })}
+          </View>
+        </AdaptiveModalSheet>
+      ) : null}
+    </>
+  );
+}
+
 function ProvidersSection({ routeServerId }: ProvidersSectionProps) {
   const { theme } = useUnistyles();
   const isConnected = useHostRuntimeIsConnected(routeServerId);
@@ -695,6 +874,7 @@ interface SettingsSectionContentProps {
   sectionId: SettingsSectionId;
   hostsProps: HostsSectionProps;
   generalProps: GeneralSectionProps;
+  permissionsProps: PermissionsSectionProps;
   providersProps: ProvidersSectionProps;
   diagnosticsProps: DiagnosticsSectionProps;
   aboutProps: AboutSectionProps;
@@ -707,6 +887,7 @@ function SettingsSectionContent({
   sectionId,
   hostsProps,
   generalProps,
+  permissionsProps,
   providersProps,
   diagnosticsProps,
   aboutProps,
@@ -730,7 +911,7 @@ function SettingsSectionContent({
     case "integrations":
       return isDesktopApp ? <IntegrationsSection /> : null;
     case "permissions":
-      return isDesktopApp ? <DesktopPermissionsSection /> : null;
+      return <PermissionsSection {...permissionsProps} />;
     case "pair-device":
       return isDesktopApp ? <PairDeviceSection /> : null;
     case "daemon":
@@ -1136,6 +1317,11 @@ export default function SettingsScreen() {
     handleSendBehaviorChange,
   };
 
+  const permissionsProps: PermissionsSectionProps = {
+    routeServerId,
+    isDesktopApp,
+  };
+
   const diagnosticsProps: DiagnosticsSectionProps = {
     voiceAudioEngine,
     isPlaybackTestRunning,
@@ -1155,6 +1341,7 @@ export default function SettingsScreen() {
   const sectionContentProps: Omit<SettingsSectionContentProps, "sectionId"> = {
     hostsProps,
     generalProps,
+    permissionsProps,
     providersProps,
     diagnosticsProps,
     aboutProps,
@@ -1984,6 +2171,44 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
+  },
+  selectableRowPressed: {
+    opacity: 0.85,
+  },
+  permissionDefaultsIntro: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    marginBottom: theme.spacing[4],
+  },
+  permissionOptionList: {
+    gap: theme.spacing[3],
+  },
+  permissionOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[3],
+    paddingHorizontal: theme.spacing[4],
+    paddingVertical: theme.spacing[3],
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.lg,
+    backgroundColor: theme.colors.surface1,
+  },
+  permissionOptionSelected: {
+    borderColor: theme.colors.primary,
+    backgroundColor: theme.colors.surface2,
+  },
+  permissionOptionContent: {
+    flex: 1,
+  },
+  permissionOptionTitle: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.base,
+  },
+  permissionOptionDescription: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    marginTop: theme.spacing[1],
   },
   aboutValue: {
     color: theme.colors.foregroundMuted,
