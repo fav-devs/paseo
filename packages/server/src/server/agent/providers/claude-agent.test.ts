@@ -593,6 +593,43 @@ describe("ClaudeAgentSession context window usage", () => {
     });
   });
 
+  test("rate_limit_event emits quota_updated with effective reset metadata", async () => {
+    const session = await createSessionForTest();
+
+    const events = session.translateMessageToEvents({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "rejected",
+        resetsAt: Date.parse("2026-04-15T09:00:00.000Z"),
+        rateLimitType: "five_hour",
+        utilization: 0.97,
+        overageStatus: "allowed_warning",
+        overageResetsAt: Date.parse("2026-04-15T10:00:00.000Z"),
+        isUsingOverage: true,
+      },
+      uuid: "rate-limit-1",
+      session_id: "session-1",
+    } as any);
+
+    expect(events).toContainEqual({
+      type: "quota_updated",
+      provider: "claude",
+      quota: {
+        status: "warning",
+        resetsAt: "2026-04-15T10:00:00.000Z",
+        limitKind: "five_hour",
+        utilization: 0.97,
+        providerData: {
+          status: "rejected",
+          rateLimitType: "five_hour",
+          overageStatus: "allowed_warning",
+          overageResetsAt: "2026-04-15T10:00:00.000Z",
+          isUsingOverage: true,
+        },
+      },
+    });
+  });
+
   test("message_start stream events emit usage_updated with per-request usage", async () => {
     const session = await createSessionForTest();
 

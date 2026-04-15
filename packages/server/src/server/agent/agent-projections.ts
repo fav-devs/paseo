@@ -5,6 +5,7 @@ import type {
   AgentFeature,
   AgentMetadata,
   AgentMode,
+  AgentQuota,
   AgentPermissionRequest,
   AgentPersistenceHandle,
   AgentSessionConfig,
@@ -109,6 +110,11 @@ export function toAgentPayload(
   const usage = sanitizeUsage(agent.lastUsage);
   if (usage !== undefined) {
     payload.lastUsage = usage;
+  }
+
+  const quota = sanitizeQuota(agent.lastQuota);
+  if (quota !== undefined) {
+    payload.lastQuota = quota;
   }
 
   if (agent.lastError !== undefined) {
@@ -302,6 +308,45 @@ function sanitizeUsage(value: unknown): AgentUsage | undefined {
     return undefined;
   }
   return Object.keys(result).length ? result : undefined;
+}
+
+function sanitizeQuota(value: unknown): AgentQuota | undefined {
+  const sanitized = sanitizeOptionalJson(value);
+  if (!sanitized || !isJsonObject(sanitized)) {
+    return undefined;
+  }
+  const status = sanitized.status;
+  if (status !== "ok" && status !== "warning" && status !== "blocked") {
+    return undefined;
+  }
+
+  const result: AgentQuota = { status };
+  const resetsAt = sanitized.resetsAt;
+  if (typeof resetsAt === "string" && resetsAt.length > 0) {
+    result.resetsAt = resetsAt;
+  } else if (resetsAt !== undefined && resetsAt !== null) {
+    return undefined;
+  }
+  const limitKind = sanitized.limitKind;
+  if (typeof limitKind === "string" && limitKind.length > 0) {
+    result.limitKind = limitKind;
+  } else if (limitKind !== undefined && limitKind !== null) {
+    return undefined;
+  }
+  const utilization = sanitized.utilization;
+  if (typeof utilization === "number" && Number.isFinite(utilization)) {
+    result.utilization = utilization;
+  } else if (utilization !== undefined && utilization !== null) {
+    return undefined;
+  }
+  const providerData = sanitized.providerData;
+  if (providerData !== undefined) {
+    if (!isJsonObject(providerData)) {
+      return undefined;
+    }
+    result.providerData = providerData;
+  }
+  return result;
 }
 
 function sanitizeRuntimeInfo(

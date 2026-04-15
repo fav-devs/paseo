@@ -141,6 +141,16 @@ export type AgentUsage = {
   contextWindowUsedTokens?: number;
 };
 
+export type AgentQuotaStatus = "ok" | "warning" | "blocked";
+
+export type AgentQuota = {
+  status: AgentQuotaStatus;
+  resetsAt?: string;
+  limitKind?: string;
+  utilization?: number;
+  providerData?: AgentMetadata;
+};
+
 export const TOOL_CALL_ICON_NAMES = [
   "wrench",
   "square_terminal",
@@ -307,6 +317,7 @@ export type AgentStreamEvent =
   | { type: "turn_started"; provider: AgentProvider; turnId?: string }
   | { type: "turn_completed"; provider: AgentProvider; usage?: AgentUsage; turnId?: string }
   | { type: "usage_updated"; provider: AgentProvider; usage: AgentUsage; turnId?: string }
+  | { type: "quota_updated"; provider: AgentProvider; quota: AgentQuota; turnId?: string }
   | {
       type: "turn_failed";
       provider: AgentProvider;

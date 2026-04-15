@@ -51,6 +51,8 @@ export {
 
 // Agent SDK types for CLI commands
 export type {
+  AgentQuota,
+  AgentQuotaStatus,
   AgentMode,
   AgentUsage,
   AgentCapabilityFlags,

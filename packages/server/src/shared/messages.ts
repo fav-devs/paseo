@@ -75,6 +75,7 @@ import type {
   AgentCapabilityFlags,
   AgentModelDefinition,
   AgentMode,
+  AgentQuota,
   AgentPermissionRequest,
   AgentPermissionResponse,
   AgentPersistenceHandle,
@@ -177,6 +178,14 @@ const AgentUsageSchema: z.ZodType<AgentUsage> = z.object({
   totalCostUsd: z.number().optional(),
   contextWindowMaxTokens: z.number().optional(),
   contextWindowUsedTokens: z.number().optional(),
+});
+
+const AgentQuotaSchema: z.ZodType<AgentQuota> = z.object({
+  status: z.enum(["ok", "warning", "blocked"]),
+  resetsAt: z.string().optional(),
+  limitKind: z.string().optional(),
+  utilization: z.number().optional(),
+  providerData: z.record(z.unknown()).optional(),
 });
 
 const McpStdioServerConfigSchema = z.object({
@@ -479,6 +488,11 @@ export const AgentStreamEventPayloadSchema = z.discriminatedUnion("type", [
     usage: AgentUsageSchema.optional(),
   }),
   z.object({
+    type: z.literal("quota_updated"),
+    provider: AgentProviderSchema,
+    quota: AgentQuotaSchema,
+  }),
+  z.object({
     type: z.literal("turn_failed"),
     provider: AgentProviderSchema,
     error: z.string(),
@@ -563,6 +577,7 @@ export const AgentSnapshotPayloadSchema = z.object({
   persistence: AgentPersistenceHandleSchema.nullable(),
   runtimeInfo: AgentRuntimeInfoSchema.optional(),
   lastUsage: AgentUsageSchema.optional(),
+  lastQuota: AgentQuotaSchema.optional(),
   lastError: z.string().optional(),
   title: z.string().nullable(),
   labels: z.record(z.string()).default({}),

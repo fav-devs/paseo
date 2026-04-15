@@ -20,6 +20,7 @@ import type {
   AgentPermissionResult,
   AgentPersistenceHandle,
   AgentPromptInput,
+  AgentQuota,
   AgentProvider,
   AgentRunOptions,
   AgentRunResult,
@@ -188,6 +189,7 @@ type ManagedAgentBase = {
   historyPrimed: boolean;
   lastUserMessageAt: Date | null;
   lastUsage?: AgentUsage;
+  lastQuota?: AgentQuota;
   lastError?: string;
   attention: AttentionState;
   foregroundTurnWaiters: Set<ForegroundTurnWaiter>;
@@ -822,6 +824,7 @@ export class AgentManager {
     const preservedTimelineNextSeq = timelineState.nextSeq;
     const preservedHistoryPrimed = existing.historyPrimed;
     const preservedLastUsage = existing.lastUsage;
+    const preservedLastQuota = existing.lastQuota;
     const preservedLastError = existing.lastError;
     const preservedAttention = existing.attention;
     const handle = existing.persistence;
@@ -868,6 +871,7 @@ export class AgentManager {
       timelineNextSeq: preservedTimelineNextSeq,
       historyPrimed: preservedHistoryPrimed,
       lastUsage: preservedLastUsage,
+      lastQuota: preservedLastQuota,
       lastError: preservedLastError,
       attention: preservedAttention,
     });
@@ -1799,6 +1803,7 @@ export class AgentManager {
       timelineNextSeq?: number;
       historyPrimed?: boolean;
       lastUsage?: AgentUsage;
+      lastQuota?: AgentQuota;
       lastError?: string;
       attention?: AttentionState;
     },
@@ -1852,6 +1857,7 @@ export class AgentManager {
       historyPrimed: options?.historyPrimed ?? false,
       lastUserMessageAt: options?.lastUserMessageAt ?? null,
       lastUsage: options?.lastUsage,
+      lastQuota: options?.lastQuota,
       lastError: options?.lastError,
       attention:
         options?.attention != null
@@ -2145,6 +2151,10 @@ export class AgentManager {
         break;
       case "usage_updated":
         agent.lastUsage = event.usage;
+        this.emitState(agent);
+        break;
+      case "quota_updated":
+        agent.lastQuota = event.quota;
         this.emitState(agent);
         break;
       case "timeline":

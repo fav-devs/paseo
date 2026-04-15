@@ -100,4 +100,23 @@ describe("serializeAgentStreamEvent", () => {
     const serialized = serializeAgentStreamEvent(event as AgentStreamEvent);
     expect(serialized).toBeNull();
   });
+
+  test("serializes quota_updated events", () => {
+    const event: AgentStreamEvent = {
+      type: "quota_updated",
+      provider: "claude",
+      quota: {
+        status: "warning",
+        resetsAt: "2026-04-15T08:00:00.000Z",
+        limitKind: "five_hour",
+        utilization: 0.91,
+        providerData: {
+          isUsingOverage: false,
+        },
+      },
+    };
+
+    const serialized = serializeAgentStreamEvent(event);
+    expect(serialized).toEqual(event);
+  });
 });

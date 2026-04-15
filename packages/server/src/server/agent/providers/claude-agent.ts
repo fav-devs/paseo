@@ -17,6 +17,7 @@ import {
   type SpawnOptions,
   type SDKMessage,
   type SDKPartialAssistantMessage,
+  type SDKRateLimitEvent,
   type SDKTaskProgressMessage,
   type SDKResultMessage,
   type SDKSystemMessage,
@@ -57,6 +58,8 @@ import type {
   AgentPermissionUpdate,
   AgentPersistenceHandle,
   AgentPromptInput,
+  AgentQuota,
+  AgentQuotaStatus,
   AgentRunOptions,
   AgentRunResult,
   AgentSession,
@@ -1251,6 +1254,93 @@ function readContextWindowUsedTokensFromTaskProgress(
 
 function readUsageFromTaskNotification(message: { usage?: unknown }): number | undefined {
   return readUsageTotalTokens(message.usage);
+}
+
+function mapClaudeQuotaStatus(
+  status: "allowed" | "allowed_warning" | "rejected" | undefined,
+): AgentQuotaStatus | null {
+  switch (status) {
+    case "allowed":
+      return "ok";
+    case "allowed_warning":
+      return "warning";
+    case "rejected":
+      return "blocked";
+    default:
+      return null;
+  }
+}
+
+function toIsoStringFromUnixMs(value: number | undefined): string | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  return new Date(value).toISOString();
+}
+
+function convertClaudeRateLimitEventQuota(event: SDKRateLimitEvent): AgentQuota | null {
+  const info = event.rate_limit_info;
+  const primaryStatus = mapClaudeQuotaStatus(info.status);
+  if (!primaryStatus) {
+    return null;
+  }
+
+  const overageStatus = mapClaudeQuotaStatus(info.overageStatus);
+  const effectiveStatus =
+    info.isUsingOverage && overageStatus
+      ? overageStatus
+      : primaryStatus === "blocked" && overageStatus && overageStatus !== "blocked"
+        ? overageStatus
+        : primaryStatus;
+
+  const quota: AgentQuota = {
+    status: effectiveStatus,
+  };
+
+  const primaryReset = toIsoStringFromUnixMs(info.resetsAt);
+  const overageReset = toIsoStringFromUnixMs(info.overageResetsAt);
+  const resetsAt =
+    info.isUsingOverage && overageReset
+      ? overageReset
+      : primaryStatus === "blocked" && overageStatus && overageStatus !== "blocked"
+        ? (overageReset ?? primaryReset)
+        : primaryReset;
+  if (resetsAt) {
+    quota.resetsAt = resetsAt;
+  }
+  if (typeof info.rateLimitType === "string" && info.rateLimitType.length > 0) {
+    quota.limitKind = info.rateLimitType;
+  }
+  if (typeof info.utilization === "number" && Number.isFinite(info.utilization)) {
+    quota.utilization = info.utilization;
+  }
+
+  const providerData: AgentQuota["providerData"] = {
+    status: info.status,
+  };
+  if (typeof info.rateLimitType === "string") {
+    providerData.rateLimitType = info.rateLimitType;
+  }
+  if (typeof info.overageStatus === "string") {
+    providerData.overageStatus = info.overageStatus;
+  }
+  if (overageReset) {
+    providerData.overageResetsAt = overageReset;
+  }
+  if (typeof info.overageDisabledReason === "string") {
+    providerData.overageDisabledReason = info.overageDisabledReason;
+  }
+  if (typeof info.isUsingOverage === "boolean") {
+    providerData.isUsingOverage = info.isUsingOverage;
+  }
+  if (typeof info.surpassedThreshold === "number" && Number.isFinite(info.surpassedThreshold)) {
+    providerData.surpassedThreshold = info.surpassedThreshold;
+  }
+  if (Object.keys(providerData).length > 0) {
+    quota.providerData = providerData;
+  }
+
+  return quota;
 }
 
 function readStreamRequestInputTokens(event: Record<string, unknown>): number | undefined {
@@ -2820,6 +2910,17 @@ class ClaudeAgentSession implements AgentSession {
         });
         for (const item of timelineItems) {
           events.push({ type: "timeline", item, provider: "claude" });
+        }
+        break;
+      }
+      case "rate_limit_event": {
+        const quota = convertClaudeRateLimitEventQuota(message);
+        if (quota) {
+          events.push({
+            type: "quota_updated",
+            provider: "claude",
+            quota,
+          });
         }
         break;
       }

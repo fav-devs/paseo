@@ -223,6 +223,15 @@ describe("toAgentPayload", () => {
     const agent = createManagedAgent({
       pendingPermissions: pending,
       lastUsage: { inputTokens: 10, outputTokens: 20 },
+      lastQuota: {
+        status: "warning",
+        resetsAt: "2026-04-15T08:00:00.000Z",
+        limitKind: "five_hour",
+        utilization: 0.92,
+        providerData: {
+          isUsingOverage: false,
+        },
+      },
       lastError: "boom",
     });
 
@@ -249,6 +258,8 @@ describe("toAgentPayload", () => {
     expect(payload.capabilities).toEqual(agent.capabilities);
     expect(payload.lastUsage).toEqual(agent.lastUsage);
     expect(payload.lastUsage).not.toBe(agent.lastUsage);
+    expect(payload.lastQuota).toEqual(agent.lastQuota);
+    expect(payload.lastQuota).not.toBe(agent.lastQuota);
     expect(payload.lastError).toBe("boom");
     expect((payload as any).session).toBeUndefined();
 
@@ -258,6 +269,11 @@ describe("toAgentPayload", () => {
     expect(agent.capabilities.supportsStreaming).toBe(true);
     payload.pendingPermissions[0].title = "Mutated title";
     expect(permissionA.title).toBe("Run command");
+    if (!payload.lastQuota || !agent.lastQuota) {
+      throw new Error("Expected lastQuota");
+    }
+    payload.lastQuota.providerData = { isUsingOverage: true };
+    expect(agent.lastQuota.providerData).toEqual({ isUsingOverage: false });
   });
 
   it("omits usage when any numeric usage field is NaN", () => {

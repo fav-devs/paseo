@@ -29,6 +29,12 @@ interface AgentInspect {
     CachedTokens: number;
     CostUsd: number;
   } | null;
+  LastQuota: {
+    Status: string;
+    ResetsAt: string | null;
+    LimitKind: string | null;
+    Utilization: number | null;
+  } | null;
   Capabilities: {
     Streaming: boolean;
     Persistence: boolean;
@@ -104,6 +110,26 @@ function resolveModel(snapshot: AgentSnapshotPayload): string | null {
   return normalizeModelId(snapshot.runtimeInfo?.model) ?? normalizeModelId(snapshot.model);
 }
 
+function readLastQuota(snapshot: AgentSnapshotPayload): AgentInspect["LastQuota"] {
+  const rawQuota = "lastQuota" in snapshot ? snapshot.lastQuota : undefined;
+  if (!rawQuota || typeof rawQuota !== "object") {
+    return null;
+  }
+
+  const quota = rawQuota as Record<string, unknown>;
+  const status = typeof quota.status === "string" ? quota.status : null;
+  if (!status) {
+    return null;
+  }
+
+  return {
+    Status: status,
+    ResetsAt: typeof quota.resetsAt === "string" ? quota.resetsAt : null,
+    LimitKind: typeof quota.limitKind === "string" ? quota.limitKind : null,
+    Utilization: typeof quota.utilization === "number" ? quota.utilization : null,
+  };
+}
+
 /** Convert agent snapshot to inspection data */
 function toInspectData(snapshot: AgentSnapshotPayload): AgentInspect {
   const lastUsage = snapshot.lastUsage
@@ -114,6 +140,7 @@ function toInspectData(snapshot: AgentSnapshotPayload): AgentInspect {
         CostUsd: snapshot.lastUsage.totalCostUsd ?? 0,
       }
     : null;
+  const lastQuota = readLastQuota(snapshot);
 
   const capabilities = snapshot.capabilities
     ? {
@@ -142,6 +169,7 @@ function toInspectData(snapshot: AgentSnapshotPayload): AgentInspect {
     CreatedAt: snapshot.createdAt,
     UpdatedAt: snapshot.updatedAt,
     LastUsage: lastUsage,
+    LastQuota: lastQuota,
     Capabilities: capabilities,
     AvailableModes: snapshot.availableModes
       ? snapshot.availableModes.map((m) => ({ id: m.id, label: m.label }))
@@ -176,6 +204,13 @@ function toInspectRows(agent: AgentInspect): InspectRow[] {
     rows.push({
       key: "LastUsage",
       value: `InputTokens: ${agent.LastUsage.InputTokens}, OutputTokens: ${agent.LastUsage.OutputTokens}, CachedTokens: ${agent.LastUsage.CachedTokens}, CostUsd: ${formatCost(agent.LastUsage.CostUsd)}`,
+    });
+  }
+
+  if (agent.LastQuota) {
+    rows.push({
+      key: "LastQuota",
+      value: `Status: ${agent.LastQuota.Status}, ResetsAt: ${agent.LastQuota.ResetsAt ?? "null"}, LimitKind: ${agent.LastQuota.LimitKind ?? "null"}, Utilization: ${agent.LastQuota.Utilization ?? "null"}`,
     });
   }
 
