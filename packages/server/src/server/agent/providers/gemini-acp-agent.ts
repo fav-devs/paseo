@@ -23,14 +23,24 @@ const GEMINI_CAPABILITIES: AgentCapabilityFlags = {
 
 const GEMINI_MODES: AgentMode[] = [
   {
-    id: "agent",
-    label: "Agent",
-    description: "Standard Gemini CLI ACP mode for coding tasks",
+    id: "default",
+    label: "Default",
+    description: "Prompts for approval",
+  },
+  {
+    id: "autoEdit",
+    label: "Auto Edit",
+    description: "Auto-approves edit tools",
+  },
+  {
+    id: "yolo",
+    label: "YOLO",
+    description: "Auto-approves all tools",
   },
   {
     id: "plan",
     label: "Plan",
-    description: "Read-only planning and analysis without applying edits",
+    description: "Read-only mode",
   },
 ];
 

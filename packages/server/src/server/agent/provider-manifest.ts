@@ -142,16 +142,30 @@ const CURSOR_MODES: AgentProviderModeDefinition[] = [
 
 const GEMINI_MODES: AgentProviderModeDefinition[] = [
   {
-    id: "agent",
-    label: "Agent",
-    description: "Standard Gemini CLI ACP mode for coding tasks",
+    id: "default",
+    label: "Default",
+    description: "Prompts for approval",
+    icon: "ShieldCheck",
+    colorTier: "safe",
+  },
+  {
+    id: "autoEdit",
+    label: "Auto Edit",
+    description: "Auto-approves edit tools",
     icon: "ShieldAlert",
     colorTier: "moderate",
   },
   {
+    id: "yolo",
+    label: "YOLO",
+    description: "Auto-approves all tools",
+    icon: "ShieldOff",
+    colorTier: "dangerous",
+  },
+  {
     id: "plan",
     label: "Plan",
-    description: "Read-only planning and analysis without applying edits",
+    description: "Read-only mode",
     icon: "ShieldCheck",
     colorTier: "planning",
   },
@@ -219,7 +233,7 @@ export const AGENT_PROVIDER_DEFINITIONS: AgentProviderDefinition[] = [
     id: "gemini",
     label: "Gemini",
     description: "Google Gemini CLI via ACP (`gemini --acp`)",
-    defaultModeId: "agent",
+    defaultModeId: "default",
     modes: GEMINI_MODES,
   },
 ];
