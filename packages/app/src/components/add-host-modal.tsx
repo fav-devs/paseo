@@ -3,7 +3,7 @@ import { Alert, Text, TextInput, View } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { Link2 } from "lucide-react-native";
-import type { HostProfile } from "@/types/host-connection";
+import { hostHasDirectEndpoint, type HostProfile } from "@/types/host-connection";
 import { useHosts, useHostMutations } from "@/runtime/host-runtime";
 import { normalizeHostPort } from "@/utils/daemon-endpoints";
 import { DaemonConnectionTestError, connectToDaemon } from "@/utils/test-daemon-connection";
@@ -193,6 +193,27 @@ export function AddHostModal({
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid host:port";
       setErrorMessage(message);
+      return;
+    }
+
+    const existingProfile = daemons.find((daemon) => hostHasDirectEndpoint(daemon, endpoint));
+    if (existingProfile) {
+      if (targetServerId && existingProfile.serverId !== targetServerId) {
+        const message = `That endpoint belongs to ${existingProfile.serverId}, not ${targetServerId}.`;
+        setErrorMessage(message);
+        if (!isMobile) {
+          Alert.alert("Wrong daemon", message);
+        }
+        return;
+      }
+
+      onSaved?.({
+        profile: existingProfile,
+        serverId: existingProfile.serverId,
+        hostname: null,
+        isNewHost: false,
+      });
+      handleClose();
       return;
     }
 
