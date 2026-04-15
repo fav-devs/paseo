@@ -1,4 +1,6 @@
+import { EventEmitter } from "node:events";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { PassThrough } from "node:stream";
 import os from "node:os";
 import path from "node:path";
 
@@ -6,6 +8,8 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { CursorCliAgentClient, CursorCliAgentSession } from "./cursor-cli-agent.js";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
+import * as executableModule from "../../../utils/executable.js";
+import * as spawnModule from "../../../utils/spawn.js";
 
 const originalHome = process.env.HOME;
 
@@ -125,4 +129,105 @@ describe("CursorCliAgentClient", () => {
 
     expect(events).toEqual([]);
   });
+
+  test("startTurn enables partial streaming and ignores duplicate final assistant snapshot", async () => {
+    vi.spyOn(executableModule, "findExecutable").mockResolvedValue("/home/favour/.local/bin/agent");
+
+    const fakeChild = createFakeChildProcess();
+    const spawnSpy = vi.spyOn(spawnModule, "spawnProcess").mockReturnValue(fakeChild as any);
+    const session = new CursorCliAgentSession(
+      { provider: "cursor", cwd: "/tmp/repo" },
+      {
+        logger: createTestLogger(),
+        resumeChatId: null,
+      },
+    );
+
+    const events: Array<{ type: string; item?: { type: string; text: string } }> = [];
+    session.subscribe((event) => {
+      if (event.type === "timeline" || event.type === "turn_completed") {
+        events.push(event as any);
+      }
+    });
+
+    await session.startTurn("hello");
+
+    await vi.waitFor(() => {
+      expect(spawnSpy).toHaveBeenCalledTimes(1);
+    });
+    const argv = spawnSpy.mock.calls[0]?.[1];
+    expect(argv).toContain("--stream-partial-output");
+
+    fakeChild.stdout.write(
+      `${JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: "cursor-session-1",
+      })}\n`,
+    );
+    fakeChild.stdout.write(
+      `${JSON.stringify({
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "Hel" }] },
+        timestamp_ms: 1,
+      })}\n`,
+    );
+    fakeChild.stdout.write(
+      `${JSON.stringify({
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "lo" }] },
+        timestamp_ms: 2,
+      })}\n`,
+    );
+    fakeChild.stdout.write(
+      `${JSON.stringify({
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "Hello" }] },
+      })}\n`,
+    );
+    fakeChild.stdout.write(
+      `${JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "Hello",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      })}\n`,
+    );
+    fakeChild.stdout.end();
+    fakeChild.exitCode = 0;
+    fakeChild.emit("exit", 0, null);
+
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.type === "turn_completed")).toBe(true);
+    });
+
+    expect(
+      events.filter((event) => event.type === "timeline").map((event) => event.item?.text),
+    ).toEqual(["Hel", "lo"]);
+  });
 });
+
+function createFakeChildProcess() {
+  const emitter = new EventEmitter() as EventEmitter & {
+    stdout: PassThrough;
+    stderr: PassThrough;
+    stdin: PassThrough;
+    killed: boolean;
+    exitCode: number | null;
+    signalCode: NodeJS.Signals | null;
+    kill: (signal?: NodeJS.Signals) => boolean;
+  };
+  emitter.stdout = new PassThrough();
+  emitter.stderr = new PassThrough();
+  emitter.stdin = new PassThrough();
+  emitter.killed = false;
+  emitter.exitCode = null;
+  emitter.signalCode = null;
+  emitter.kill = (signal?: NodeJS.Signals) => {
+    emitter.killed = true;
+    emitter.signalCode = signal ?? null;
+    return true;
+  };
+  return emitter;
+}

@@ -244,6 +244,7 @@ function buildPrintArgv(
     "--trust",
     "--output-format",
     "stream-json",
+    "--stream-partial-output",
     "--workspace",
     config.cwd,
   ];
@@ -554,6 +555,7 @@ export class CursorCliAgentSession implements AgentSession {
   private bootstrapThreadEventPending = true;
   private persistedHistory: AgentTimelineItem[] = [];
   private historyPending = false;
+  private currentAssistantText = "";
 
   constructor(config: AgentSessionConfig, options: CursorCliAgentSessionOptions) {
     this.logger = options.logger.child({ module: "agent", provider: CURSOR_PROVIDER });
@@ -750,6 +752,7 @@ export class CursorCliAgentSession implements AgentSession {
 
     const turnId = randomUUID();
     this.activeForegroundTurnId = turnId;
+    this.currentAssistantText = "";
     this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
 
     const promptText = extractPromptText(prompt);
@@ -881,7 +884,8 @@ export class CursorCliAgentSession implements AgentSession {
     }
 
     if (type === "assistant") {
-      const text = extractAssistantText(record.message);
+      const rawText = extractAssistantText(record.message);
+      const text = this.consumeAssistantChunk(rawText);
       if (text) {
         this.pushEvent({
           type: "timeline",
@@ -937,10 +941,28 @@ export class CursorCliAgentSession implements AgentSession {
     }
   }
 
+  private consumeAssistantChunk(rawText: string): string {
+    if (!rawText) {
+      return "";
+    }
+    if (!this.currentAssistantText) {
+      this.currentAssistantText = rawText;
+      return rawText;
+    }
+    if (rawText.startsWith(this.currentAssistantText)) {
+      const suffix = rawText.slice(this.currentAssistantText.length);
+      this.currentAssistantText = rawText;
+      return suffix;
+    }
+    this.currentAssistantText += rawText;
+    return rawText;
+  }
+
   private finishTurn(
     event: Extract<AgentStreamEvent, { type: "turn_completed" | "turn_failed" | "turn_canceled" }>,
   ): void {
     this.activeForegroundTurnId = null;
+    this.currentAssistantText = "";
     this.pushEvent(event);
   }
 }
