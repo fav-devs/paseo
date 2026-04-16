@@ -72,6 +72,7 @@ import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { getProviderIcon } from "@/components/provider-icons";
 import { ProviderDiagnosticSheet } from "@/components/provider-diagnostic-sheet";
+import { SpinningRefreshIcon } from "@/components/spinning-refresh-icon";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { buildProviderDefinitions } from "@/utils/provider-definitions";
 import { isWeb } from "@/constants/platform";
@@ -701,9 +702,11 @@ function PermissionsSection({ routeServerId, isDesktopApp }: PermissionsSectionP
 function ProvidersSection({ routeServerId }: ProvidersSectionProps) {
   const { theme } = useUnistyles();
   const isConnected = useHostRuntimeIsConnected(routeServerId);
-  const { entries, isLoading, isFetching, refresh } = useProvidersSnapshot(routeServerId);
+  const { entries, isLoading, isRefreshing, refresh } = useProvidersSnapshot(routeServerId);
   const [diagnosticProvider, setDiagnosticProvider] = useState<string | null>(null);
   const providerDefinitions = buildProviderDefinitions(entries);
+  const providerRefreshInFlight =
+    isRefreshing || (entries?.some((entry) => entry.status === "loading") ?? false);
 
   const hasServer = routeServerId.length > 0;
 
@@ -714,18 +717,25 @@ function ProvidersSection({ routeServerId }: ProvidersSectionProps) {
           <Text style={settingsStyles.sectionHeaderTitle}>Providers</Text>
           {hasServer && isConnected ? (
             <Pressable
-              onPress={refresh}
-              disabled={isFetching}
-              style={[settingsStyles.sectionHeaderLink, isFetching ? { opacity: 0.5 } : null]}
+              onPress={() => {
+                void refresh();
+              }}
+              disabled={providerRefreshInFlight}
+              hitSlop={8}
+              style={({ hovered, pressed }) => [
+                settingsStyles.sectionHeaderLink,
+                styles.providerRefreshButton,
+                (hovered || pressed) && styles.providerRefreshButtonHovered,
+                providerRefreshInFlight ? styles.providerRefreshButtonDisabled : null,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Refresh providers"
             >
-              <Text
-                style={{
-                  color: theme.colors.primary,
-                  fontSize: theme.fontSize.xs,
-                }}
-              >
-                Refresh
-              </Text>
+              <SpinningRefreshIcon
+                spinning={providerRefreshInFlight}
+                size={theme.iconSize.sm}
+                color={theme.colors.foregroundMuted}
+              />
             </Pressable>
           ) : null}
         </View>
@@ -750,8 +760,15 @@ function ProvidersSection({ routeServerId }: ProvidersSectionProps) {
                   ? entry.error.trim()
                   : null;
 
+              const modelCount = entry?.models?.length ?? 0;
+
               return (
-                <View key={def.id} style={styles.audioRow}>
+                <Pressable
+                  key={def.id}
+                  style={styles.audioRow}
+                  onPress={() => setDiagnosticProvider(def.id)}
+                  accessibilityRole="button"
+                >
                   <View style={styles.audioRowContent}>
                     <View
                       style={{ flexDirection: "row", alignItems: "center", gap: theme.spacing[2] }}
@@ -764,31 +781,27 @@ function ProvidersSection({ routeServerId }: ProvidersSectionProps) {
                         {providerError}
                       </Text>
                     ) : null}
+                    {status === "ready" && modelCount > 0 ? (
+                      <Text style={styles.audioRowSubtitle}>
+                        {modelCount === 1 ? "1 model" : `${modelCount} models`}
+                      </Text>
+                    ) : null}
                   </View>
-                  <View style={styles.providerActions}>
-                    <StatusBadge
-                      label={
-                        status === "ready"
-                          ? "Available"
-                          : status === "error"
-                            ? "Error"
-                            : status === "loading"
-                              ? "Loading..."
-                              : "Not installed"
-                      }
-                      variant={
-                        status === "ready" ? "success" : status === "error" ? "error" : "muted"
-                      }
-                    />
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onPress={() => setDiagnosticProvider(def.id)}
-                    >
-                      Diagnostic
-                    </Button>
-                  </View>
-                </View>
+                  <StatusBadge
+                    label={
+                      status === "ready"
+                        ? "Available"
+                        : status === "error"
+                          ? "Error"
+                          : status === "loading"
+                            ? "Loading..."
+                            : "Not installed"
+                    }
+                    variant={
+                      status === "ready" ? "success" : status === "error" ? "error" : "muted"
+                    }
+                  />
+                </Pressable>
               );
             })}
           </View>
@@ -2219,6 +2232,18 @@ const styles = StyleSheet.create((theme) => ({
   },
   formButtonPrimaryText: {
     color: theme.colors.palette.white,
+  },
+  providerRefreshButton: {
+    width: 30,
+    height: 30,
+    borderRadius: theme.borderRadius.full,
+    justifyContent: "center",
+  },
+  providerRefreshButtonHovered: {
+    backgroundColor: theme.colors.surface2,
+  },
+  providerRefreshButtonDisabled: {
+    opacity: 0.5,
   },
   // Audio settings card
   audioCard: {

@@ -174,7 +174,7 @@ type ClaudeAgentSessionOptions = {
   queryFactory?: typeof query;
 };
 
-type ClaudeThinkingEffort = "low" | "medium" | "high" | "max";
+type ClaudeThinkingEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 function resolveClaudeSpawnCommand(
   spawnOptions: SpawnOptions,
@@ -241,7 +241,13 @@ function applyRuntimeSettingsToClaudeOptions(
 }
 
 function isClaudeThinkingEffort(value: string | null | undefined): value is ClaudeThinkingEffort {
-  return value === "low" || value === "medium" || value === "high" || value === "max";
+  return (
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh" ||
+    value === "max"
+  );
 }
 
 function sanitizeClaudeProjectPath(cwd: string): string {
@@ -1137,6 +1143,8 @@ export class ClaudeAgentClient implements AgentClient {
     if (command?.mode === "replace") {
       return await isCommandAvailable(command.argv[0]);
     }
+    // Default mode uses @anthropic-ai/claude-agent-sdk's bundled cli.js run
+    // via process.execPath. No external `claude` binary is required.
     return true;
   }
 
@@ -1145,6 +1153,7 @@ export class ClaudeAgentClient implements AgentClient {
       const resolvedBinary = (await findExecutable("claude")) ?? "not found";
       const available = await this.isAvailable();
       const version = await resolveClaudeVersion(this.runtimeSettings);
+      const auth = available ? await resolveClaudeAuth(this.runtimeSettings) : null;
       let modelsValue = "Not checked";
       let status = formatDiagnosticStatus(available);
 
@@ -1165,6 +1174,7 @@ export class ClaudeAgentClient implements AgentClient {
         diagnostic: formatProviderDiagnostic("Claude Code", [
           { label: "Binary", value: resolvedBinary },
           ...(version ? [{ label: "Version", value: version }] : []),
+          ...(auth ? [{ label: "Auth", value: auth }] : []),
           { label: "Models", value: modelsValue },
           { label: "Status", value: status },
         ]),
@@ -1206,6 +1216,48 @@ async function resolveClaudeVersion(
 
     const { stdout } = await execCommand(executable, ["--version"], { timeout: 5_000 });
     return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveClaudeAuth(
+  runtimeSettings?: ProviderRuntimeSettings,
+): Promise<string | null> {
+  const command = runtimeSettings?.command;
+
+  const run = async (
+    executable: string,
+    args: string[],
+  ): Promise<{ stdout: string; stderr: string }> => {
+    try {
+      return await execCommand(executable, args, { timeout: 5_000 });
+    } catch (error) {
+      const err = error as { stdout?: string; stderr?: string; message?: string };
+      return {
+        stdout: err.stdout ?? "",
+        stderr: err.stderr ?? err.message ?? "",
+      };
+    }
+  };
+
+  try {
+    let result: { stdout: string; stderr: string };
+    if (command?.mode === "replace") {
+      result = await run(command.argv[0]!, [...command.argv.slice(1), "auth", "status"]);
+    } else {
+      const executable = await findExecutable("claude");
+      if (!executable) {
+        return null;
+      }
+      result = await run(executable, ["auth", "status"]);
+    }
+
+    const combined = [result.stdout, result.stderr]
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .join("\n");
+    return combined || null;
   } catch {
     return null;
   }
@@ -2158,7 +2210,9 @@ class ClaudeAgentSession implements AgentSession {
     let effort: ClaudeOptions["effort"];
     if (thinkingOptionId && isClaudeThinkingEffort(thinkingOptionId)) {
       thinking = { type: "adaptive" };
-      effort = thinkingOptionId;
+      // SDK 0.2.71 types `effort` as 'low' | 'medium' | 'high' | 'max'; Opus 4.7
+      // adds 'xhigh' which the binary accepts but the typings don't yet expose.
+      effort = thinkingOptionId as ClaudeOptions["effort"];
     }
 
     const appendedSystemPrompt = [
@@ -2234,6 +2288,12 @@ class ClaudeAgentSession implements AgentSession {
     this.lastOptionsModel = base.model ?? null;
     if (this.claudeSessionId) {
       base.resume = this.claudeSessionId;
+    }
+    if (this.runtimeSettings?.disallowedTools?.length) {
+      base.disallowedTools = [
+        ...(base.disallowedTools ?? []),
+        ...this.runtimeSettings.disallowedTools,
+      ];
     }
     return this.applyRuntimeSettings(base);
   }

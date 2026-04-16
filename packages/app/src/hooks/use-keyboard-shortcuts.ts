@@ -30,6 +30,7 @@ import { useKeyboardShortcutOverrides } from "@/hooks/use-keyboard-shortcut-over
 import { isNative } from "@/constants/platform";
 import { keyboardEventToComboString } from "@/keyboard/shortcut-string";
 import { resolveProjectActionShortcutMatch } from "@/screens/workspace/project-actions";
+import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 
 const EMPTY_PROJECT_ACTIONS: readonly import("@server/shared/messages").ProjectActionPayload[] = [];
 
@@ -339,6 +340,12 @@ export function useKeyboardShortcuts({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!shouldHandle()) {
+        return;
+      }
+
+      // During IME composition, Enter confirms the candidate selection and must
+      // not route through global shortcuts like message send.
+      if (isImeComposingKeyboardEvent(event)) {
         return;
       }
 

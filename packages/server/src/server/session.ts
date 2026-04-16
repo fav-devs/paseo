@@ -72,9 +72,11 @@ import {
 } from "./voice/voice-turn-controller.js";
 import {
   buildConfigOverrides,
-  buildSessionConfig,
   extractTimestamps,
+  toAgentPersistenceHandle,
 } from "./persistence-hooks.js";
+import { ensureAgentLoaded } from "./agent/agent-loading.js";
+import { sendPromptToAgent, unarchiveAgentState } from "./agent/mcp-shared.js";
 import { experimental_createMCPClient } from "ai";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { VoiceCallerContext, VoiceSpeakHandler } from "./voice-types.js";
@@ -95,7 +97,12 @@ import type {
 } from "./agent/agent-manager.js";
 import { buildTranscriptFromTimeline } from "./agent/agent-manager.js";
 import { scheduleAgentMetadataGeneration } from "./agent/agent-metadata-generator.js";
-import { resolveEffectiveThinkingOptionId, toAgentPayload } from "./agent/agent-projections.js";
+import {
+  buildStoredAgentPayload,
+  resolveEffectiveThinkingOptionId,
+  resolveStoredAgentPayloadUpdatedAt,
+  toAgentPayload,
+} from "./agent/agent-projections.js";
 import { MAX_EXPLICIT_AGENT_TITLE_CHARS } from "./agent/agent-title-limits.js";
 import {
   appendTimelineItemIfAgentKnown,
@@ -113,14 +120,14 @@ import {
   generateStructuredAgentResponseWithFallback,
 } from "./agent/agent-response-loop.js";
 import type {
+  AgentPersistenceHandle,
   AgentPermissionResponse,
+  AgentProvider,
   AgentPromptContentBlock,
   AgentPromptInput,
   AgentRunOptions,
   AgentSessionConfig,
   AgentStreamEvent,
-  AgentProvider,
-  AgentPersistenceHandle,
   ProviderSnapshotEntry,
 } from "./agent/agent-sdk-types.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent/agent-storage.js";
@@ -202,8 +209,6 @@ import {
 
 const execAsync = promisify(exec);
 const MAX_INITIAL_AGENT_TITLE_CHARS = Math.min(60, MAX_EXPLICIT_AGENT_TITLE_CHARS);
-const pendingAgentInitializations = new Map<string, Promise<ManagedAgent>>();
-const DEFAULT_AGENT_PROVIDER = "claude";
 
 // TODO: Remove once all app store clients are on >=0.1.45 and understand arbitrary provider strings.
 // Clients before 0.1.45 validate providers with z.enum(["claude", "codex", "opencode"]) and reject
@@ -542,54 +547,6 @@ function convertPCMToWavBuffer(
   pcmBuffer.copy(wavBuffer, 44);
 
   return wavBuffer;
-}
-
-function isRegisteredProvider(
-  providerRegistry: ReturnType<typeof buildProviderRegistry>,
-  value: string,
-): boolean {
-  return Object.prototype.hasOwnProperty.call(providerRegistry, value);
-}
-
-function coerceAgentProvider(
-  logger: pino.Logger,
-  providerRegistry: ReturnType<typeof buildProviderRegistry>,
-  value: string,
-  agentId?: string,
-): AgentProvider {
-  if (isRegisteredProvider(providerRegistry, value)) {
-    return value;
-  }
-  logger.warn(
-    { value, agentId, defaultProvider: DEFAULT_AGENT_PROVIDER },
-    `Unknown provider '${value}' for agent ${agentId ?? "unknown"}; defaulting to '${DEFAULT_AGENT_PROVIDER}'`,
-  );
-  return DEFAULT_AGENT_PROVIDER;
-}
-
-function toAgentPersistenceHandle(
-  logger: pino.Logger,
-  providerRegistry: ReturnType<typeof buildProviderRegistry>,
-  handle: StoredAgentRecord["persistence"],
-): AgentPersistenceHandle | null {
-  if (!handle) {
-    return null;
-  }
-  const provider = handle.provider;
-  if (!isRegisteredProvider(providerRegistry, provider)) {
-    logger.warn({ provider }, `Ignoring persistence handle with unknown provider '${provider}'`);
-    return null;
-  }
-  if (!handle.sessionId) {
-    logger.warn("Ignoring persistence handle missing sessionId");
-    return null;
-  }
-  return {
-    provider,
-    sessionId: handle.sessionId,
-    nativeHandle: handle.nativeHandle,
-    metadata: handle.metadata,
-  } satisfies AgentPersistenceHandle;
 }
 
 /**
@@ -1135,9 +1092,7 @@ export class Session {
     const storedRecord = await this.agentStorage.get(agent.id);
     const title = storedRecord?.title ?? storedRecord?.config?.title ?? null;
     const payload = toAgentPayload(agent, { title });
-    const storedUpdatedAt = storedRecord
-      ? this.resolveStoredAgentPayloadUpdatedAt(storedRecord)
-      : null;
+    const storedUpdatedAt = storedRecord ? resolveStoredAgentPayloadUpdatedAt(storedRecord) : null;
     if (storedUpdatedAt) {
       const liveUpdatedAt = Date.parse(payload.updatedAt);
       const persistedUpdatedAt = Date.parse(storedUpdatedAt);
@@ -1153,161 +1108,7 @@ export class Session {
   }
 
   private buildStoredAgentPayload(record: StoredAgentRecord): AgentSnapshotPayload {
-    const defaultCapabilities = {
-      supportsStreaming: false,
-      supportsSessionPersistence: true,
-      supportsDynamicModes: false,
-      supportsMcpServers: false,
-      supportsReasoningStream: false,
-      supportsToolInvocations: true,
-    } as const;
-
-    const createdAt = new Date(record.createdAt);
-    const updatedAt = new Date(this.resolveStoredAgentPayloadUpdatedAt(record));
-    const lastUserMessageAt = record.lastUserMessageAt ? new Date(record.lastUserMessageAt) : null;
-
-    const provider = coerceAgentProvider(
-      this.sessionLogger,
-      this.providerRegistry,
-      record.provider,
-      record.id,
-    );
-    const runtimeInfo = record.runtimeInfo
-      ? {
-          provider: coerceAgentProvider(
-            this.sessionLogger,
-            this.providerRegistry,
-            record.runtimeInfo.provider,
-            record.id,
-          ),
-          sessionId: record.runtimeInfo.sessionId,
-          ...(Object.prototype.hasOwnProperty.call(record.runtimeInfo, "model")
-            ? { model: record.runtimeInfo.model ?? null }
-            : {}),
-          ...(Object.prototype.hasOwnProperty.call(record.runtimeInfo, "thinkingOptionId")
-            ? { thinkingOptionId: record.runtimeInfo.thinkingOptionId ?? null }
-            : {}),
-          ...(Object.prototype.hasOwnProperty.call(record.runtimeInfo, "modeId")
-            ? { modeId: record.runtimeInfo.modeId ?? null }
-            : {}),
-          ...(record.runtimeInfo.extra ? { extra: record.runtimeInfo.extra } : {}),
-        }
-      : undefined;
-    return {
-      id: record.id,
-      provider,
-      cwd: record.cwd,
-      model: record.config?.model ?? null,
-      thinkingOptionId: record.config?.thinkingOptionId ?? null,
-      effectiveThinkingOptionId: resolveEffectiveThinkingOptionId({
-        runtimeInfo,
-        configuredThinkingOptionId: record.config?.thinkingOptionId ?? null,
-      }),
-      ...(runtimeInfo ? { runtimeInfo } : {}),
-      createdAt: createdAt.toISOString(),
-      updatedAt: updatedAt.toISOString(),
-      lastUserMessageAt: lastUserMessageAt ? lastUserMessageAt.toISOString() : null,
-      status: record.lastStatus,
-      capabilities: defaultCapabilities,
-      currentModeId: record.lastModeId ?? null,
-      availableModes: [],
-      pendingPermissions: [],
-      persistence: toAgentPersistenceHandle(
-        this.sessionLogger,
-        this.providerRegistry,
-        record.persistence,
-      ),
-      lastUsage: undefined,
-      lastError: undefined,
-      title: record.title ?? record.config?.title ?? null,
-      requiresAttention: record.requiresAttention ?? false,
-      attentionReason: record.attentionReason ?? null,
-      attentionTimestamp: record.attentionTimestamp ?? null,
-      archivedAt: record.archivedAt ?? null,
-      labels: record.labels,
-    };
-  }
-
-  private resolveStoredAgentPayloadUpdatedAt(record: StoredAgentRecord): string {
-    const timestamps = [record.updatedAt, record.lastActivityAt]
-      .filter((value): value is string => typeof value === "string" && value.length > 0)
-      .map((value) => ({
-        raw: value,
-        parsed: Date.parse(value),
-      }))
-      .filter((value) => !Number.isNaN(value.parsed));
-
-    if (timestamps.length === 0) {
-      return record.updatedAt;
-    }
-
-    timestamps.sort((a, b) => b.parsed - a.parsed);
-    return timestamps[0].raw;
-  }
-
-  private async ensureAgentLoaded(agentId: string): Promise<ManagedAgent> {
-    const existing = this.agentManager.getAgent(agentId);
-    if (existing) {
-      return existing;
-    }
-
-    const inflight = pendingAgentInitializations.get(agentId);
-    if (inflight) {
-      return inflight;
-    }
-
-    const initPromise = (async () => {
-      const record = await this.agentStorage.get(agentId);
-      if (!record) {
-        throw new Error(`Agent not found: ${agentId}`);
-      }
-
-      const handle = toAgentPersistenceHandle(
-        this.sessionLogger,
-        this.providerRegistry,
-        record.persistence,
-      );
-      let snapshot: ManagedAgent;
-      if (handle) {
-        snapshot = await this.agentManager.resumeAgentFromPersistence(
-          handle,
-          buildConfigOverrides(record),
-          agentId,
-          extractTimestamps(record),
-        );
-        this.sessionLogger.info(
-          { agentId, provider: record.provider },
-          "Agent resumed from persistence",
-        );
-      } else {
-        const config = buildSessionConfig(record, {
-          validProviders: Object.keys(this.providerRegistry),
-          logger: this.sessionLogger,
-        });
-        if (!config) {
-          throw new Error(`Agent ${agentId} references unavailable provider '${record.provider}'`);
-        }
-        snapshot = await this.agentManager.createAgent(config, agentId, { labels: record.labels });
-        this.sessionLogger.info(
-          { agentId, provider: record.provider },
-          "Agent created from stored config",
-        );
-      }
-
-      await this.agentManager.hydrateTimelineFromProvider(agentId);
-      return this.agentManager.getAgent(agentId) ?? snapshot;
-    })();
-
-    pendingAgentInitializations.set(agentId, initPromise);
-
-    try {
-      return await initPromise;
-    } finally {
-      const current = pendingAgentInitializations.get(agentId);
-      if (current === initPromise) {
-        pendingAgentInitializations.delete(agentId);
-      }
-    }
+    return buildStoredAgentPayload(record, this.providerRegistry, this.sessionLogger);
   }
 
   // TODO: Remove once all app store clients are on >=0.1.45.
@@ -2472,21 +2273,6 @@ export class Session {
     });
   }
 
-  private async unarchiveAgentState(agentId: string): Promise<boolean> {
-    const record = await this.agentStorage.get(agentId);
-    if (!record || !record.archivedAt) {
-      return false;
-    }
-    const updatedAt = new Date().toISOString();
-    await this.agentStorage.upsert({
-      ...record,
-      archivedAt: null,
-      updatedAt,
-    });
-    this.agentManager.notifyAgentState(agentId);
-    return true;
-  }
-
   private async unarchiveAgentByHandle(handle: AgentPersistenceHandle): Promise<void> {
     const records = await this.agentStorage.list();
     const matched = records.find(
@@ -2497,7 +2283,7 @@ export class Session {
     if (!matched) {
       return;
     }
-    await this.unarchiveAgentState(matched.id);
+    await unarchiveAgentState(this.agentStorage, this.agentManager, matched.id);
   }
 
   private async handleUpdateAgentRequest(
@@ -2782,7 +2568,11 @@ export class Session {
   private async enableVoiceModeForAgent(agentId: string): Promise<string> {
     const startedAt = Date.now();
     this.sessionLogger.info({ agentId }, "enableVoiceModeForAgent.ensureAgentLoaded.start");
-    const existing = await this.ensureAgentLoaded(agentId);
+    const existing = await ensureAgentLoaded(agentId, {
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      logger: this.sessionLogger,
+    });
     this.sessionLogger.info(
       { agentId, elapsedMs: Date.now() - startedAt },
       "enableVoiceModeForAgent.ensureAgentLoaded.done",
@@ -2991,52 +2781,28 @@ export class Session {
       `Sending text to agent ${agentId}${images && images.length > 0 ? ` with ${images.length} image attachment(s)` : ""}`,
     );
 
-    await this.unarchiveAgentState(agentId);
+    const promptText = options?.spokenInput ? wrapSpokenInput(text) : text;
+    const prompt = this.buildAgentPrompt(promptText, images);
 
     try {
-      await this.ensureAgentLoaded(agentId);
+      await sendPromptToAgent({
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        agentId,
+        userMessageText: text,
+        prompt,
+        messageId,
+        runOptions,
+        logger: this.sessionLogger,
+      });
+      return { ok: true };
     } catch (error) {
-      this.handleAgentRunError(agentId, error, "Failed to initialize agent before sending prompt");
+      this.handleAgentRunError(agentId, error, "Failed to send agent message");
       return {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
       };
     }
-
-    try {
-      this.agentManager.recordUserMessage(agentId, text, {
-        messageId,
-        emitState: false,
-      });
-    } catch (error) {
-      this.sessionLogger.error(
-        { err: error, agentId },
-        `Failed to record user message for agent ${agentId}`,
-      );
-    }
-
-    const promptText = options?.spokenInput ? wrapSpokenInput(text) : text;
-
-    // Persist attached images to .context/attachments/
-    let persistedPaths: Array<{ relativePath: string; fileName: string }> | undefined;
-    if (images && images.length > 0) {
-      const agent = this.agentManager.getAgent(agentId);
-      if (agent?.cwd) {
-        try {
-          const persisted = await persistAttachments(agent.cwd, images);
-          persistedPaths = persisted.map((p) => ({
-            relativePath: p.relativePath,
-            fileName: p.fileName,
-          }));
-        } catch {
-          // Non-fatal — images still sent inline
-        }
-      }
-    }
-
-    const prompt = this.buildAgentPrompt(promptText, images, persistedPaths);
-
-    return this.startAgentStream(agentId, prompt, runOptions);
   }
 
   /**
@@ -3196,7 +2962,7 @@ export class Session {
     try {
       await this.unarchiveAgentByHandle(handle);
       const snapshot = await this.agentManager.resumeAgentFromPersistence(handle, overrides);
-      await this.unarchiveAgentState(snapshot.id);
+      await unarchiveAgentState(this.agentStorage, this.agentManager, snapshot.id);
       await this.agentManager.hydrateTimelineFromProvider(snapshot.id);
       await this.forwardAgentUpdate(snapshot);
       const timelineSize = this.agentManager.getTimeline(snapshot.id).length;
@@ -3237,7 +3003,7 @@ export class Session {
     this.sessionLogger.info({ agentId }, `Refreshing agent ${agentId} from persistence`);
 
     try {
-      await this.unarchiveAgentState(agentId);
+      await unarchiveAgentState(this.agentStorage, this.agentManager, agentId);
       let snapshot: ManagedAgent;
       const existing = this.agentManager.getAgent(agentId);
       if (existing) {
@@ -3602,7 +3368,10 @@ export class Session {
   private async handleRefreshProvidersSnapshotRequest(
     msg: Extract<SessionInboundMessage, { type: "refresh_providers_snapshot_request" }>,
   ): Promise<void> {
-    this.providerSnapshotManager?.refresh(msg.cwd ? expandTilde(msg.cwd) : undefined);
+    await this.providerSnapshotManager?.refresh({
+      cwd: msg.cwd ? expandTilde(msg.cwd) : undefined,
+      providers: msg.providers,
+    });
     this.emit({
       type: "refresh_providers_snapshot_response",
       payload: {
@@ -6753,7 +6522,11 @@ export class Session {
       : undefined;
 
     try {
-      const snapshot = await this.ensureAgentLoaded(msg.agentId);
+      const snapshot = await ensureAgentLoaded(msg.agentId, {
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        logger: this.sessionLogger,
+      });
       const agentPayload = await this.buildAgentPayload(snapshot);
 
       let timeline = this.agentManager.fetchTimeline(msg.agentId, {
@@ -6906,25 +6679,6 @@ export class Session {
 
     try {
       const agentId = resolved.agentId;
-      await this.unarchiveAgentState(agentId);
-
-      await this.ensureAgentLoaded(agentId);
-
-      this.sessionLogger.trace(
-        { agentId, messageId: msg.messageId, textPrefix: msg.text.slice(0, 80) },
-        "send_agent_message_request: recording user message",
-      );
-      try {
-        this.agentManager.recordUserMessage(agentId, msg.text, {
-          messageId: msg.messageId,
-          emitState: false,
-        });
-      } catch (error) {
-        this.sessionLogger.error(
-          { err: error, agentId },
-          "Failed to record user message for send_agent_message_request",
-        );
-      }
 
       // Persist attached images to .context/attachments/ so agents can reference them by path
       let persistedPaths: Array<{ relativePath: string; fileName: string }> | undefined;
@@ -6952,18 +6706,29 @@ export class Session {
 
       const prompt = this.buildAgentPrompt(msg.text, msg.images, persistedPaths);
       this.sessionLogger.trace(
-        { agentId, messageId: msg.messageId },
-        "send_agent_message_request: starting agent stream",
+        { agentId, messageId: msg.messageId, textPrefix: msg.text.slice(0, 80) },
+        "send_agent_message_request: dispatching shared sendPromptToAgent",
       );
-      const started = this.startAgentStream(agentId, prompt);
-      if (!started.ok) {
+      try {
+        await sendPromptToAgent({
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          agentId,
+          userMessageText: msg.text,
+          prompt,
+          messageId: msg.messageId,
+          logger: this.sessionLogger,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.handleAgentRunError(agentId, error, "Failed to send agent message");
         this.emit({
           type: "send_agent_message_response",
           payload: {
             requestId: msg.requestId,
             agentId,
             accepted: false,
-            error: started.error,
+            error: message,
           },
         });
         return;

@@ -15,6 +15,7 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { Fonts } from "@/constants/theme";
 import { useSessionStore, type ExplorerFile } from "@/stores/session-store";
 import { useWebScrollViewScrollbar } from "@/components/use-web-scrollbar";
+import { useWebScrollbarStyle } from "@/hooks/use-web-scrollbar-style";
 import {
   highlightCode,
   darkHighlightColors,
@@ -76,7 +77,7 @@ const CodeLine = React.memo(function CodeLine({
       <View style={[codeLineStyles.gutter, { width: gutterWidth }]}>
         <Text style={[codeLineStyles.gutterText, { color: baseColor }]}>{String(lineNumber)}</Text>
       </View>
-      <Text style={codeLineStyles.lineText}>
+      <Text selectable style={codeLineStyles.lineText}>
         {tokens.map((token, index) => (
           <Text
             key={index}
@@ -133,6 +134,7 @@ function FilePreviewBody({
   const isMarkdownFile = preview?.kind === "text" && isRenderedMarkdownFile(filePath);
 
   const previewScrollRef = useRef<RNScrollView>(null);
+  const webScrollbarStyle = useWebScrollbarStyle();
   const scrollbar = useWebScrollViewScrollbar(previewScrollRef, {
     enabled: showDesktopWebScrollbar,
   });
@@ -185,7 +187,6 @@ function FilePreviewBody({
         </View>
       );
     }
-
     if (isMarkdownFile) {
       return (
         <View style={styles.previewScrollContainer}>
@@ -242,6 +243,7 @@ function FilePreviewBody({
               horizontal
               nestedScrollEnabled
               showsHorizontalScrollIndicator
+              style={webScrollbarStyle}
               contentContainerStyle={styles.previewCodeScrollContent}
             >
               {codeLines}
