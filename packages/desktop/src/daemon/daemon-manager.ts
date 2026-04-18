@@ -23,6 +23,7 @@ import {
   sendLocalTransportMessage,
   closeLocalTransportSession,
 } from "./local-transport.js";
+import { createPortForwardTunnelManager } from "../features/port-forward-tunnel.js";
 import {
   createNodeEntrypointInvocation,
   resolveDaemonRunnerEntrypoint,
@@ -448,6 +449,8 @@ function resolveCurrentUpdateVersion(): string {
 // IPC registration
 // ---------------------------------------------------------------------------
 
+const tunnelManager = createPortForwardTunnelManager();
+
 export function createDaemonCommandHandlers(): Record<string, DesktopCommandHandler> {
   return {
     desktop_daemon_status: () => resolveStatus(),
@@ -464,7 +467,22 @@ export function createDaemonCommandHandlers(): Record<string, DesktopCommandHand
     garbage_collect_attachment_files: (args) => garbageCollectManagedAttachmentFiles(args ?? {}),
     open_local_daemon_transport: async (args) => {
       const target = args as { transportType: "socket" | "pipe"; transportPath: string };
+      tunnelManager.setTransport(target.transportPath, target.transportType);
       return await openLocalTransportSession(target);
+    },
+    create_tunneled_port_forward: async (args) => {
+      const input = args as {
+        cwd: string;
+        targetHost: string;
+        targetPort: number;
+        name?: string;
+        bindHost?: string;
+      };
+      return await tunnelManager.createTunneledForward(input);
+    },
+    close_tunneled_port_forward: async (args) => {
+      const { portForwardId } = args as { portForwardId: string };
+      await tunnelManager.closeTunneledForward(portForwardId);
     },
     send_local_daemon_transport_message: async (args) => {
       await sendLocalTransportMessage(

@@ -1,6 +1,7 @@
 import equal from "fast-deep-equal";
 import { v4 as uuidv4 } from "uuid";
 import type { FSWatcher } from "node:fs";
+import net from "node:net";
 import { exec } from "node:child_process";
 import { promisify } from "util";
 import { resolve, sep } from "path";
@@ -40,6 +41,9 @@ import {
   type UnsubscribePortForwardsRequest,
   type CreatePortForwardRequest,
   type ClosePortForwardRequest,
+  type PortForwardStreamOpen,
+  type PortForwardStreamData,
+  type PortForwardStreamClose,
   type SubscribeCheckoutDiffRequest,
   type UnsubscribeCheckoutDiffRequest,
   type DirectorySuggestionsRequest,
@@ -691,6 +695,7 @@ export class Session {
   private readonly secureTerminalExecCoordinator: SecureTerminalExecCoordinator | null;
   private readonly subscribedPortForwardDirectories = new Set<string>();
   private unsubscribePortForwardsChanged: (() => void) | null = null;
+  private readonly portForwardStreams = new Map<string, net.Socket>();
   private readonly providerSnapshotManager: ProviderSnapshotManager | null;
   private unsubscribeProviderSnapshotEvents: (() => void) | null = null;
   private readonly scriptRouteStore: ScriptRouteStore | null;
@@ -1975,6 +1980,18 @@ export class Session {
 
           case "close_port_forward_request":
             await this.handleClosePortForwardRequest(msg);
+            break;
+
+          case "pf_stream_open":
+            await this.handlePortForwardStreamOpen(msg);
+            break;
+
+          case "pf_stream_data":
+            this.handlePortForwardStreamData(msg);
+            break;
+
+          case "pf_stream_close":
+            this.handlePortForwardStreamClose(msg);
             break;
 
           case "system_monitor_request":
@@ -7811,6 +7828,11 @@ export class Session {
     }
     this.subscribedPortForwardDirectories.clear();
 
+    for (const socket of this.portForwardStreams.values()) {
+      socket.destroy();
+    }
+    this.portForwardStreams.clear();
+
     for (const unsubscribeExit of this.terminalExitSubscriptions.values()) {
       unsubscribeExit();
     }
@@ -9228,6 +9250,7 @@ export class Session {
       localPort: number;
       targetHost: string;
       targetPort: number;
+      tunneled: boolean;
     }>;
   }): void {
     this.emit({
@@ -9252,6 +9275,7 @@ export class Session {
         localPort: portForward.localPort,
         targetHost: portForward.targetHost,
         targetPort: portForward.targetPort,
+        tunneled: portForward.tunneled,
       })),
     });
   }
@@ -9284,6 +9308,7 @@ export class Session {
           localPort: portForward.localPort,
           targetHost: portForward.targetHost,
           targetPort: portForward.targetPort,
+          tunneled: portForward.tunneled,
         })),
       });
     } catch (error) {
@@ -9331,6 +9356,7 @@ export class Session {
             localPort: portForward.localPort,
             targetHost: portForward.targetHost,
             targetPort: portForward.targetPort,
+            tunneled: portForward.tunneled,
           })),
           requestId: msg.requestId,
         },
@@ -9369,6 +9395,7 @@ export class Session {
         localPort: msg.localPort,
         targetHost: msg.targetHost,
         targetPort: msg.targetPort,
+        tunneled: msg.tunneled,
       });
       this.emit({
         type: "create_port_forward_response",
@@ -9381,6 +9408,7 @@ export class Session {
             localPort: portForward.localPort,
             targetHost: portForward.targetHost,
             targetPort: portForward.targetPort,
+            tunneled: portForward.tunneled,
           },
           error: null,
           requestId: msg.requestId,
@@ -9449,6 +9477,67 @@ export class Session {
         },
       });
     }
+  }
+
+  private async handlePortForwardStreamOpen(msg: PortForwardStreamOpen): Promise<void> {
+    const portForward = this.portForwardManager?.getPortForward(msg.portForwardId);
+    if (!portForward || !portForward.tunneled) {
+      this.emit({
+        type: "pf_stream_error",
+        streamId: msg.streamId,
+        error: "Port forward not found or not tunneled",
+      });
+      return;
+    }
+
+    const socket = net.createConnection({
+      host: portForward.targetHost,
+      port: portForward.targetPort,
+    });
+
+    socket.once("connect", () => {
+      this.portForwardStreams.set(msg.streamId, socket);
+      this.emit({ type: "pf_stream_opened", streamId: msg.streamId });
+    });
+
+    socket.once("error", (err) => {
+      if (!this.portForwardStreams.has(msg.streamId)) {
+        // Not yet opened — report error to client
+        this.emit({ type: "pf_stream_error", streamId: msg.streamId, error: err.message });
+      } else {
+        this.portForwardStreams.delete(msg.streamId);
+        this.emit({ type: "pf_stream_close", streamId: msg.streamId });
+      }
+      socket.destroy();
+    });
+
+    socket.on("data", (chunk: Buffer) => {
+      this.emit({ type: "pf_stream_data", streamId: msg.streamId, data: chunk.toString("base64") });
+    });
+
+    socket.once("close", () => {
+      if (this.portForwardStreams.has(msg.streamId)) {
+        this.portForwardStreams.delete(msg.streamId);
+        this.emit({ type: "pf_stream_close", streamId: msg.streamId });
+      }
+    });
+  }
+
+  private handlePortForwardStreamData(msg: PortForwardStreamData): void {
+    const socket = this.portForwardStreams.get(msg.streamId);
+    if (!socket || socket.destroyed) {
+      return;
+    }
+    socket.write(Buffer.from(msg.data, "base64"));
+  }
+
+  private handlePortForwardStreamClose(msg: PortForwardStreamClose): void {
+    const socket = this.portForwardStreams.get(msg.streamId);
+    if (!socket) {
+      return;
+    }
+    this.portForwardStreams.delete(msg.streamId);
+    socket.destroy();
   }
 
   private async handleSystemMonitorRequest(

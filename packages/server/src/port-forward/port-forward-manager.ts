@@ -10,6 +10,7 @@ export interface PortForwardListItem {
   localPort: number;
   targetHost: string;
   targetPort: number;
+  tunneled: boolean;
 }
 
 export interface PortForwardsChangedEvent {
@@ -27,6 +28,7 @@ export interface PortForwardSession {
   localPort: number;
   targetHost: string;
   targetPort: number;
+  tunneled: boolean;
   close(): Promise<void>;
   onClose(listener: () => void): () => void;
 }
@@ -40,6 +42,7 @@ export interface PortForwardManager {
     localPort: number;
     targetHost: string;
     targetPort: number;
+    tunneled?: boolean;
   }): Promise<PortForwardSession>;
   getPortForward(id: string): PortForwardSession | undefined;
   closePortForward(id: string): Promise<void>;
@@ -58,7 +61,10 @@ function normalizeRootPath(cwd: string): string {
   return resolve(cwd);
 }
 
-function defaultName(input: { localPort: number; targetPort: number }): string {
+function defaultName(input: { localPort: number; targetPort: number; tunneled: boolean }): string {
+  if (input.tunneled) {
+    return `Tunnel → ${input.targetPort}`;
+  }
   if (input.localPort > 0) {
     return `Forward ${input.localPort}`;
   }
@@ -168,6 +174,7 @@ async function createPortForwardSession(options: {
     defaultName({
       localPort: resolvedLocalPort,
       targetPort: options.targetPort,
+      tunneled: false,
     });
 
   return {
@@ -178,6 +185,55 @@ async function createPortForwardSession(options: {
     localPort: resolvedLocalPort,
     targetHost: options.targetHost,
     targetPort: options.targetPort,
+    tunneled: false,
+    close: closeSession,
+    onClose(listener: () => void): () => void {
+      onCloseListeners.add(listener);
+      return () => {
+        onCloseListeners.delete(listener);
+      };
+    },
+  };
+}
+
+function createTunneledPortForwardSession(options: {
+  cwd: string;
+  name?: string;
+  localPort: number;
+  targetHost: string;
+  targetPort: number;
+}): PortForwardSession {
+  const id = randomUUID();
+  const onCloseListeners = new Set<() => void>();
+  let closed = false;
+
+  const resolvedName =
+    options.name?.trim() ||
+    defaultName({ localPort: options.localPort, targetPort: options.targetPort, tunneled: true });
+
+  const closeSession = async (): Promise<void> => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    for (const listener of onCloseListeners) {
+      try {
+        listener();
+      } catch {
+        // no-op
+      }
+    }
+  };
+
+  return {
+    id,
+    name: resolvedName,
+    cwd: options.cwd,
+    bindHost: "",
+    localPort: options.localPort,
+    targetHost: options.targetHost,
+    targetPort: options.targetPort,
+    tunneled: true,
     close: closeSession,
     onClose(listener: () => void): () => void {
       onCloseListeners.add(listener);
@@ -203,6 +259,7 @@ export function createPortForwardManager(): PortForwardManager {
       localPort: session.localPort,
       targetHost: session.targetHost,
       targetPort: session.targetPort,
+      tunneled: session.tunneled,
     };
   }
 
@@ -266,14 +323,22 @@ export function createPortForwardManager(): PortForwardManager {
     async createPortForward(options): Promise<PortForwardSession> {
       assertAbsolutePath(options.cwd);
       const session = registerSession(
-        await createPortForwardSession({
-          cwd: options.cwd,
-          name: options.name,
-          bindHost: options.bindHost?.trim() || "127.0.0.1",
-          localPort: options.localPort,
-          targetHost: options.targetHost,
-          targetPort: options.targetPort,
-        }),
+        options.tunneled
+          ? createTunneledPortForwardSession({
+              cwd: options.cwd,
+              name: options.name,
+              localPort: options.localPort,
+              targetHost: options.targetHost,
+              targetPort: options.targetPort,
+            })
+          : await createPortForwardSession({
+              cwd: options.cwd,
+              name: options.name,
+              bindHost: options.bindHost?.trim() || "127.0.0.1",
+              localPort: options.localPort,
+              targetHost: options.targetHost,
+              targetPort: options.targetPort,
+            }),
       );
       const entries = portForwardsByCwd.get(options.cwd) ?? [];
       portForwardsByCwd.set(options.cwd, [...entries, session]);

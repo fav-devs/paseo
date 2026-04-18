@@ -1689,6 +1689,7 @@ export const CreatePortForwardRequestSchema = z.object({
   localPort: z.number().int().min(0).max(65535),
   targetHost: z.string(),
   targetPort: z.number().int().min(1).max(65535),
+  tunneled: z.boolean().optional().default(false),
   requestId: z.string(),
 });
 
@@ -1696,6 +1697,34 @@ export const ClosePortForwardRequestSchema = z.object({
   type: z.literal("close_port_forward_request"),
   portForwardId: z.string(),
   requestId: z.string(),
+});
+
+export const PortForwardStreamOpenSchema = z.object({
+  type: z.literal("pf_stream_open"),
+  streamId: z.string(),
+  portForwardId: z.string(),
+});
+
+export const PortForwardStreamDataSchema = z.object({
+  type: z.literal("pf_stream_data"),
+  streamId: z.string(),
+  data: z.string(), // base64-encoded bytes
+});
+
+export const PortForwardStreamCloseSchema = z.object({
+  type: z.literal("pf_stream_close"),
+  streamId: z.string(),
+});
+
+export const PortForwardStreamOpenedSchema = z.object({
+  type: z.literal("pf_stream_opened"),
+  streamId: z.string(),
+});
+
+export const PortForwardStreamErrorSchema = z.object({
+  type: z.literal("pf_stream_error"),
+  streamId: z.string(),
+  error: z.string(),
 });
 
 // ============================================================================
@@ -1804,6 +1833,9 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   UnsubscribePortForwardsRequestSchema,
   CreatePortForwardRequestSchema,
   ClosePortForwardRequestSchema,
+  PortForwardStreamOpenSchema,
+  PortForwardStreamDataSchema,
+  PortForwardStreamCloseSchema,
   SystemMonitorRequestSchema,
   ChatCreateRequestSchema,
   ChatListRequestSchema,
@@ -3295,6 +3327,7 @@ const PortForwardInfoSchema = z.object({
   localPort: z.number().int().min(0).max(65535),
   targetHost: z.string(),
   targetPort: z.number().int().min(1).max(65535),
+  tunneled: z.boolean().optional().default(false),
 });
 
 export const ListPortForwardsResponseSchema = z.object({
@@ -3460,6 +3493,10 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   PortForwardsChangedSchema,
   CreatePortForwardResponseSchema,
   ClosePortForwardResponseSchema,
+  PortForwardStreamOpenedSchema,
+  PortForwardStreamErrorSchema,
+  PortForwardStreamDataSchema,
+  PortForwardStreamCloseSchema,
   ChatCreateResponseSchema,
   ChatListResponseSchema,
   ChatInspectResponseSchema,
@@ -3785,6 +3822,11 @@ export type CreatePortForwardRequest = z.infer<typeof CreatePortForwardRequestSc
 export type CreatePortForwardResponse = z.infer<typeof CreatePortForwardResponseSchema>;
 export type ClosePortForwardRequest = z.infer<typeof ClosePortForwardRequestSchema>;
 export type ClosePortForwardResponse = z.infer<typeof ClosePortForwardResponseSchema>;
+export type PortForwardStreamOpen = z.infer<typeof PortForwardStreamOpenSchema>;
+export type PortForwardStreamData = z.infer<typeof PortForwardStreamDataSchema>;
+export type PortForwardStreamClose = z.infer<typeof PortForwardStreamCloseSchema>;
+export type PortForwardStreamOpened = z.infer<typeof PortForwardStreamOpenedSchema>;
+export type PortForwardStreamError = z.infer<typeof PortForwardStreamErrorSchema>;
 
 // System monitor message types
 export type SystemMonitorRequest = z.infer<typeof SystemMonitorRequestSchema>;

@@ -3626,6 +3626,7 @@ export class DaemonClient {
       localPort: number;
       targetHost: string;
       targetPort: number;
+      tunneled?: boolean;
     },
     requestId?: string,
   ): Promise<CreatePortForwardPayload> {
@@ -3638,6 +3639,7 @@ export class DaemonClient {
       localPort: input.localPort,
       targetHost: input.targetHost,
       targetPort: input.targetPort,
+      tunneled: input.tunneled,
       requestId: resolvedRequestId,
     });
     return this.sendCorrelatedRequest({
@@ -3666,6 +3668,18 @@ export class DaemonClient {
       timeout: 10000,
       options: { skipQueue: true },
     });
+  }
+
+  sendPortForwardStreamOpen(streamId: string, portForwardId: string): void {
+    this.sendSessionMessage({ type: "pf_stream_open", streamId, portForwardId });
+  }
+
+  sendPortForwardStreamData(streamId: string, data: string): void {
+    this.sendSessionMessage({ type: "pf_stream_data", streamId, data });
+  }
+
+  sendPortForwardStreamClose(streamId: string): void {
+    this.sendSessionMessage({ type: "pf_stream_close", streamId });
   }
 
   async createChatRoom(options: CreateChatRoomOptions): Promise<ChatCreatePayload> {
