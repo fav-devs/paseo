@@ -160,6 +160,8 @@ const SERVICE_DEFS = [
     cmd: "npx",
     args: ["expo", "start", "--tunnel", "--port", "8090"],
     usePty: true, // needs a real PTY so Expo shows QR + tunnel URL
+    autoRestart: true, // Ngrok tunnel init is flaky; auto-retry on error exit
+    maxAutoRestarts: 15,
     env: {
       BROWSER: "none",
       EXPO_PUBLIC_LOCAL_DAEMON: DAEMON_HOST,
@@ -313,12 +315,20 @@ function spawnService(svc) {
       if (services[selectedIdx] === svc && inputMode) inputMode = false;
       svc.proc = null;
       svc.exitCode = exitCode;
-      svc.status = exitCode === 0 || signal === 15 ? "stopped" : "error";
+      const isError = exitCode !== 0 && signal !== 15;
+      svc.status = isError ? "error" : "stopped";
       pushLine(
         svc,
         `${DIM}■ exited ${exitCode != null ? `code=${exitCode}` : `signal=${signal}`}${RESET}`,
       );
       scheduleRender(true);
+
+      if (isError && svc.autoRestart && svc.restarts < (svc.maxAutoRestarts ?? 5)) {
+        svc.restarts++;
+        if (svc.key === "metro") { metroUrl = null; metroTunnelMode = false; }
+        pushLine(svc, `${DIM}↺ auto-restarting (${svc.restarts}/${svc.maxAutoRestarts ?? 5})...${RESET}`);
+        setTimeout(() => { spawnService(svc); scheduleRender(true); }, 1000);
+      }
     });
 
     pushLine(svc, `${DIM}▶ started pid=${ptyProc.pid}${RESET}`);
@@ -408,6 +418,7 @@ function ingestChunk(svc, chunk) {
       if (tunnelMatch) {
         const expoUrl = tunnelMatch[1];
         metroUrl = { web: `http://localhost:8090`, expo: expoUrl, tunnel: true };
+        svc.restarts = 0; // tunnel established — reset retry budget for future blips
         injectMetroReady(svc, metroUrl);
         return;
       }
