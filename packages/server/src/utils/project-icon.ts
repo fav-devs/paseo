@@ -416,14 +416,39 @@ async function findDirRecursively(
   return null;
 }
 
+// Cache resolved icons so repeated requests for the same cwd don't re-scan the filesystem.
+// In-flight map deduplicates concurrent requests for the same cwd.
+const iconCache = new Map<string, ProjectIcon | null>();
+const iconInFlight = new Map<string, Promise<ProjectIcon | null>>();
+
 /**
  * Find and read a project icon/favicon, returning it as base64.
  * Only returns square icons smaller than MAX_ICON_SIZE (32KB).
+ * Results are cached indefinitely — icons rarely change during a daemon session.
  *
  * @param projectDir - The root directory of the project to search
  * @returns The icon data with mime type, or null if not found
  */
 export async function getProjectIcon(projectDir: string): Promise<ProjectIcon | null> {
+  if (iconCache.has(projectDir)) {
+    return iconCache.get(projectDir) ?? null;
+  }
+
+  const existing = iconInFlight.get(projectDir);
+  if (existing) {
+    return existing;
+  }
+
+  const promise = resolveProjectIcon(projectDir).then((result) => {
+    iconCache.set(projectDir, result);
+    iconInFlight.delete(projectDir);
+    return result;
+  });
+  iconInFlight.set(projectDir, promise);
+  return promise;
+}
+
+async function resolveProjectIcon(projectDir: string): Promise<ProjectIcon | null> {
   const iconPath = await findProjectIcon(projectDir);
   if (!iconPath) {
     return null;
