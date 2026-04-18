@@ -18,7 +18,7 @@ import { normalizeWorkspaceId } from "./workspace-registry-model.js";
 
 const WORKSPACE_GIT_WATCH_DEBOUNCE_MS = 500;
 const BACKGROUND_GIT_FETCH_INTERVAL_MS = 180_000;
-const BACKGROUND_GIT_FETCH_MAX_CONCURRENCY = 2;
+const BACKGROUND_GIT_FETCH_MAX_CONCURRENCY = 1;
 const WORKING_TREE_WATCH_FALLBACK_REFRESH_MS = 5_000;
 
 export type WorkspaceGitRuntimeSnapshot = {
@@ -110,6 +110,7 @@ interface RepoGitTarget {
   cwd: string;
   workspaceKeys: Set<string>;
   intervalId: NodeJS.Timeout | null;
+  initialIntervalTimeout: NodeJS.Timeout | null;
   fetchInFlight: boolean;
   fetchQueued: boolean;
 }
@@ -452,13 +453,25 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       repoGitRoot,
       cwd: workspaceTarget.cwd,
       workspaceKeys: new Set([workspaceTarget.cwd]),
-      intervalId: setInterval(() => {
-        this.enqueueRepoFetch(repoTarget);
-      }, BACKGROUND_GIT_FETCH_INTERVAL_MS),
+      intervalId: null,
+      initialIntervalTimeout: null,
       fetchInFlight: false,
       fetchQueued: false,
     };
     this.repoTargets.set(repoGitRoot, repoTarget);
+
+    // Stagger recurring fetch intervals with random jitter so repos opened at the
+    // same time (e.g. daemon startup) don't all fire simultaneously every 180s.
+    const jitterMs = Math.floor(Math.random() * BACKGROUND_GIT_FETCH_INTERVAL_MS);
+    repoTarget.initialIntervalTimeout = setTimeout(() => {
+      repoTarget.initialIntervalTimeout = null;
+      if (this.repoTargets.has(repoGitRoot)) {
+        repoTarget.intervalId = setInterval(() => {
+          this.enqueueRepoFetch(repoTarget);
+        }, BACKGROUND_GIT_FETCH_INTERVAL_MS);
+      }
+    }, jitterMs);
+
     this.enqueueRepoFetch(repoTarget);
   }
 
@@ -700,15 +713,14 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       );
     } finally {
       target.fetchInFlight = false;
-      await Promise.all(
-        Array.from(target.workspaceKeys, async (workspaceKey) => {
-          const workspaceTarget = this.workspaceTargets.get(workspaceKey);
-          if (!workspaceTarget) {
-            return;
-          }
+      // Refresh workspaces serially to avoid spawning concurrent git commands
+      // (status, shortstat, log) that compete for the .git index lock.
+      for (const workspaceKey of target.workspaceKeys) {
+        const workspaceTarget = this.workspaceTargets.get(workspaceKey);
+        if (workspaceTarget) {
           await this.refreshWorkspaceTarget(workspaceTarget);
-        }),
-      );
+        }
+      }
     }
   }
 
@@ -818,6 +830,10 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   }
 
   private closeRepoTarget(target: RepoGitTarget): void {
+    if (target.initialIntervalTimeout) {
+      clearTimeout(target.initialIntervalTimeout);
+      target.initialIntervalTimeout = null;
+    }
     if (target.intervalId) {
       clearInterval(target.intervalId);
       target.intervalId = null;
