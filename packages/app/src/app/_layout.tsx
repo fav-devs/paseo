@@ -62,6 +62,7 @@ import { getIsElectronRuntime, useIsCompactFormFactor } from "@/constants/layout
 import { CommandCenter } from "@/components/command-center";
 import { ProjectPickerModal } from "@/components/project-picker-modal";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
+import { SpotifyBackgroundManager } from "@/components/spotify-background-manager";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { queryClient } from "@/query/query-client";
 import {
@@ -610,6 +611,7 @@ function ProvidersWrapper({ children }: { children: ReactNode }) {
     <VoiceProvider>
       <OfferLinkListener upsertDaemonFromOfferUrl={upsertConnectionFromOfferUrl} />
       <HostSessionManager />
+      <SpotifyBackgroundManager />
       <FaviconStatusSync />
       {children}
     </VoiceProvider>

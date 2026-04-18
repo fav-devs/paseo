@@ -73,9 +73,10 @@ import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import {
-  buildSpotifyPreviewWorkspaceKey,
+  buildSpotifyPreviewServerKey,
   useSpotifyPreviewStore,
 } from "@/stores/spotify-preview-store";
+import { useSpotifyRuntimeStore } from "@/stores/spotify-runtime-store";
 import { decodeWorkspaceIdFromPathSegment } from "@/utils/host-routes";
 import { isAbsolutePath } from "@/utils/path";
 import { normalizeWorkspaceIdentity } from "@/utils/workspace-identity";
@@ -131,10 +132,7 @@ import {
 import { findAdjacentPane } from "@/utils/split-navigation";
 import { useIsCompactFormFactor, supportsDesktopPaneSplits } from "@/constants/layout";
 import { isWeb, isNative } from "@/constants/platform";
-import {
-  SPOTIFY_ACTION_KEYMAP,
-  SPOTIFY_TERMINAL_NAME,
-} from "@/components/spotify/spotify-cli-controls";
+import { SPOTIFY_ACTION_KEYMAP } from "@/components/spotify/spotify-cli-controls";
 
 const TERMINALS_QUERY_STALE_TIME = 5_000;
 const NEW_TAB_AGENT_OPTION_ID = "__new_tab_agent__";
@@ -871,23 +869,19 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
     openFileExplorer();
   }, [activeExplorerCheckout, openFileExplorer, setExplorerTabForCheckout]);
 
-  const spotifyTerminalId = useMemo(
-    () => terminals.find((terminal) => terminal.name === SPOTIFY_TERMINAL_NAME)?.id ?? null,
-    [terminals],
+  const spotifyTerminalId = useSpotifyRuntimeStore(
+    (state) => state.terminalIdsByServer[normalizedServerId]?.mainTerminalId ?? null,
   );
-  const spotifyPreviewWorkspaceKey = useMemo(() => {
-    if (!normalizedServerId || !normalizedWorkspaceId) {
+  const spotifyPreviewServerKey = useMemo(() => {
+    if (!normalizedServerId) {
       return null;
     }
-    return buildSpotifyPreviewWorkspaceKey({
+    return buildSpotifyPreviewServerKey({
       serverId: normalizedServerId,
-      workspaceRoot: normalizedWorkspaceId,
     });
-  }, [normalizedServerId, normalizedWorkspaceId]);
+  }, [normalizedServerId]);
   const spotifyPreview = useSpotifyPreviewStore((state) =>
-    spotifyPreviewWorkspaceKey
-      ? (state.previewByWorkspace[spotifyPreviewWorkspaceKey] ?? null)
-      : null,
+    spotifyPreviewServerKey ? (state.previewByServer[spotifyPreviewServerKey] ?? null) : null,
   );
   const setSpotifyPreview = useSpotifyPreviewStore((state) => state.setPreview);
 
@@ -901,10 +895,9 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
         type: "input",
         data: SPOTIFY_ACTION_KEYMAP[action],
       });
-      if (action === "playPause" && spotifyPreview && normalizedServerId && normalizedWorkspaceId) {
+      if (action === "playPause" && spotifyPreview && normalizedServerId) {
         setSpotifyPreview({
           serverId: normalizedServerId,
-          workspaceRoot: normalizedWorkspaceId,
           preview: {
             title: spotifyPreview.title,
             artist: spotifyPreview.artist,
@@ -919,7 +912,6 @@ function WorkspaceScreenContent({ serverId, workspaceId }: WorkspaceScreenProps)
       handleOpenSpotifyPlayer,
       isConnected,
       normalizedServerId,
-      normalizedWorkspaceId,
       setSpotifyPreview,
       spotifyPreview,
       spotifyTerminalId,

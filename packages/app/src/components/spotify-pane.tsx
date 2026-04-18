@@ -3,7 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ListTerminalsResponse } from "@server/shared/messages";
 import { TerminalStreamController } from "@/terminal/runtime/terminal-stream-controller";
 import { useHostRuntimeIsConnected } from "@/runtime/host-runtime";
-import { useSpotifyPreviewStore } from "@/stores/spotify-preview-store";
+import {
+  buildSpotifyPreviewServerKey,
+  useSpotifyPreviewStore,
+} from "@/stores/spotify-preview-store";
+import { useSpotifyRuntimeStore } from "@/stores/spotify-runtime-store";
 import { useSessionStore } from "@/stores/session-store";
 import { upsertTerminalListEntry } from "@/utils/terminal-list";
 import { SpotifyMobileCliShell, type SpotifyRepeatMode } from "./spotify/spotify-mobile-cli-shell";
@@ -49,6 +53,17 @@ export function SpotifyPane({
   const isConnected = useHostRuntimeIsConnected(serverId);
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
   const setSpotifyPreview = useSpotifyPreviewStore((state) => state.setPreview);
+  const spotifyPreview = useSpotifyPreviewStore((state) => {
+    const key = buildSpotifyPreviewServerKey({ serverId });
+    return state.previewByServer[key] ?? null;
+  });
+  const isBackgroundManaged = useSpotifyRuntimeStore(
+    (state) => state.managedByServer[serverId] ?? false,
+  );
+  const runtimeTerminalIds = useSpotifyRuntimeStore(
+    (state) =>
+      state.terminalIdsByServer[serverId] ?? { mainTerminalId: null, probeTerminalId: null },
+  );
   const streamControllerRef = useRef<TerminalStreamController | null>(null);
 
   const [launchError, setLaunchError] = useState<string | null>(null);
@@ -67,27 +82,40 @@ export function SpotifyPane({
   const [devices, setDevices] = useState<ParsedSpotifyDevice[]>([]);
   const [isDevicesLoading, setIsDevicesLoading] = useState(false);
 
-  const queryKey = useMemo(
-    () => ["spotify-terminals", serverId, workspaceRoot] as const,
-    [serverId, workspaceRoot],
-  );
+  const queryKey = useMemo(() => ["spotify-terminals", serverId] as const, [serverId]);
 
   const query = useQuery({
     queryKey,
-    enabled: Boolean(client && isConnected && workspaceRoot),
+    enabled: Boolean(client && isConnected) && !isBackgroundManaged,
     queryFn: async (): Promise<ListTerminalsPayload> => {
       if (!client) {
         throw new Error("Host is not connected");
       }
-      return client.listTerminals(workspaceRoot);
+      return client.listTerminals();
     },
     staleTime: TERMINALS_QUERY_STALE_TIME,
   });
 
   const spotifyTerminal =
-    query.data?.terminals.find((terminal) => terminal.name === SPOTIFY_TERMINAL_NAME) ?? null;
+    query.data?.terminals.find((terminal) => terminal.name === SPOTIFY_TERMINAL_NAME) ??
+    (runtimeTerminalIds.mainTerminalId
+      ? { id: runtimeTerminalIds.mainTerminalId, name: SPOTIFY_TERMINAL_NAME }
+      : null);
   const spotifyProbeTerminal =
-    query.data?.terminals.find((terminal) => terminal.name === SPOTIFY_PROBE_TERMINAL_NAME) ?? null;
+    query.data?.terminals.find((terminal) => terminal.name === SPOTIFY_PROBE_TERMINAL_NAME) ??
+    (runtimeTerminalIds.probeTerminalId
+      ? { id: runtimeTerminalIds.probeTerminalId, name: SPOTIFY_PROBE_TERMINAL_NAME }
+      : null);
+
+  useEffect(() => {
+    if (!spotifyPreview) {
+      return;
+    }
+    setTitle(spotifyPreview.title);
+    setArtist(spotifyPreview.artist);
+    setAlbumImageUrl(spotifyPreview.albumImageUrl);
+    setIsPlaying(spotifyPreview.isPlaying);
+  }, [spotifyPreview]);
 
   const applySnapshot = useCallback(
     (stateText: ReturnType<typeof parseSpotifyTerminalSnapshot>) => {
@@ -228,6 +256,17 @@ export function SpotifyPane({
     mutationFn: async () => {
       return sendInputMutation.mutateAsync({ input: SPOTIFY_LAUNCH_COMMAND, appendNewline: true });
     },
+    onSuccess: () => {
+      if (isBackgroundManaged) {
+        return;
+      }
+      // Create the probe terminal lazily only after an explicit launch action.
+      if (!spotifyProbeTerminal && !createProbeTerminalMutation.isPending) {
+        void createProbeTerminalMutation.mutateAsync().catch(() => {
+          // Best effort only; polling path tolerates missing probe terminal.
+        });
+      }
+    },
     onMutate: () => {
       setLaunchError(null);
       setNoPlaybackDetected(false);
@@ -240,7 +279,6 @@ export function SpotifyPane({
     }
     setSpotifyPreview({
       serverId,
-      workspaceRoot,
       preview: {
         title,
         artist,
@@ -248,13 +286,16 @@ export function SpotifyPane({
         isPlaying,
       },
     });
-  }, [albumImageUrl, artist, isPlaying, serverId, setSpotifyPreview, title, workspaceRoot]);
+  }, [albumImageUrl, artist, isPlaying, serverId, setSpotifyPreview, title]);
 
   useEffect(() => {
     streamControllerRef.current?.dispose();
     streamControllerRef.current = null;
 
     if (!client || !isConnected || !spotifyTerminal) {
+      return;
+    }
+    if (isBackgroundManaged) {
       return;
     }
 
@@ -293,10 +334,13 @@ export function SpotifyPane({
         streamControllerRef.current = null;
       }
     };
-  }, [applySnapshot, client, isConnected, spotifyTerminal]);
+  }, [applySnapshot, client, isBackgroundManaged, isConnected, spotifyTerminal]);
 
   useEffect(() => {
     if (!client || !isConnected) {
+      return;
+    }
+    if (isBackgroundManaged) {
       return;
     }
 
@@ -307,17 +351,19 @@ export function SpotifyPane({
       if (cancelled || pollInFlight) {
         return;
       }
+      if (!spotifyProbeTerminal) {
+        // Avoid repeatedly creating terminals for passive background polling.
+        return;
+      }
       pollInFlight = true;
       setIsDevicesLoading(true);
       try {
-        const probeTerminal =
-          spotifyProbeTerminal ?? (await createProbeTerminalMutation.mutateAsync());
-        client.sendTerminalInput(probeTerminal.id, {
+        client.sendTerminalInput(spotifyProbeTerminal.id, {
           type: "input",
           data: `${SPOTIFY_PLAYBACK_PROBE_COMMAND}\n`,
         });
         await new Promise((resolve) => setTimeout(resolve, 250));
-        const capture = await client.captureTerminal(probeTerminal.id, {
+        const capture = await client.captureTerminal(spotifyProbeTerminal.id, {
           start: -PROBE_CAPTURE_LINE_COUNT,
           end: -1,
           stripAnsi: true,
@@ -327,12 +373,12 @@ export function SpotifyPane({
           applyPlaybackProbe(parsedProbe);
         }
 
-        client.sendTerminalInput(probeTerminal.id, {
+        client.sendTerminalInput(spotifyProbeTerminal.id, {
           type: "input",
           data: `${SPOTIFY_DEVICES_PROBE_COMMAND}\n`,
         });
         await new Promise((resolve) => setTimeout(resolve, 250));
-        const devicesCapture = await client.captureTerminal(probeTerminal.id, {
+        const devicesCapture = await client.captureTerminal(spotifyProbeTerminal.id, {
           start: -PROBE_CAPTURE_LINE_COUNT,
           end: -1,
           stripAnsi: true,
@@ -362,7 +408,7 @@ export function SpotifyPane({
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, [applyPlaybackProbe, client, createProbeTerminalMutation, isConnected, spotifyProbeTerminal]);
+  }, [applyPlaybackProbe, client, isBackgroundManaged, isConnected, spotifyProbeTerminal]);
 
   const handleLaunch = useCallback(() => {
     launchMutation.mutate();
@@ -408,6 +454,9 @@ export function SpotifyPane({
     if (!client || !isConnected) {
       return;
     }
+    if (isBackgroundManaged && !spotifyProbeTerminal) {
+      return;
+    }
 
     setIsDevicesLoading(true);
     void (async () => {
@@ -436,7 +485,7 @@ export function SpotifyPane({
         setIsDevicesLoading(false);
       }
     })();
-  }, [client, createProbeTerminalMutation, isConnected, spotifyProbeTerminal]);
+  }, [client, createProbeTerminalMutation, isBackgroundManaged, isConnected, spotifyProbeTerminal]);
 
   const isReady = Boolean(spotifyTerminal);
   const statusLabel =

@@ -9,29 +9,25 @@ export type SpotifyPreviewState = {
 };
 
 type SpotifyPreviewStoreState = {
-  previewByWorkspace: Record<string, SpotifyPreviewState>;
+  previewByServer: Record<string, SpotifyPreviewState>;
   setPreview: (input: {
     serverId: string;
-    workspaceRoot: string;
     preview: Omit<SpotifyPreviewState, "updatedAt">;
   }) => void;
-  clearPreview: (input: { serverId: string; workspaceRoot: string }) => void;
+  clearPreview: (input: { serverId: string }) => void;
 };
 
-export function buildSpotifyPreviewWorkspaceKey(input: {
-  serverId: string;
-  workspaceRoot: string;
-}): string {
-  return `${input.serverId}:${input.workspaceRoot}`;
+export function buildSpotifyPreviewServerKey(input: { serverId: string }): string {
+  return input.serverId;
 }
 
 export const useSpotifyPreviewStore = create<SpotifyPreviewStoreState>((set) => ({
-  previewByWorkspace: {},
-  setPreview: ({ serverId, workspaceRoot, preview }) => {
-    const key = buildSpotifyPreviewWorkspaceKey({ serverId, workspaceRoot });
+  previewByServer: {},
+  setPreview: ({ serverId, preview }) => {
+    const key = buildSpotifyPreviewServerKey({ serverId });
     set((state) => ({
-      previewByWorkspace: {
-        ...state.previewByWorkspace,
+      previewByServer: {
+        ...state.previewByServer,
         [key]: {
           ...preview,
           updatedAt: Date.now(),
@@ -39,15 +35,15 @@ export const useSpotifyPreviewStore = create<SpotifyPreviewStoreState>((set) => 
       },
     }));
   },
-  clearPreview: ({ serverId, workspaceRoot }) => {
-    const key = buildSpotifyPreviewWorkspaceKey({ serverId, workspaceRoot });
+  clearPreview: ({ serverId }) => {
+    const key = buildSpotifyPreviewServerKey({ serverId });
     set((state) => {
-      if (!(key in state.previewByWorkspace)) {
+      if (!(key in state.previewByServer)) {
         return state;
       }
-      const next = { ...state.previewByWorkspace };
+      const next = { ...state.previewByServer };
       delete next[key];
-      return { previewByWorkspace: next };
+      return { previewByServer: next };
     });
   },
 }));
