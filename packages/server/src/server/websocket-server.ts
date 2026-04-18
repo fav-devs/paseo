@@ -6,6 +6,8 @@ import type { AgentManager } from "./agent/agent-manager.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
 import type { DownloadTokenStore } from "./file-download/token-store.js";
 import type { TerminalManager } from "../terminal/terminal-manager.js";
+import type { PortForwardManager } from "../port-forward/port-forward-manager.js";
+import type { SecureTerminalExecCoordinator } from "./secure-terminal-exec-coordinator.js";
 import type pino from "pino";
 import type { ProjectRegistry, WorkspaceRegistry } from "./workspace-registry.js";
 import type { FileBackedChatService } from "./chat/chat-service.js";
@@ -311,6 +313,8 @@ export class VoiceAssistantWebSocketServer {
   private readonly mcpBaseUrl: string | null;
   private readonly speech: SpeechService | null;
   private readonly terminalManager: TerminalManager | null;
+  private readonly portForwardManager: PortForwardManager | null;
+  private readonly secureTerminalExecCoordinator: SecureTerminalExecCoordinator | null;
   private readonly scriptRouteStore: ScriptRouteStore | null;
   private readonly scriptRuntimeStore: WorkspaceScriptRuntimeStore | null;
   private readonly getDaemonTcpPort: (() => number | null) | null;
@@ -373,6 +377,8 @@ export class VoiceAssistantWebSocketServer {
     wsConfig: WebSocketServerConfig,
     speech?: SpeechService | null,
     terminalManager?: TerminalManager | null,
+    portForwardManager?: PortForwardManager | null,
+    secureTerminalExecCoordinator?: SecureTerminalExecCoordinator | null,
     dictation?: {
       finalTimeoutMs?: number;
     },
@@ -433,6 +439,15 @@ export class VoiceAssistantWebSocketServer {
     this.mcpBaseUrl = mcpBaseUrl;
     this.speech = speech ?? null;
     this.terminalManager = terminalManager ?? null;
+    this.portForwardManager = portForwardManager ?? null;
+    this.secureTerminalExecCoordinator = secureTerminalExecCoordinator ?? null;
+    if (this.secureTerminalExecCoordinator) {
+      this.secureTerminalExecCoordinator.setBroadcaster((payload) => {
+        this.broadcast(
+          wrapSessionMessage({ type: "secure_terminal_exec_approval_required", payload }),
+        );
+      });
+    }
     this.dictation = dictation ?? null;
     this.agentProviderRuntimeSettings = agentProviderRuntimeSettings;
     this.providerOverrides = providerOverrides;
@@ -763,6 +778,8 @@ export class VoiceAssistantWebSocketServer {
       stt: () => this.speech?.resolveStt() ?? null,
       tts: () => this.speech?.resolveTts() ?? null,
       terminalManager: this.terminalManager,
+      portForwardManager: this.portForwardManager,
+      secureTerminalExecCoordinator: this.secureTerminalExecCoordinator,
       providerSnapshotManager: this.providerSnapshotManager,
       scriptRouteStore: this.scriptRouteStore ?? undefined,
       scriptRuntimeStore: this.scriptRuntimeStore ?? undefined,

@@ -1561,6 +1561,80 @@ export async function commitAll(cwd: string, message: string): Promise<void> {
   await commitChanges(cwd, { message, addAll: true });
 }
 
+export interface CheckoutHistoryEntry {
+  graph: string;
+  hash: string;
+  shortHash: string;
+  subject: string;
+  authorName: string;
+  authoredRelative: string;
+  refs: string[];
+}
+
+export async function getCheckoutHistoryGraph(
+  cwd: string,
+  options: { limit?: number } = {},
+): Promise<CheckoutHistoryEntry[]> {
+  await requireGitRepo(cwd);
+  const limit = Math.max(1, Math.min(options.limit ?? 30, 200));
+  const fieldDelimiter = "\u001f";
+
+  try {
+    const { stdout } = await runGitCommand(
+      [
+        "log",
+        "--graph",
+        "--decorate=short",
+        "--date-order",
+        `--pretty=format:${fieldDelimiter}%H${fieldDelimiter}%h${fieldDelimiter}%s${fieldDelimiter}%an${fieldDelimiter}%ar${fieldDelimiter}%D`,
+        "-n",
+        String(limit),
+      ],
+      { cwd, env: READ_ONLY_GIT_ENV, timeout: 30_000 },
+    );
+
+    return stdout
+      .split("\n")
+      .map((line) => {
+        const delimiterIndex = line.indexOf(fieldDelimiter);
+        if (delimiterIndex === -1) {
+          return null;
+        }
+
+        const graph = line.slice(0, delimiterIndex);
+        const fields = line.slice(delimiterIndex + fieldDelimiter.length).split(fieldDelimiter);
+        if (fields.length < 6) {
+          return null;
+        }
+
+        const [hash, shortHash, subject, authorName, authoredRelative, refsRaw] = fields;
+        if (!hash || !shortHash) {
+          return null;
+        }
+
+        return {
+          graph,
+          hash,
+          shortHash,
+          subject,
+          authorName,
+          authoredRelative,
+          refs: refsRaw
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean),
+        } satisfies CheckoutHistoryEntry;
+      })
+      .filter((entry): entry is CheckoutHistoryEntry => entry !== null);
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    if (message.includes("does not have any commits yet")) {
+      return [];
+    }
+    throw error;
+  }
+}
+
 export async function mergeToBase(
   cwd: string,
   options: MergeToBaseOptions = {},

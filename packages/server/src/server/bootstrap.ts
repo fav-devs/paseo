@@ -113,6 +113,8 @@ import { ScheduleService } from "./schedule/service.js";
 import { DaemonConfigStore } from "./daemon-config-store.js";
 import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
 import { createTerminalManager, type TerminalManager } from "../terminal/terminal-manager.js";
+import { createPortForwardManager } from "../port-forward/port-forward-manager.js";
+import { SecureTerminalExecCoordinator } from "./secure-terminal-exec-coordinator.js";
 import { createConnectionOfferV2, encodeOfferToFragmentUrl } from "./connection-offer.js";
 import { loadOrCreateDaemonKeyPair } from "./daemon-keypair.js";
 import { startRelayTransport, type RelayTransportController } from "./relay-transport.js";
@@ -427,6 +429,8 @@ export async function createPaseoDaemon(
     });
 
     const terminalManager = createTerminalManager();
+    const portForwardManager = createPortForwardManager();
+    const secureTerminalExecCoordinator = new SecureTerminalExecCoordinator();
     const github = createGitHubService();
     const workspaceGitService = new WorkspaceGitServiceImpl({
       logger,
@@ -700,6 +704,8 @@ export async function createPaseoDaemon(
               { allowedOrigins, hostnames: configuredHostnames },
               speechService,
               terminalManager,
+              portForwardManager,
+              secureTerminalExecCoordinator,
               {
                 finalTimeoutMs: config.dictationFinalTimeoutMs,
               },
@@ -796,6 +802,7 @@ export async function createPaseoDaemon(
         providerOverrides: config.providerOverrides,
       });
       terminalManager.killAll();
+      await portForwardManager.closeAll().catch(() => undefined);
       speechService.stop();
       await scheduleService.stop().catch(() => undefined);
       await relayTransport?.stop().catch(() => undefined);

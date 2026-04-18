@@ -28,6 +28,18 @@ import {
   type CloseItemsRequest,
   type KillTerminalRequest,
   type CaptureTerminalRequest,
+  type FileWriteRequest,
+  type ListSecretAliasesRequestMessage,
+  type UpsertSecretAliasRequestMessage,
+  type DeleteSecretAliasRequestMessage,
+  type SecureTerminalExecRequest,
+  type ApproveSecureTerminalExecRequestMessage,
+  type RejectSecureTerminalExecRequestMessage,
+  type ListPortForwardsRequest,
+  type SubscribePortForwardsRequest,
+  type UnsubscribePortForwardsRequest,
+  type CreatePortForwardRequest,
+  type ClosePortForwardRequest,
   type SubscribeCheckoutDiffRequest,
   type UnsubscribeCheckoutDiffRequest,
   type DirectorySuggestionsRequest,
@@ -40,6 +52,11 @@ import {
 } from "./messages.js";
 import type { TerminalManager, TerminalsChangedEvent } from "../terminal/terminal-manager.js";
 import { captureTerminalLines, type TerminalSession } from "../terminal/terminal.js";
+import type {
+  PortForwardManager,
+  PortForwardsChangedEvent,
+  PortForwardSession,
+} from "../port-forward/port-forward-manager.js";
 import {
   TerminalStreamOpcode,
   encodeTerminalSnapshotPayload,
@@ -78,6 +95,9 @@ import { spawnWorkspaceScript } from "./worktree-bootstrap.js";
 import { deriveProjectSlug, readGitCommand } from "./workspace-git-metadata.js";
 import type { WorkspaceScriptRuntimeStore } from "./workspace-script-runtime-store.js";
 import type { DaemonConfigStore } from "./daemon-config-store.js";
+import type { SecureTerminalExecCoordinator } from "./secure-terminal-exec-coordinator.js";
+import { evaluateSecureExecPolicy, resolveSecretsPolicy } from "./secure-terminal-exec-policy.js";
+import { runSecureTerminalExec } from "./secure-terminal-exec-runner.js";
 import type { WorkspaceGitRuntimeSnapshot, WorkspaceGitService } from "./workspace-git-service.js";
 
 import { buildProviderRegistry } from "./agent/provider-registry.js";
@@ -92,6 +112,7 @@ import type {
   AgentTimelineFetchDirection,
   ManagedAgent,
 } from "./agent/agent-manager.js";
+import { buildTranscriptFromTimeline } from "./agent/agent-manager.js";
 import { scheduleAgentMetadataGeneration } from "./agent/agent-metadata-generator.js";
 import {
   buildStoredAgentPayload,
@@ -155,6 +176,7 @@ import { isVoicePermissionAllowed } from "./voice-permission-policy.js";
 import {
   listDirectoryEntries,
   readExplorerFile,
+  writeExplorerFile,
   getDownloadableFileInfo,
 } from "./file-explorer/service.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
@@ -164,6 +186,7 @@ import { runAsyncWorktreeBootstrap } from "./worktree-bootstrap.js";
 import type { ScriptRouteStore } from "./script-proxy.js";
 import {
   getCheckoutDiff,
+  getCheckoutHistoryGraph,
   getCachedCheckoutShortstat,
   getCheckoutStatus,
   listBranchSuggestions,
@@ -181,6 +204,7 @@ import { expandTilde } from "../utils/path.js";
 import { searchHomeDirectories, searchWorkspaceEntries } from "../utils/directory-suggestions.js";
 import { READ_ONLY_GIT_ENV, toCheckoutError } from "./checkout-git-utils.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
+import { SecretVault } from "./secret-vault.js";
 import type { LocalSpeechModelId } from "./speech/providers/local/models.js";
 import { toResolver, type Resolvable } from "./speech/provider-resolver.js";
 import type { SpeechReadinessSnapshot, SpeechReadinessState } from "./speech/speech-runtime.js";
@@ -488,6 +512,8 @@ export type SessionOptions = {
   stt: Resolvable<SpeechToTextProvider | null>;
   tts: Resolvable<TextToSpeechProvider | null>;
   terminalManager: TerminalManager | null;
+  portForwardManager?: PortForwardManager | null;
+  secureTerminalExecCoordinator?: SecureTerminalExecCoordinator | null;
   providerSnapshotManager?: ProviderSnapshotManager;
   scriptRouteStore?: ScriptRouteStore;
   scriptRuntimeStore?: WorkspaceScriptRuntimeStore;
@@ -660,6 +686,11 @@ export class Session {
   } | null = null;
   private readonly MOBILE_BACKGROUND_STREAM_GRACE_MS = 60_000;
   private readonly terminalManager: TerminalManager | null;
+  private readonly portForwardManager: PortForwardManager | null;
+  private readonly secretVault: SecretVault;
+  private readonly secureTerminalExecCoordinator: SecureTerminalExecCoordinator | null;
+  private readonly subscribedPortForwardDirectories = new Set<string>();
+  private unsubscribePortForwardsChanged: (() => void) | null = null;
   private readonly providerSnapshotManager: ProviderSnapshotManager | null;
   private unsubscribeProviderSnapshotEvents: (() => void) | null = null;
   private readonly scriptRouteStore: ScriptRouteStore | null;
@@ -727,6 +758,8 @@ export class Session {
       stt,
       tts,
       terminalManager,
+      portForwardManager,
+      secureTerminalExecCoordinator,
       providerSnapshotManager,
       scriptRouteStore,
       scriptRuntimeStore,
@@ -767,6 +800,14 @@ export class Session {
     this.daemonConfigStore = daemonConfigStore;
     this.mcpBaseUrl = mcpBaseUrl ?? null;
     this.terminalManager = terminalManager;
+    this.portForwardManager = portForwardManager ?? null;
+    this.secretVault = new SecretVault(this.paseoHome);
+    this.secureTerminalExecCoordinator = secureTerminalExecCoordinator ?? null;
+    if (this.portForwardManager) {
+      this.unsubscribePortForwardsChanged = this.portForwardManager.subscribePortForwardsChanged(
+        (event) => this.handlePortForwardsChanged(event),
+      );
+    }
     this.providerSnapshotManager = providerSnapshotManager ?? null;
     this.scriptRouteStore = scriptRouteStore ?? null;
     this.scriptRuntimeStore = scriptRuntimeStore ?? null;
@@ -1874,6 +1915,70 @@ export class Session {
 
           case "loop/stop":
             await this.handleLoopStopRequest(msg);
+            break;
+
+          case "list_secret_aliases_request":
+            this.handleListSecretAliasesRequest(msg);
+            break;
+
+          case "upsert_secret_alias_request":
+            this.handleUpsertSecretAliasRequest(msg);
+            break;
+
+          case "delete_secret_alias_request":
+            this.handleDeleteSecretAliasRequest(msg);
+            break;
+
+          case "secure_terminal_exec_request":
+            await this.handleSecureTerminalExecRequest(msg);
+            break;
+
+          case "approve_secure_terminal_exec_request":
+            this.handleApproveSecureTerminalExecRequest(msg);
+            break;
+
+          case "reject_secure_terminal_exec_request":
+            this.handleRejectSecureTerminalExecRequest(msg);
+            break;
+
+          case "fork_agent_request":
+            await this.handleForkAgentRequest(msg);
+            break;
+
+          case "checkout_history_request":
+            await this.handleCheckoutHistoryRequest(msg);
+            break;
+
+          case "update_project_actions_request":
+            await this.handleUpdateProjectActionsRequest(msg);
+            break;
+
+          case "file_write_request":
+            await this.handleFileWriteRequest(msg);
+            break;
+
+          case "subscribe_port_forwards_request":
+            this.handleSubscribePortForwardsRequest(msg);
+            break;
+
+          case "unsubscribe_port_forwards_request":
+            this.handleUnsubscribePortForwardsRequest(msg);
+            break;
+
+          case "list_port_forwards_request":
+            await this.handleListPortForwardsRequest(msg);
+            break;
+
+          case "create_port_forward_request":
+            await this.handleCreatePortForwardRequest(msg);
+            break;
+
+          case "close_port_forward_request":
+            await this.handleClosePortForwardRequest(msg);
+            break;
+
+          case "system_monitor_request":
+            await this.handleSystemMonitorRequest(msg);
             break;
         }
       } catch (error: any) {
@@ -7700,6 +7805,12 @@ export class Session {
     }
     this.subscribedTerminalDirectories.clear();
 
+    if (this.unsubscribePortForwardsChanged) {
+      this.unsubscribePortForwardsChanged();
+      this.unsubscribePortForwardsChanged = null;
+    }
+    this.subscribedPortForwardDirectories.clear();
+
     for (const unsubscribeExit of this.terminalExitSubscriptions.values()) {
       unsubscribeExit();
     }
@@ -8737,6 +8848,635 @@ export class Session {
   private disposeTerminalSubscriptions(): void {
     for (const terminalId of [...this.terminalIdToSlot.keys()]) {
       this.detachTerminalStream(terminalId, { emitExit: false });
+    }
+  }
+
+  private handleListSecretAliasesRequest(msg: ListSecretAliasesRequestMessage): void {
+    const aliases = this.secretVault.listAliases(msg.cwd);
+    this.emit({
+      type: "list_secret_aliases_response",
+      payload: {
+        requestId: msg.requestId,
+        aliases,
+      },
+    });
+  }
+
+  private handleUpsertSecretAliasRequest(msg: UpsertSecretAliasRequestMessage): void {
+    try {
+      this.secretVault.upsert({
+        alias: msg.alias,
+        value: msg.value,
+        scope: msg.scope,
+        projectRoot: msg.projectRoot,
+      });
+      this.emit({
+        type: "upsert_secret_alias_response",
+        payload: {
+          requestId: msg.requestId,
+          success: true,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "upsert_secret_alias_response",
+        payload: {
+          requestId: msg.requestId,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  private handleDeleteSecretAliasRequest(msg: DeleteSecretAliasRequestMessage): void {
+    const removed = this.secretVault.remove({
+      alias: msg.alias,
+      scope: msg.scope,
+      projectRoot: msg.projectRoot,
+    });
+    this.emit({
+      type: "delete_secret_alias_response",
+      payload: {
+        requestId: msg.requestId,
+        success: removed,
+        error: removed ? null : "Alias not found",
+      },
+    });
+  }
+
+  private async handleSecureTerminalExecRequest(msg: SecureTerminalExecRequest): Promise<void> {
+    if (!this.terminalManager) {
+      this.emit({
+        type: "secure_terminal_exec_response",
+        payload: {
+          requestId: msg.requestId,
+          terminalId: null,
+          lines: [],
+          totalLines: 0,
+          error: "Terminal manager not available",
+        },
+      });
+      return;
+    }
+
+    try {
+      const policy = resolveSecretsPolicy(this.daemonConfigStore.get());
+      const { needsApproval } = evaluateSecureExecPolicy(policy, {
+        cwd: msg.cwd,
+        command: msg.command,
+        secretAliases: msg.secretAliases,
+      });
+
+      if (needsApproval) {
+        if (!this.secureTerminalExecCoordinator) {
+          throw new Error(
+            "Secure terminal exec requires approval for one or more secret aliases, but the daemon approval coordinator is not active",
+          );
+        }
+        const approvalId = this.secureTerminalExecCoordinator.createApprovalId();
+        await this.secureTerminalExecCoordinator.waitForApproval({
+          approvalId,
+          cwd: msg.cwd,
+          command: msg.command,
+          secretAliases: msg.secretAliases,
+          source: "session",
+          agentId: null,
+          timeoutMs: policy.approvalTimeoutMs,
+        });
+      }
+
+      const result = await runSecureTerminalExec({
+        terminalManager: this.terminalManager,
+        secretVault: this.secretVault,
+        cwd: msg.cwd,
+        command: msg.command,
+        secretAliases: msg.secretAliases,
+        captureLines: msg.captureLines,
+        waitMs: msg.waitMs,
+      });
+
+      this.emit({
+        type: "secure_terminal_exec_response",
+        payload: {
+          requestId: msg.requestId,
+          terminalId: result.terminalId,
+          lines: result.lines,
+          totalLines: result.totalLines,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "secure_terminal_exec_response",
+        payload: {
+          requestId: msg.requestId,
+          terminalId: null,
+          lines: [],
+          totalLines: 0,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  private handleApproveSecureTerminalExecRequest(
+    msg: ApproveSecureTerminalExecRequestMessage,
+  ): void {
+    const ok = this.secureTerminalExecCoordinator?.approve(msg.approvalId) ?? false;
+    this.emit({
+      type: "approve_secure_terminal_exec_response",
+      payload: {
+        requestId: msg.requestId,
+        success: ok,
+        error: ok ? null : "Unknown approval id or already resolved",
+      },
+    });
+  }
+
+  private handleRejectSecureTerminalExecRequest(msg: RejectSecureTerminalExecRequestMessage): void {
+    const ok =
+      this.secureTerminalExecCoordinator?.reject(
+        msg.approvalId,
+        msg.reason?.trim() || "Secure terminal exec rejected",
+      ) ?? false;
+    this.emit({
+      type: "reject_secure_terminal_exec_response",
+      payload: {
+        requestId: msg.requestId,
+        success: ok,
+        error: ok ? null : "Unknown approval id or already resolved",
+      },
+    });
+  }
+
+  private async handleForkAgentRequest(
+    msg: Extract<SessionInboundMessage, { type: "fork_agent_request" }>,
+  ): Promise<void> {
+    const {
+      sourceAgentId,
+      targetProvider,
+      fromMessageId,
+      transcriptMode,
+      targetConfig,
+      initialPrompt,
+      requestId,
+    } = msg;
+
+    this.sessionLogger.info(
+      { sourceAgentId, targetProvider, fromMessageId, transcriptMode, requestId },
+      "fork_agent_request: creating conversation fork",
+    );
+
+    try {
+      const sourceAgent = this.agentManager.getAgent(sourceAgentId);
+      if (!sourceAgent) {
+        throw new Error(`Source agent '${sourceAgentId}' not found`);
+      }
+
+      const transcript = buildTranscriptFromTimeline(
+        this.agentManager.getTimeline(sourceAgentId),
+        sourceAgent.provider,
+        fromMessageId,
+        transcriptMode,
+      );
+
+      const { systemPrompt: _dropped, ...sourceConfigWithoutSystemPrompt } = sourceAgent.config;
+      const mergedConfig: AgentSessionConfig = {
+        ...sourceConfigWithoutSystemPrompt,
+        ...targetConfig,
+        provider: targetProvider,
+        ...(transcript ? { systemPrompt: transcript } : {}),
+      };
+
+      const { sessionConfig } = await this.buildAgentSessionConfig(
+        mergedConfig,
+        undefined,
+        undefined,
+      );
+      await this.findOrCreateWorkspaceForDirectory(sessionConfig.cwd);
+
+      const snapshot = await this.agentManager.createAgent(sessionConfig, undefined, {
+        labels: { forkSource: sourceAgentId, ...sourceAgent.labels },
+      });
+      await this.forwardAgentUpdate(snapshot);
+
+      const trimmedPrompt = initialPrompt?.trim();
+      if (trimmedPrompt) {
+        const started = await this.handleSendAgentMessage(snapshot.id, trimmedPrompt);
+        if (!started.ok) {
+          this.sessionLogger.warn(
+            { agentId: snapshot.id, error: started.error },
+            "fork_agent_request: failed to send initial prompt after fork",
+          );
+        }
+      }
+
+      this.sessionLogger.info(
+        { sourceAgentId, newAgentId: snapshot.id, targetProvider },
+        "fork_agent_request: fork succeeded",
+      );
+
+      this.emit({
+        type: "fork_agent_response",
+        payload: { requestId, newAgentId: snapshot.id },
+      });
+    } catch (error: any) {
+      this.sessionLogger.error(
+        { err: error, sourceAgentId, targetProvider, requestId },
+        "fork_agent_request: failed",
+      );
+      this.emit({
+        type: "fork_agent_response",
+        payload: {
+          requestId,
+          error: error?.message ?? String(error),
+        },
+      });
+    }
+  }
+
+  private async handleCheckoutHistoryRequest(
+    msg: Extract<SessionInboundMessage, { type: "checkout_history_request" }>,
+  ): Promise<void> {
+    const { cwd, requestId } = msg;
+    const resolvedCwd = expandTilde(cwd);
+
+    try {
+      const entries = await getCheckoutHistoryGraph(resolvedCwd, { limit: msg.limit });
+      this.emit({
+        type: "checkout_history_response",
+        payload: {
+          cwd,
+          entries,
+          error: null,
+          requestId,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "checkout_history_response",
+        payload: {
+          cwd,
+          entries: [],
+          error: toCheckoutError(error),
+          requestId,
+        },
+      });
+    }
+  }
+
+  private async handleUpdateProjectActionsRequest(
+    request: Extract<SessionInboundMessage, { type: "update_project_actions_request" }>,
+  ): Promise<void> {
+    try {
+      const existing = await this.projectRegistry.get(request.projectId);
+      if (!existing || existing.archivedAt) {
+        throw new Error(`Project not found: ${request.projectId}`);
+      }
+
+      const updatedAt = new Date().toISOString();
+      await this.projectRegistry.upsert({
+        ...existing,
+        actions: request.actions,
+        updatedAt,
+        archivedAt: null,
+      });
+
+      const activeWorkspaceIds = (await this.workspaceRegistry.list())
+        .filter((ws) => ws.projectId === request.projectId && !ws.archivedAt)
+        .map((ws) => ws.workspaceId);
+      await this.emitWorkspaceUpdatesForWorkspaceIds(activeWorkspaceIds, { skipReconcile: true });
+      this.emit({
+        type: "update_project_actions_response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          actions: request.actions,
+          error: null,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update project actions";
+      this.sessionLogger.error(
+        { err: error, projectId: request.projectId },
+        "Failed to update project actions",
+      );
+      this.emit({
+        type: "update_project_actions_response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          actions: request.actions,
+          error: message,
+        },
+      });
+    }
+  }
+
+  private async handleFileWriteRequest(request: FileWriteRequest): Promise<void> {
+    const { cwd: workspaceCwd, path: requestedPath, content, requestId } = request;
+    const cwd = workspaceCwd.trim();
+    if (!cwd) {
+      this.emit({
+        type: "file_write_response",
+        payload: {
+          cwd: workspaceCwd,
+          path: requestedPath,
+          error: "cwd is required",
+          requestId,
+        },
+      });
+      return;
+    }
+
+    try {
+      await writeExplorerFile({ root: cwd, relativePath: requestedPath, content });
+      this.emit({
+        type: "file_write_response",
+        payload: {
+          cwd,
+          path: requestedPath,
+          error: null,
+          requestId,
+        },
+      });
+    } catch (error: any) {
+      this.sessionLogger.error(
+        { err: error, cwd, path: requestedPath },
+        `Failed to write file in workspace ${cwd}`,
+      );
+      this.emit({
+        type: "file_write_response",
+        payload: {
+          cwd,
+          path: requestedPath,
+          error: error.message,
+          requestId,
+        },
+      });
+    }
+  }
+
+  private emitPortForwardsChangedSnapshot(input: {
+    cwd: string;
+    portForwards: Array<{
+      id: string;
+      name: string;
+      bindHost: string;
+      localPort: number;
+      targetHost: string;
+      targetPort: number;
+    }>;
+  }): void {
+    this.emit({
+      type: "port_forwards_changed",
+      payload: {
+        cwd: input.cwd,
+        portForwards: input.portForwards,
+      },
+    });
+  }
+
+  private handlePortForwardsChanged(event: PortForwardsChangedEvent): void {
+    if (!this.subscribedPortForwardDirectories.has(event.cwd)) {
+      return;
+    }
+    this.emitPortForwardsChangedSnapshot({
+      cwd: event.cwd,
+      portForwards: event.portForwards.map((portForward) => ({
+        id: portForward.id,
+        name: portForward.name,
+        bindHost: portForward.bindHost,
+        localPort: portForward.localPort,
+        targetHost: portForward.targetHost,
+        targetPort: portForward.targetPort,
+      })),
+    });
+  }
+
+  private handleSubscribePortForwardsRequest(msg: SubscribePortForwardsRequest): void {
+    this.subscribedPortForwardDirectories.add(msg.cwd);
+    void this.emitInitialPortForwardsChangedSnapshot(msg.cwd);
+  }
+
+  private handleUnsubscribePortForwardsRequest(msg: UnsubscribePortForwardsRequest): void {
+    this.subscribedPortForwardDirectories.delete(msg.cwd);
+  }
+
+  private async emitInitialPortForwardsChangedSnapshot(cwd: string): Promise<void> {
+    if (!this.portForwardManager || !this.subscribedPortForwardDirectories.has(cwd)) {
+      return;
+    }
+
+    try {
+      const portForwards = await this.portForwardManager.getPortForwards(cwd);
+      if (!this.subscribedPortForwardDirectories.has(cwd)) {
+        return;
+      }
+      this.emitPortForwardsChangedSnapshot({
+        cwd,
+        portForwards: portForwards.map((portForward) => ({
+          id: portForward.id,
+          name: portForward.name,
+          bindHost: portForward.bindHost,
+          localPort: portForward.localPort,
+          targetHost: portForward.targetHost,
+          targetPort: portForward.targetPort,
+        })),
+      });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error, cwd }, "Failed to emit initial port forward snapshot");
+    }
+  }
+
+  private async getAllPortForwardSessions(): Promise<PortForwardSession[]> {
+    if (!this.portForwardManager) {
+      return [];
+    }
+    const directories = this.portForwardManager.listDirectories();
+    const portForwardsByDirectory = await Promise.all(
+      directories.map((cwd) => this.portForwardManager!.getPortForwards(cwd)),
+    );
+    return portForwardsByDirectory.flat();
+  }
+
+  private async handleListPortForwardsRequest(msg: ListPortForwardsRequest): Promise<void> {
+    if (!this.portForwardManager) {
+      this.emit({
+        type: "list_port_forwards_response",
+        payload: {
+          ...(msg.cwd ? { cwd: msg.cwd } : {}),
+          portForwards: [],
+          requestId: msg.requestId,
+        },
+      });
+      return;
+    }
+
+    try {
+      const portForwards =
+        typeof msg.cwd === "string"
+          ? await this.portForwardManager.getPortForwards(msg.cwd)
+          : await this.getAllPortForwardSessions();
+      this.emit({
+        type: "list_port_forwards_response",
+        payload: {
+          ...(msg.cwd ? { cwd: msg.cwd } : {}),
+          portForwards: portForwards.map((portForward) => ({
+            id: portForward.id,
+            name: portForward.name,
+            bindHost: portForward.bindHost,
+            localPort: portForward.localPort,
+            targetHost: portForward.targetHost,
+            targetPort: portForward.targetPort,
+          })),
+          requestId: msg.requestId,
+        },
+      });
+    } catch (error) {
+      this.sessionLogger.error({ err: error, cwd: msg.cwd }, "Failed to list port forwards");
+      this.emit({
+        type: "list_port_forwards_response",
+        payload: {
+          ...(msg.cwd ? { cwd: msg.cwd } : {}),
+          portForwards: [],
+          requestId: msg.requestId,
+        },
+      });
+    }
+  }
+
+  private async handleCreatePortForwardRequest(msg: CreatePortForwardRequest): Promise<void> {
+    if (!this.portForwardManager) {
+      this.emit({
+        type: "create_port_forward_response",
+        payload: {
+          portForward: null,
+          error: "Port forward manager not available",
+          requestId: msg.requestId,
+        },
+      });
+      return;
+    }
+
+    try {
+      const portForward = await this.portForwardManager.createPortForward({
+        cwd: msg.cwd,
+        name: msg.name,
+        bindHost: msg.bindHost,
+        localPort: msg.localPort,
+        targetHost: msg.targetHost,
+        targetPort: msg.targetPort,
+      });
+      this.emit({
+        type: "create_port_forward_response",
+        payload: {
+          portForward: {
+            id: portForward.id,
+            name: portForward.name,
+            cwd: portForward.cwd,
+            bindHost: portForward.bindHost,
+            localPort: portForward.localPort,
+            targetHost: portForward.targetHost,
+            targetPort: portForward.targetPort,
+          },
+          error: null,
+          requestId: msg.requestId,
+        },
+      });
+    } catch (error: any) {
+      this.sessionLogger.error({ err: error, cwd: msg.cwd }, "Failed to create port forward");
+      this.emit({
+        type: "create_port_forward_response",
+        payload: {
+          portForward: null,
+          error: error.message,
+          requestId: msg.requestId,
+        },
+      });
+    }
+  }
+
+  private async handleClosePortForwardRequest(msg: ClosePortForwardRequest): Promise<void> {
+    if (!this.portForwardManager) {
+      this.emit({
+        type: "close_port_forward_response",
+        payload: {
+          portForwardId: msg.portForwardId,
+          success: false,
+          requestId: msg.requestId,
+        },
+      });
+      return;
+    }
+
+    const portForward = this.portForwardManager.getPortForward(msg.portForwardId);
+    if (!portForward) {
+      this.emit({
+        type: "close_port_forward_response",
+        payload: {
+          portForwardId: msg.portForwardId,
+          success: false,
+          requestId: msg.requestId,
+        },
+      });
+      return;
+    }
+
+    try {
+      await this.portForwardManager.closePortForward(msg.portForwardId);
+      this.emit({
+        type: "close_port_forward_response",
+        payload: {
+          portForwardId: msg.portForwardId,
+          success: true,
+          requestId: msg.requestId,
+        },
+      });
+    } catch (error) {
+      this.sessionLogger.error(
+        { err: error, portForwardId: msg.portForwardId },
+        "Failed to close port forward",
+      );
+      this.emit({
+        type: "close_port_forward_response",
+        payload: {
+          portForwardId: msg.portForwardId,
+          success: false,
+          requestId: msg.requestId,
+        },
+      });
+    }
+  }
+
+  private async handleSystemMonitorRequest(
+    request: Extract<SessionInboundMessage, { type: "system_monitor_request" }>,
+  ): Promise<void> {
+    const { requestId } = request;
+    try {
+      const { getSystemMonitorData } = await import("./system-monitor.js");
+      const data = await getSystemMonitorData();
+      this.emit({
+        type: "system_monitor_response",
+        payload: {
+          ports: data.ports,
+          resources: data.resources,
+          error: null,
+          requestId,
+        },
+      });
+    } catch (error: any) {
+      this.emit({
+        type: "system_monitor_response",
+        payload: {
+          ports: [],
+          resources: { cpuPercent: null, memUsedBytes: null, memTotalBytes: null, loadAvg1m: null },
+          error: String(error?.message ?? error),
+          requestId,
+        },
+      });
     }
   }
 }
