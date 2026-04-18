@@ -64,6 +64,7 @@ export function SpotifyPane({
     (state) =>
       state.terminalIdsByServer[serverId] ?? { mainTerminalId: null, probeTerminalId: null },
   );
+  const setTerminalIds = useSpotifyRuntimeStore((state) => state.setTerminalIds);
   const streamControllerRef = useRef<TerminalStreamController | null>(null);
 
   const [launchError, setLaunchError] = useState<string | null>(null);
@@ -368,6 +369,16 @@ export function SpotifyPane({
           end: -1,
           stripAnsi: true,
         });
+        if (capture.totalLines === 0) {
+          // Terminal not found on server — clear the stale ID so the query re-fetches.
+          queryClient.removeQueries({ queryKey });
+          setTerminalIds({
+            serverId,
+            mainTerminalId: runtimeTerminalIds.mainTerminalId,
+            probeTerminalId: null,
+          });
+          return;
+        }
         const parsedProbe = parseSpotifyPlaybackProbeFromCapture(capture.lines);
         if (parsedProbe) {
           applyPlaybackProbe(parsedProbe);
@@ -408,7 +419,18 @@ export function SpotifyPane({
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, [applyPlaybackProbe, client, isBackgroundManaged, isConnected, spotifyProbeTerminal]);
+  }, [
+    applyPlaybackProbe,
+    client,
+    isBackgroundManaged,
+    isConnected,
+    queryClient,
+    queryKey,
+    runtimeTerminalIds.mainTerminalId,
+    serverId,
+    setTerminalIds,
+    spotifyProbeTerminal,
+  ]);
 
   const handleLaunch = useCallback(() => {
     launchMutation.mutate();

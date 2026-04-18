@@ -171,6 +171,15 @@ function ManagedSpotifyBackgroundSession({ serverId }: { serverId: string }) {
           end: -1,
           stripAnsi: true,
         });
+        if (capture.totalLines === 0) {
+          // Terminal not found on server — clear the stale probe ID.
+          setTerminalIds({
+            serverId,
+            mainTerminalId: terminalIds.mainTerminalId,
+            probeTerminalId: null,
+          });
+          return;
+        }
         const parsedProbe = parseSpotifyPlaybackProbeFromCapture(capture.lines);
         if (parsedProbe) {
           setPreview({
