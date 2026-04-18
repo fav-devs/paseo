@@ -41,6 +41,9 @@ type ControlMessage =
 const CONTROL_PING_INTERVAL_MS = 10_000;
 const CONTROL_STALE_TIMEOUT_MS = 30_000;
 const CONTROL_READY_TIMEOUT_MS = 8_000;
+// Minimum time a connection must be stable before we reset the reconnect backoff.
+// Prevents rapid flapping from resetting the backoff on every short-lived connection.
+const CONTROL_STABLE_CONNECTION_MS = 30_000;
 
 function tryParseControlMessage(raw: unknown): ControlMessage | null {
   try {
@@ -94,6 +97,7 @@ export function startRelayTransport({
   let controlReadyTimeout: ReturnType<typeof setTimeout> | null = null;
   let controlLastSeenAt = 0;
   let controlConnectionSeq = 0;
+  let controlReadyAt = 0;
 
   const stop = async (): Promise<void> => {
     stopped = true;
@@ -144,7 +148,7 @@ export function startRelayTransport({
       if (controlWs !== socket) return;
       if (controlConnected) return;
       controlConnected = true;
-      reconnectAttempt = 0;
+      controlReadyAt = Date.now();
       if (controlReadyTimeout) {
         clearTimeout(controlReadyTimeout);
         controlReadyTimeout = null;
@@ -238,6 +242,11 @@ export function startRelayTransport({
       if (controlReadyTimeout) {
         clearTimeout(controlReadyTimeout);
         controlReadyTimeout = null;
+      }
+      // Only reset the reconnect backoff if the connection was stable long enough.
+      // Short-lived connections (relay flapping) should keep accumulating backoff.
+      if (controlConnected && Date.now() - controlReadyAt >= CONTROL_STABLE_CONNECTION_MS) {
+        reconnectAttempt = 0;
       }
       scheduleReconnect();
     });
