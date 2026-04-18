@@ -325,9 +325,18 @@ function spawnService(svc) {
 
       if (isError && svc.autoRestart && svc.restarts < (svc.maxAutoRestarts ?? 5)) {
         svc.restarts++;
-        if (svc.key === "metro") { metroUrl = null; metroTunnelMode = false; }
-        pushLine(svc, `${DIM}↺ auto-restarting (${svc.restarts}/${svc.maxAutoRestarts ?? 5})...${RESET}`);
-        setTimeout(() => { spawnService(svc); scheduleRender(true); }, 1000);
+        if (svc.key === "metro") {
+          metroUrl = null;
+          metroTunnelMode = false;
+        }
+        pushLine(
+          svc,
+          `${DIM}↺ auto-restarting (${svc.restarts}/${svc.maxAutoRestarts ?? 5})...${RESET}`,
+        );
+        setTimeout(() => {
+          spawnService(svc);
+          scheduleRender(true);
+        }, 1000);
       }
     });
 
