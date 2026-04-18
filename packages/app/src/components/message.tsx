@@ -55,7 +55,6 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from "react-native-svg";
-import { theme } from "@/styles/theme";
 import { createMarkdownStyles } from "@/styles/markdown-styles";
 import { Colors, Fonts } from "@/constants/theme";
 import * as Clipboard from "expo-clipboard";
@@ -354,6 +353,7 @@ export const UserMessage = memo(function UserMessage({
   onForkFromHere,
   onEditAsBranch,
 }: UserMessageProps) {
+  const { theme } = useUnistyles();
   const isCompact = useIsCompactFormFactor();
   const [messageHovered, setMessageHovered] = useState(false);
   const [actionButtonsHovered, setActionButtonsHovered] = useState(false);
@@ -1029,10 +1029,10 @@ export const AssistantMessage = memo(function AssistantMessage({
   client,
   disableOuterSpacing,
 }: AssistantMessageProps) {
-  const { theme, rt } = useUnistyles();
+  const { theme } = useUnistyles();
   const resolvedDisableOuterSpacing = useDisableOuterSpacing(disableOuterSpacing);
 
-  const markdownStyles = useMemo(() => createMarkdownStyles(theme), [rt.themeName]);
+  const markdownStyles = useMemo(() => createMarkdownStyles(theme), [theme]);
 
   const markdownParser = useMemo(() => {
     const parser = MarkdownIt({ typographer: true, linkify: true });

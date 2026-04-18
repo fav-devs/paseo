@@ -63,7 +63,9 @@ import { CommandCenter } from "@/components/command-center";
 import { ProjectPickerModal } from "@/components/project-picker-modal";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
 import { SpotifyBackgroundManager } from "@/components/spotify-background-manager";
+import { WorkspaceSetupDialog } from "@/components/workspace-setup-dialog";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { useActiveWorktreeNewAction } from "@/hooks/use-active-worktree-new-action";
 import { queryClient } from "@/query/query-client";
 import {
   WEB_NOTIFICATION_CLICK_EVENT,
@@ -80,6 +82,7 @@ import {
   parseServerIdFromPathname,
   parseHostAgentRouteFromPathname,
   parseWorkspaceOpenIntent,
+  decodeWorkspaceIdFromPathSegment,
 } from "@/utils/host-routes";
 import { syncNavigationActiveWorkspace } from "@/stores/navigation-active-workspace-store";
 import { isWeb, isNative } from "@/constants/platform";
@@ -402,6 +405,12 @@ function AppContainer({
 
   const isCompactLayout = useIsCompactFormFactor();
   const chromeEnabled = chromeEnabledOverride ?? daemons.length > 0;
+  const pathname = usePathname();
+  // TODO: stop matching pathname here as a branch. `chromeEnabled` should not
+  // conflate workspace/project-specific chrome (sidebar, mobile gesture) with
+  // global concerns like keyboard shortcuts. Split those out so settings (and
+  // other non-workspace routes) don't need a special-case to keep shortcuts alive.
+  const keyboardShortcutsEnabled = chromeEnabled || pathname.startsWith("/settings");
 
   useEffect(() => {
     const bp = UnistylesRuntime.breakpoint;
@@ -433,15 +442,16 @@ function AppContainer({
   }, [isCompactLayout, chromeEnabled, isFocusModeEnabled, agentListOpen, sidebarWidth]);
 
   useKeyboardShortcuts({
-    enabled: chromeEnabled,
+    enabled: keyboardShortcutsEnabled,
     isMobile: isCompactLayout,
     toggleAgentList,
-    selectedAgentId,
     toggleFileExplorer,
     toggleBothSidebars,
     toggleFocusMode,
     cycleTheme,
   });
+
+  useActiveWorktreeNewAction();
 
   const containerStyle = useMemo(
     () => ({ flex: 1 as const, backgroundColor: theme.colors.surface0 }),
@@ -461,6 +471,7 @@ function AppContainer({
       <UpdateBanner />
       <CommandCenter />
       <ProjectPickerModal />
+      <WorkspaceSetupDialog />
       <KeyboardShortcutsDialog />
     </View>
   );
@@ -753,7 +764,7 @@ function AppWithSidebar({ children }: { children: ReactNode }) {
     if (hosts.some((host) => host.serverId === activeServerId)) {
       return;
     }
-    router.replace(mapPathnameToServer(pathname, hosts[0]!.serverId));
+    router.replace(mapPathnameToServer(pathname, hosts[0]!.serverId) as never);
   }, [activeServerId, hosts, pathname, router]);
 
   // Parse selectedAgentKey directly from pathname
@@ -790,7 +801,6 @@ function FaviconStatusSync() {
 function RootStack() {
   const storeReady = useStoreReady();
   const { theme } = useUnistyles();
-
   return (
     <Stack
       screenOptions={{
@@ -803,7 +813,8 @@ function RootStack() {
     >
       <Stack.Protected guard={storeReady}>
         <Stack.Screen name="welcome" />
-        <Stack.Screen name="settings" />
+        <Stack.Screen name="settings/index" />
+        <Stack.Screen name="settings/[section]" />
         <Stack.Screen name="pair-scan" />
       </Stack.Protected>
       <Stack.Screen
@@ -820,6 +831,7 @@ function RootStack() {
       <Stack.Screen name="h/[serverId]/open-project" />
       <Stack.Screen name="h/[serverId]/settings" />
       <Stack.Screen name="index" />
+      <Stack.Screen name="settings/hosts/[serverId]" />
     </Stack>
   );
 }

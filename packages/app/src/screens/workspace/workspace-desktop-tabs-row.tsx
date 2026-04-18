@@ -85,11 +85,15 @@ type WorkspaceDesktopTabsRowProps = {
   onCloseTabsToLeft: (tabId: string) => Promise<void> | void;
   onCloseTabsToRight: (tabId: string) => Promise<void> | void;
   onCloseOtherTabs: (tabId: string) => Promise<void> | void;
-  onSelectNewTabOption: (selection: NewTabSelection) => void;
-  newTabAgentOptionId: NewTabOptionId;
-  newTabPortForwardsOptionId: NewTabOptionId;
+  onSelectNewTabOption?: (selection: NewTabSelection) => void;
+  newTabAgentOptionId?: NewTabOptionId;
+  newTabPortForwardsOptionId?: NewTabOptionId;
+  onNewTerminalTab?: (input: { paneId?: string }) => void;
+  onCreateDraftTab?: (input: { paneId?: string }) => void;
+  onCreateTerminalTab?: (input: { paneId?: string }) => void;
+  disableCreateTerminal?: boolean;
+  isWaitingOnTerminalReadiness?: boolean;
   onReorderTabs: (nextTabs: WorkspaceTabDescriptor[]) => void;
-  onNewTerminalTab: (input: { paneId?: string }) => void;
   onSplitRight: () => void;
   onSplitDown: () => void;
   externalDndContext?: boolean;
@@ -101,6 +105,9 @@ type WorkspaceDesktopTabsRowProps = {
 function getFallbackTabLabel(tab: WorkspaceTabDescriptor): string {
   if (tab.target.kind === "draft") {
     return "New Agent";
+  }
+  if (tab.target.kind === "setup") {
+    return "Setup";
   }
   if (tab.target.kind === "terminal") {
     return "Terminal";
@@ -391,8 +398,11 @@ export function WorkspaceDesktopTabsRow({
   onSelectNewTabOption,
   newTabAgentOptionId,
   newTabPortForwardsOptionId,
+  onCreateDraftTab,
+  onCreateTerminalTab,
+  disableCreateTerminal = false,
+  isWaitingOnTerminalReadiness = false,
   onReorderTabs,
-  onNewTerminalTab,
   onSplitRight,
   onSplitDown,
   externalDndContext = false,
@@ -401,8 +411,8 @@ export function WorkspaceDesktopTabsRow({
   showPaneSplitActions = true,
 }: WorkspaceDesktopTabsRowProps) {
   const { theme } = useUnistyles();
-  const newAgentTabKeys = useShortcutKeys("workspace-tab-new");
-  const newTerminalTabKeys = useShortcutKeys("workspace-terminal-new");
+  const newTabKeys = useShortcutKeys("workspace-tab-new");
+  const newTerminalKeys = useShortcutKeys("workspace-terminal-new");
   const splitRightKeys = useShortcutKeys("workspace-pane-split-right");
   const splitDownKeys = useShortcutKeys("workspace-pane-split-down");
   const [tabsContainerWidth, setTabsContainerWidth] = useState<number>(0);
@@ -531,12 +541,15 @@ export function WorkspaceDesktopTabsRow({
         <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
           <TooltipTrigger
             testID="workspace-new-agent-tab"
-            onPress={() =>
-              onSelectNewTabOption({
-                optionId: newTabAgentOptionId,
-                paneId,
-              })
-            }
+            onPress={() => {
+              if (onCreateDraftTab) {
+                onCreateDraftTab({ paneId });
+                return;
+              }
+              if (onSelectNewTabOption && newTabAgentOptionId) {
+                onSelectNewTabOption({ optionId: newTabAgentOptionId, paneId });
+              }
+            }}
             accessibilityRole="button"
             accessibilityLabel="New agent tab"
             style={({ hovered, pressed }) => [
@@ -549,19 +562,33 @@ export function WorkspaceDesktopTabsRow({
           <TooltipContent side="bottom" align="center" offset={8}>
             <View style={styles.newTabTooltipRow}>
               <Text style={styles.newTabTooltipText}>New agent tab</Text>
-              {newAgentTabKeys ? (
-                <Shortcut chord={newAgentTabKeys} style={styles.newTabTooltipShortcut} />
+              {newTabKeys ? (
+                <Shortcut chord={newTabKeys} style={styles.newTabTooltipShortcut} />
               ) : null}
             </View>
           </TooltipContent>
         </Tooltip>
         <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
           <TooltipTrigger
-            onPress={() => onNewTerminalTab({ paneId })}
+            testID="workspace-new-terminal"
+            onPress={() => {
+              if (onCreateTerminalTab) {
+                onCreateTerminalTab({ paneId });
+                return;
+              }
+              if (onSelectNewTabOption) {
+                onSelectNewTabOption({ optionId: "__new_tab_terminal__", paneId });
+              }
+            }}
+            disabled={disableCreateTerminal || isWaitingOnTerminalReadiness}
             accessibilityRole="button"
-            accessibilityLabel="New terminal tab"
+            accessibilityLabel={
+              isWaitingOnTerminalReadiness ? "Preparing terminal tab" : "New terminal tab"
+            }
             style={({ hovered, pressed }) => [
               styles.newTabActionButton,
+              (disableCreateTerminal || isWaitingOnTerminalReadiness) &&
+                styles.newTabActionButtonDisabled,
               (hovered || pressed) && styles.newTabActionButtonHovered,
             ]}
           >
@@ -569,9 +596,11 @@ export function WorkspaceDesktopTabsRow({
           </TooltipTrigger>
           <TooltipContent side="bottom" align="center" offset={8}>
             <View style={styles.newTabTooltipRow}>
-              <Text style={styles.newTabTooltipText}>New terminal tab</Text>
-              {newTerminalTabKeys ? (
-                <Shortcut chord={newTerminalTabKeys} style={styles.newTabTooltipShortcut} />
+              <Text style={styles.newTabTooltipText}>
+                {isWaitingOnTerminalReadiness ? "Preparing terminal..." : "New terminal tab"}
+              </Text>
+              {newTerminalKeys ? (
+                <Shortcut chord={newTerminalKeys} style={styles.newTabTooltipShortcut} />
               ) : null}
             </View>
           </TooltipContent>
@@ -579,12 +608,14 @@ export function WorkspaceDesktopTabsRow({
         <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
           <TooltipTrigger
             testID="workspace-new-port-forwards-tab"
-            onPress={() =>
-              onSelectNewTabOption({
-                optionId: newTabPortForwardsOptionId,
-                paneId,
-              })
-            }
+            onPress={() => {
+              if (onSelectNewTabOption && newTabPortForwardsOptionId) {
+                onSelectNewTabOption({
+                  optionId: newTabPortForwardsOptionId,
+                  paneId,
+                });
+              }
+            }}
             accessibilityRole="button"
             accessibilityLabel="Open port forwards tab"
             style={({ hovered, pressed }) => [
@@ -900,6 +931,9 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.md,
     alignItems: "center",
     justifyContent: "center",
+  },
+  newTabActionButtonDisabled: {
+    opacity: 0.5,
   },
   newTabActionButtonHovered: {
     backgroundColor: theme.colors.surface2,

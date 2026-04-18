@@ -8,9 +8,9 @@ import {
   getCheckoutStatus,
   getPullRequestStatus,
   hasOriginRemote,
-  resolveGhPath,
   resolveAbsoluteGitDir,
 } from "../utils/checkout-git.js";
+import { createGitHubService, type GitHubService } from "../services/github-service.js";
 import { parseGitRevParsePath } from "../utils/git-rev-parse-path.js";
 import { runGitCommand } from "../utils/run-git-command.js";
 import { READ_ONLY_GIT_ENV } from "./checkout-git-utils.js";
@@ -79,7 +79,7 @@ interface WorkspaceGitServiceDependencies {
   getCheckoutStatus: typeof getCheckoutStatus;
   getCheckoutShortstat: typeof getCheckoutShortstat;
   getPullRequestStatus: typeof getPullRequestStatus;
-  resolveGhPath: typeof resolveGhPath;
+  github: GitHubService;
   resolveAbsoluteGitDir: (cwd: string) => Promise<string | null>;
   hasOriginRemote: (cwd: string) => Promise<boolean>;
   runGitFetch: (cwd: string) => Promise<void>;
@@ -147,7 +147,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       getCheckoutStatus: options.deps?.getCheckoutStatus ?? getCheckoutStatus,
       getCheckoutShortstat: options.deps?.getCheckoutShortstat ?? getCheckoutShortstat,
       getPullRequestStatus: options.deps?.getPullRequestStatus ?? getPullRequestStatus,
-      resolveGhPath: options.deps?.resolveGhPath ?? resolveGhPath,
+      github: options.deps?.github ?? createGitHubService(),
       resolveAbsoluteGitDir: options.deps?.resolveAbsoluteGitDir ?? resolveAbsoluteGitDir,
       hasOriginRemote: options.deps?.hasOriginRemote ?? hasOriginRemote,
       runGitFetch: options.deps?.runGitFetch ?? runGitFetch,
@@ -833,7 +833,7 @@ async function loadWorkspaceGitRuntimeSnapshot(
   now: Date,
   deps: Pick<
     WorkspaceGitServiceDependencies,
-    "getCheckoutStatus" | "getCheckoutShortstat" | "getPullRequestStatus" | "resolveGhPath"
+    "getCheckoutStatus" | "getCheckoutShortstat" | "getPullRequestStatus" | "github"
   >,
 ): Promise<WorkspaceGitRuntimeSnapshot> {
   const checkoutStatus = await deps.getCheckoutStatus(cwd, context);
@@ -874,7 +874,7 @@ async function loadGitHubSnapshot(options: {
   cwd: string;
   remoteUrl: string | null;
   now: Date;
-  deps: Pick<WorkspaceGitServiceDependencies, "getPullRequestStatus" | "resolveGhPath">;
+  deps: Pick<WorkspaceGitServiceDependencies, "getPullRequestStatus" | "github">;
 }): Promise<WorkspaceGitRuntimeSnapshot["github"]> {
   if (!hasGitHubRemoteUrl(options.remoteUrl)) {
     return {
@@ -886,7 +886,7 @@ async function loadGitHubSnapshot(options: {
   }
 
   try {
-    await options.deps.resolveGhPath();
+    await options.deps.github.isAuthenticated({ cwd: options.cwd });
   } catch {
     return {
       featuresEnabled: false,
@@ -897,7 +897,7 @@ async function loadGitHubSnapshot(options: {
   }
 
   try {
-    const result = await options.deps.getPullRequestStatus(options.cwd);
+    const result = await options.deps.getPullRequestStatus(options.cwd, options.deps.github);
     return {
       featuresEnabled: true,
       pullRequest: result.status,

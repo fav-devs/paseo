@@ -33,13 +33,9 @@ import { Shortcut } from "@/components/ui/shortcut";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { router, usePathname } from "expo-router";
 import { usePanelStore, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH } from "@/stores/panel-store";
+import { SidebarHeaderRow } from "@/components/sidebar/sidebar-header-row";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
-import { SidebarSessionList } from "./sidebar-session-list";
 import { SidebarAgentListSkeleton } from "./sidebar-agent-list-skeleton";
-import { SegmentedControl } from "@/components/ui/segmented-control";
-import { FolderGit2 } from "lucide-react-native";
-import { useAllAgentsList } from "@/hooks/use-all-agents-list";
-import type { AggregatedAgent } from "@/hooks/use-aggregated-agents";
 import { useSidebarShortcutModel } from "@/hooks/use-sidebar-shortcut-model";
 import {
   useSidebarWorkspacesList,
@@ -51,13 +47,10 @@ import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { Combobox, ComboboxItem, type ComboboxOption } from "@/components/ui/combobox";
 import { useHostRuntimeSnapshot, useHosts } from "@/runtime/host-runtime";
 import { formatConnectionStatus } from "@/utils/daemons";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import {
-  HEADER_INNER_HEIGHT,
-  HEADER_INNER_HEIGHT_MOBILE,
-  useIsCompactFormFactor,
-} from "@/constants/layout";
-import {
-  buildHostSettingsRoute,
+  buildHostSessionsRoute,
+  buildSettingsRoute,
   mapPathnameToServer,
   parseServerIdFromPathname,
 } from "@/utils/host-routes";
@@ -72,8 +65,6 @@ type SidebarTheme = ReturnType<typeof useUnistyles>["theme"];
 interface LeftSidebarProps {
   selectedAgentId?: string;
 }
-
-type SidebarTab = "projects" | "sessions";
 
 interface SidebarSharedProps {
   theme: SidebarTheme;
@@ -108,30 +99,20 @@ interface MobileSidebarProps extends SidebarSharedProps {
   insetsBottom: number;
   isOpen: boolean;
   closeToAgent: () => void;
-  activeTab: SidebarTab;
-  setActiveTab: Dispatch<SetStateAction<SidebarTab>>;
-  sessions: AggregatedAgent[];
-  isSessionsInitialLoad: boolean;
-  isSessionsRevalidating: boolean;
-  handleSessionsRefresh: () => void;
-  isSessionsManualRefresh: boolean;
-  selectedAgentId?: string;
+  handleViewMoreNavigate: () => void;
 }
 
 interface DesktopSidebarProps extends SidebarSharedProps {
   insetsTop: number;
   isOpen: boolean;
-  activeTab: SidebarTab;
-  setActiveTab: Dispatch<SetStateAction<SidebarTab>>;
-  sessions: AggregatedAgent[];
-  isSessionsInitialLoad: boolean;
-  isSessionsRevalidating: boolean;
-  handleSessionsRefresh: () => void;
-  isSessionsManualRefresh: boolean;
-  selectedAgentId?: string;
+  handleViewMore: () => void;
 }
 
-export const LeftSidebar = memo(function LeftSidebar({ selectedAgentId }: LeftSidebarProps) {
+export const LeftSidebar = memo(function LeftSidebar({
+  selectedAgentId: _selectedAgentId,
+}: LeftSidebarProps) {
+  void _selectedAgentId;
+
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
   const isCompactLayout = useIsCompactFormFactor();
@@ -204,34 +185,10 @@ export const LeftSidebar = memo(function LeftSidebar({ selectedAgentId }: LeftSi
 
   const isOpen = isCompactLayout ? mobileView === "agent-list" : desktopAgentListOpen;
 
-  const [activeTab, setActiveTab] = useState<SidebarTab>("projects");
-
   const { projects, isInitialLoad, isRevalidating, refreshAll } = useSidebarWorkspacesList({
     serverId: activeServerId,
     enabled: isOpen,
   });
-
-  // Sessions data for desktop Sessions tab. Hook always runs for stable hook order;
-  // the data only renders when the Sessions tab is active on desktop.
-  const {
-    agents: sessions,
-    isInitialLoad: isSessionsInitialLoad,
-    isRevalidating: isSessionsRevalidating,
-    refreshAll: refreshSessions,
-  } = useAllAgentsList({ serverId: activeServerId, includeArchived: false });
-
-  const [isSessionsManualRefresh, setIsSessionsManualRefresh] = useState(false);
-
-  const handleSessionsRefresh = useCallback(() => {
-    setIsSessionsManualRefresh(true);
-    refreshSessions();
-  }, [refreshSessions]);
-
-  useEffect(() => {
-    if (!isSessionsRevalidating && isSessionsManualRefresh) {
-      setIsSessionsManualRefresh(false);
-    }
-  }, [isSessionsRevalidating, isSessionsManualRefresh]);
   const { collapsedProjectKeys, shortcutIndexByWorkspaceKey, toggleProjectCollapsed } =
     useSidebarShortcutModel(projects);
 
@@ -260,18 +217,19 @@ export const LeftSidebar = memo(function LeftSidebar({ selectedAgentId }: LeftSi
   }, [openProjectPicker]);
 
   const handleSettingsMobile = useCallback(() => {
-    if (!activeServerId) {
-      return;
-    }
     closeToAgent();
-    router.push(buildHostSettingsRoute(activeServerId));
-  }, [activeServerId, closeToAgent]);
+    router.push(buildSettingsRoute());
+  }, [closeToAgent]);
 
   const handleSettingsDesktop = useCallback(() => {
+    router.push(buildSettingsRoute());
+  }, []);
+
+  const handleViewMoreNavigate = useCallback(() => {
     if (!activeServerId) {
       return;
     }
-    router.push(buildHostSettingsRoute(activeServerId));
+    router.push(buildHostSessionsRoute(activeServerId));
   }, [activeServerId]);
 
   const handleHostSelect = useCallback(
@@ -281,7 +239,7 @@ export const LeftSidebar = memo(function LeftSidebar({ selectedAgentId }: LeftSi
       }
       const nextPath = mapPathnameToServer(pathname, nextServerId);
       setIsHostPickerOpen(false);
-      router.push(nextPath);
+      router.push(nextPath as never);
     },
     [pathname],
   );
@@ -317,14 +275,7 @@ export const LeftSidebar = memo(function LeftSidebar({ selectedAgentId }: LeftSi
         closeToAgent={closeToAgent}
         handleOpenProject={handleOpenProjectMobile}
         handleSettings={handleSettingsMobile}
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        sessions={sessions}
-        isSessionsInitialLoad={isSessionsInitialLoad}
-        isSessionsRevalidating={isSessionsRevalidating}
-        handleSessionsRefresh={handleSessionsRefresh}
-        isSessionsManualRefresh={isSessionsManualRefresh}
-        selectedAgentId={selectedAgentId}
+        handleViewMoreNavigate={handleViewMoreNavigate}
       />
     );
   }
@@ -336,14 +287,7 @@ export const LeftSidebar = memo(function LeftSidebar({ selectedAgentId }: LeftSi
       isOpen={isOpen}
       handleOpenProject={handleOpenProjectDesktop}
       handleSettings={handleSettingsDesktop}
-      activeTab={activeTab}
-      setActiveTab={setActiveTab}
-      sessions={sessions}
-      isSessionsInitialLoad={isSessionsInitialLoad}
-      isSessionsRevalidating={isSessionsRevalidating}
-      handleSessionsRefresh={handleSessionsRefresh}
-      isSessionsManualRefresh={isSessionsManualRefresh}
-      selectedAgentId={selectedAgentId}
+      handleViewMore={handleViewMoreNavigate}
     />
   );
 });
@@ -400,16 +344,11 @@ function MobileSidebar({
   insetsBottom,
   isOpen,
   closeToAgent,
-  activeTab,
-  setActiveTab,
-  sessions,
-  isSessionsInitialLoad,
-  isSessionsRevalidating,
-  handleSessionsRefresh,
-  isSessionsManualRefresh,
-  selectedAgentId,
+  handleViewMoreNavigate,
 }: MobileSidebarProps) {
   const newAgentKeys = useShortcutKeys("new-agent");
+  const pathname = usePathname();
+  const isSessionsActive = pathname.includes("/sessions");
   const {
     translateX,
     backdropOpacity,
@@ -427,6 +366,23 @@ function MobileSidebar({
     gestureAnimatingRef.current = true;
     closeToAgent();
   }, [closeToAgent, gestureAnimatingRef]);
+
+  const handleViewMore = useCallback(() => {
+    if (!activeServerId) {
+      return;
+    }
+    translateX.value = -windowWidth;
+    backdropOpacity.value = 0;
+    closeToAgent();
+    handleViewMoreNavigate();
+  }, [
+    activeServerId,
+    backdropOpacity,
+    closeToAgent,
+    handleViewMoreNavigate,
+    translateX,
+    windowWidth,
+  ]);
 
   const closeGesture = useMemo(
     () =>
@@ -543,58 +499,28 @@ function MobileSidebar({
           pointerEvents="auto"
         >
           <View style={styles.sidebarContent} pointerEvents="auto">
-            <View style={styles.sidebarHeader}>
-              <View style={styles.sidebarHeaderRow}>
-                <SegmentedControl<SidebarTab>
-                  testID="sidebar-tab-switcher"
-                  options={[
-                    {
-                      value: "projects",
-                      label: "Projects",
-                      icon: ({ color, size }) => <FolderGit2 color={color} size={size} />,
-                      testID: "sidebar-tab-projects",
-                    },
-                    {
-                      value: "sessions",
-                      label: "Sessions",
-                      icon: ({ color, size }) => <MessagesSquare color={color} size={size} />,
-                      testID: "sidebar-tab-sessions",
-                    },
-                  ]}
-                  value={activeTab}
-                  onValueChange={setActiveTab}
-                  size="sm"
-                  style={styles.tabSwitcher}
-                />
-              </View>
-            </View>
+            <SidebarHeaderRow
+              icon={MessagesSquare}
+              label="Sessions"
+              onPress={handleViewMore}
+              isActive={isSessionsActive}
+              testID="sidebar-sessions"
+            />
 
-            {activeTab === "projects" ? (
-              isInitialLoad ? (
-                <SidebarAgentListSkeleton />
-              ) : (
-                <SidebarWorkspaceList
-                  serverId={activeServerId}
-                  collapsedProjectKeys={collapsedProjectKeys}
-                  onToggleProjectCollapsed={toggleProjectCollapsed}
-                  shortcutIndexByWorkspaceKey={shortcutIndexByWorkspaceKey}
-                  projects={projects}
-                  isRefreshing={isManualRefresh && isRevalidating}
-                  onRefresh={handleRefresh}
-                  onWorkspacePress={() => closeToAgent()}
-                  onAddProject={handleOpenProject}
-                  parentGestureRef={closeGestureRef}
-                />
-              )
-            ) : isSessionsInitialLoad ? (
+            {isInitialLoad ? (
               <SidebarAgentListSkeleton />
             ) : (
-              <SidebarSessionList
-                agents={sessions}
-                isRefreshing={isSessionsManualRefresh && isSessionsRevalidating}
-                onRefresh={handleSessionsRefresh}
-                selectedAgentId={selectedAgentId}
-                onAgentPress={() => closeToAgent()}
+              <SidebarWorkspaceList
+                serverId={activeServerId}
+                collapsedProjectKeys={collapsedProjectKeys}
+                onToggleProjectCollapsed={toggleProjectCollapsed}
+                shortcutIndexByWorkspaceKey={shortcutIndexByWorkspaceKey}
+                projects={projects}
+                isRefreshing={isManualRefresh && isRevalidating}
+                onRefresh={handleRefresh}
+                onWorkspacePress={() => closeToAgent()}
+                onAddProject={handleOpenProject}
+                parentGestureRef={closeGestureRef}
               />
             )}
 
@@ -704,16 +630,11 @@ function DesktopSidebar({
   handleSettings,
   insetsTop,
   isOpen,
-  activeTab,
-  setActiveTab,
-  sessions,
-  isSessionsInitialLoad,
-  isSessionsRevalidating,
-  handleSessionsRefresh,
-  isSessionsManualRefresh,
-  selectedAgentId,
+  handleViewMore,
 }: DesktopSidebarProps) {
   const newAgentKeys = useShortcutKeys("new-agent");
+  const pathname = usePathname();
+  const isSessionsActive = pathname.includes("/sessions");
   const padding = useWindowControlsPadding("sidebar");
   const sidebarWidth = usePanelStore((state) => state.sidebarWidth);
   const setSidebarWidth = usePanelStore((state) => state.setSidebarWidth);
@@ -770,56 +691,27 @@ function DesktopSidebar({
         <View style={styles.sidebarDragArea}>
           <TitlebarDragRegion />
           {padding.top > 0 ? <View style={{ height: padding.top }} /> : null}
-          <View style={styles.sidebarHeader}>
-            <View style={styles.sidebarHeaderRow}>
-              <SegmentedControl<SidebarTab>
-                testID="sidebar-tab-switcher"
-                options={[
-                  {
-                    value: "projects",
-                    label: "Projects",
-                    icon: ({ color, size }) => <FolderGit2 color={color} size={size} />,
-                    testID: "sidebar-tab-projects",
-                  },
-                  {
-                    value: "sessions",
-                    label: "Sessions",
-                    icon: ({ color, size }) => <MessagesSquare color={color} size={size} />,
-                    testID: "sidebar-tab-sessions",
-                  },
-                ]}
-                value={activeTab}
-                onValueChange={setActiveTab}
-                size="sm"
-                style={styles.tabSwitcher}
-              />
-            </View>
-          </View>
+          <SidebarHeaderRow
+            icon={MessagesSquare}
+            label="Sessions"
+            onPress={handleViewMore}
+            isActive={isSessionsActive}
+            testID="sidebar-sessions"
+          />
         </View>
 
-        {activeTab === "projects" ? (
-          isInitialLoad ? (
-            <SidebarAgentListSkeleton />
-          ) : (
-            <SidebarWorkspaceList
-              serverId={activeServerId}
-              collapsedProjectKeys={collapsedProjectKeys}
-              onToggleProjectCollapsed={toggleProjectCollapsed}
-              shortcutIndexByWorkspaceKey={shortcutIndexByWorkspaceKey}
-              projects={projects}
-              isRefreshing={isManualRefresh && isRevalidating}
-              onRefresh={handleRefresh}
-              onAddProject={handleOpenProject}
-            />
-          )
-        ) : isSessionsInitialLoad ? (
+        {isInitialLoad ? (
           <SidebarAgentListSkeleton />
         ) : (
-          <SidebarSessionList
-            agents={sessions}
-            isRefreshing={isSessionsManualRefresh && isSessionsRevalidating}
-            onRefresh={handleSessionsRefresh}
-            selectedAgentId={selectedAgentId}
+          <SidebarWorkspaceList
+            serverId={activeServerId}
+            collapsedProjectKeys={collapsedProjectKeys}
+            onToggleProjectCollapsed={toggleProjectCollapsed}
+            shortcutIndexByWorkspaceKey={shortcutIndexByWorkspaceKey}
+            projects={projects}
+            isRefreshing={isManualRefresh && isRevalidating}
+            onRefresh={handleRefresh}
+            onAddProject={handleOpenProject}
           />
         )}
 
@@ -949,27 +841,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   sidebarDragArea: {
     position: "relative",
-  },
-  sidebarHeader: {
-    height: {
-      xs: HEADER_INNER_HEIGHT_MOBILE,
-      md: HEADER_INNER_HEIGHT,
-    },
-    paddingHorizontal: theme.spacing[2],
-    justifyContent: "center",
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-    userSelect: "none",
-  },
-  sidebarHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: theme.spacing[2],
-  },
-  tabSwitcher: {
-    flex: 1,
-    justifyContent: "center",
   },
   hostTrigger: {
     flexDirection: "row",

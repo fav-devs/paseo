@@ -17,6 +17,7 @@ import type {
   ProjectPlacementPayload,
   AgentPermissionResolvedMessage,
   CreateAgentRequestMessage,
+  CreatePaseoWorktreeRequest,
   FileDownloadTokenResponse,
   FileExplorerResponse,
   FileWriteResponse,
@@ -37,6 +38,8 @@ import type {
   StashListResponse,
   ValidateBranchResponse,
   BranchSuggestionsResponse,
+  GitHubSearchResponse,
+  GitHubSearchRequest,
   DirectorySuggestionsResponse,
   PaseoWorktreeListResponse,
   PaseoWorktreeArchiveResponse,
@@ -46,18 +49,19 @@ import type {
   OpenProjectResponseMessage,
   ArchiveWorkspaceResponseMessage,
   UpdateProjectActionsResponseMessage,
+  WorkspaceSetupStatusResponseMessage,
   ListCommandsResponse,
   ListProviderFeaturesResponseMessage,
   ListProviderModelsResponseMessage,
   ListProviderModesResponseMessage,
   ListAvailableProvidersResponse,
+  GetProvidersSnapshotResponseMessage,
+  RefreshProvidersSnapshotResponseMessage,
+  ProviderDiagnosticResponseMessage,
   ListTerminalsResponse,
   CreateTerminalResponse,
   ListPortForwardsResponse,
   CreatePortForwardResponse,
-  GetProvidersSnapshotResponseMessage,
-  ProviderDiagnosticResponseMessage,
-  RefreshProvidersSnapshotResponseMessage,
   SubscribeTerminalResponse,
   TerminalState,
   CloseItemsResponse,
@@ -67,6 +71,7 @@ import type {
   TerminalInput,
   SessionInboundMessage,
   SessionOutboundMessage,
+  SendAgentMessageRequest,
   EditorTargetId,
   SystemMonitorResponse,
   ForkAgentResponseMessage,
@@ -147,6 +152,11 @@ export type DaemonEvent =
       payload: Extract<SessionOutboundMessage, { type: "workspace_update" }>["payload"];
     }
   | {
+      type: "workspace_setup_progress";
+      workspaceId: string;
+      payload: Extract<SessionOutboundMessage, { type: "workspace_setup_progress" }>["payload"];
+    }
+  | {
       type: "agent_stream";
       agentId: string;
       event: AgentStreamEventPayload;
@@ -208,23 +218,32 @@ export type DaemonClientConfig = {
 export type SendMessageOptions = {
   messageId?: string;
   images?: Array<{ data: string; mimeType: string }>;
+  attachments?: SendAgentMessageRequest["attachments"];
 };
 
 type AgentConfigOverrides = Partial<Omit<AgentSessionConfig, "provider" | "cwd">>;
 
-export type CreateAgentRequestOptions = {
+export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   config?: AgentSessionConfig;
   provider?: AgentProvider;
   cwd?: string;
+  workspaceId?: string;
   initialPrompt?: string;
   clientMessageId?: string;
   outputSchema?: Record<string, unknown>;
   images?: CreateAgentRequestMessage["images"];
+  attachments?: CreateAgentRequestMessage["attachments"];
   git?: GitSetupOptions;
   worktreeName?: string;
   requestId?: string;
   labels?: Record<string, string>;
-} & AgentConfigOverrides;
+}
+
+export interface CreatePaseoWorktreeInput
+  extends Pick<
+    CreatePaseoWorktreeRequest,
+    "cwd" | "worktreeSlug" | "attachments" | "refName" | "action" | "githubPrNumber"
+  > {}
 
 export type ForkAgentOptions = {
   /** ID of the agent whose conversation will be used as context. */
@@ -270,6 +289,7 @@ type StashPopPayload = StashPopResponse["payload"];
 type StashListPayload = StashListResponse["payload"];
 type ValidateBranchPayload = ValidateBranchResponse["payload"];
 type BranchSuggestionsPayload = BranchSuggestionsResponse["payload"];
+type GitHubSearchPayload = GitHubSearchResponse["payload"];
 type DirectorySuggestionsPayload = DirectorySuggestionsResponse["payload"];
 type PaseoWorktreeListPayload = PaseoWorktreeListResponse["payload"];
 type PaseoWorktreeArchivePayload = PaseoWorktreeArchiveResponse["payload"];
@@ -536,6 +556,7 @@ type OpenInEditorPayload = OpenInEditorResponseMessage["payload"];
 type OpenProjectPayload = OpenProjectResponseMessage["payload"];
 type ArchiveWorkspacePayload = ArchiveWorkspaceResponseMessage["payload"];
 type UpdateProjectActionsPayload = UpdateProjectActionsResponseMessage["payload"];
+type WorkspaceSetupStatusPayload = WorkspaceSetupStatusResponseMessage["payload"];
 export type EditorTargetDescriptor = ListAvailableEditorsPayload["editors"][number];
 
 export type FetchAgentResult = {
@@ -1421,6 +1442,25 @@ export class DaemonClient {
     });
   }
 
+  async startWorkspaceScript(
+    workspaceId: string,
+    scriptName: string,
+    requestId?: string,
+  ): Promise<
+    Extract<SessionOutboundMessage, { type: "start_workspace_script_response" }>["payload"]
+  > {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "start_workspace_script_request",
+        workspaceId,
+        scriptName,
+      },
+      responseType: "start_workspace_script_response",
+      timeout: 10000,
+    });
+  }
+
   async listAvailableEditors(requestId?: string): Promise<ListAvailableEditorsPayload> {
     return this.sendCorrelatedSessionRequest({
       requestId,
@@ -1477,6 +1517,21 @@ export class DaemonClient {
         actions,
       },
       responseType: "update_project_actions_response",
+      timeout: 10000,
+    });
+  }
+
+  async fetchWorkspaceSetupStatus(
+    workspaceId: string,
+    requestId?: string,
+  ): Promise<WorkspaceSetupStatusPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "workspace_setup_status_request",
+        workspaceId,
+      },
+      responseType: "workspace_setup_status_response",
       timeout: 10000,
     });
   }
@@ -1564,10 +1619,14 @@ export class DaemonClient {
       type: "create_agent_request",
       requestId,
       config,
+      ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
       ...(options.initialPrompt ? { initialPrompt: options.initialPrompt } : {}),
       ...(options.clientMessageId ? { clientMessageId: options.clientMessageId } : {}),
       ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
       ...(options.images && options.images.length > 0 ? { images: options.images } : {}),
+      ...(options.attachments && options.attachments.length > 0
+        ? { attachments: options.attachments }
+        : {}),
       ...(options.git ? { git: options.git } : {}),
       ...(options.worktreeName ? { worktreeName: options.worktreeName } : {}),
       ...(options.labels && Object.keys(options.labels).length > 0
@@ -1836,6 +1895,7 @@ export class DaemonClient {
       text,
       ...(messageId ? { messageId } : {}),
       ...(options?.images ? { images: options.images } : {}),
+      ...(options?.attachments ? { attachments: options.attachments } : {}),
     });
     const payload = await this.sendRequest({
       requestId,
@@ -2369,15 +2429,20 @@ export class DaemonClient {
     baseRef?: string;
     ignoreWhitespace?: boolean;
   }): { mode: "uncommitted" | "base"; baseRef?: string; ignoreWhitespace?: boolean } {
-    const ignoreWhitespace = compare.ignoreWhitespace === true;
     if (compare.mode === "uncommitted") {
-      return { mode: "uncommitted", ignoreWhitespace };
+      return compare.ignoreWhitespace === true
+        ? { mode: "uncommitted", ignoreWhitespace: true }
+        : { mode: "uncommitted" };
     }
     const trimmedBaseRef = compare.baseRef?.trim();
     if (!trimmedBaseRef) {
-      return { mode: "base", ignoreWhitespace };
+      return compare.ignoreWhitespace === true
+        ? { mode: "base", ignoreWhitespace: true }
+        : { mode: "base" };
     }
-    return { mode: "base", baseRef: trimmedBaseRef, ignoreWhitespace };
+    return compare.ignoreWhitespace === true
+      ? { mode: "base", baseRef: trimmedBaseRef, ignoreWhitespace: true }
+      : { mode: "base", baseRef: trimmedBaseRef };
   }
 
   async getCheckoutDiff(
@@ -2685,7 +2750,7 @@ export class DaemonClient {
   }
 
   async createPaseoWorktree(
-    input: { cwd: string; worktreeSlug?: string },
+    input: CreatePaseoWorktreeInput,
     requestId?: string,
   ): Promise<CreatePaseoWorktreePayload> {
     return this.sendCorrelatedSessionRequest({
@@ -2694,6 +2759,12 @@ export class DaemonClient {
         type: "create_paseo_worktree_request",
         cwd: input.cwd,
         worktreeSlug: input.worktreeSlug,
+        ...(input.attachments && input.attachments.length > 0
+          ? { attachments: input.attachments }
+          : {}),
+        ...(input.refName !== undefined ? { refName: input.refName } : {}),
+        ...(input.action !== undefined ? { action: input.action } : {}),
+        ...(input.githubPrNumber !== undefined ? { githubPrNumber: input.githubPrNumber } : {}),
       },
       responseType: "create_paseo_worktree_response",
       timeout: 60000,
@@ -2730,6 +2801,24 @@ export class DaemonClient {
       },
       responseType: "branch_suggestions_response",
       timeout: 10000,
+    });
+  }
+
+  async searchGitHub(
+    options: { cwd: string; query: string; limit?: number; kinds?: GitHubSearchRequest["kinds"] },
+    requestId?: string,
+  ): Promise<GitHubSearchPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "github_search_request",
+        cwd: options.cwd,
+        query: options.query,
+        limit: options.limit,
+        kinds: options.kinds,
+      },
+      responseType: "github_search_response",
+      timeout: 15000,
     });
   }
 
@@ -3346,12 +3435,16 @@ export class DaemonClient {
     cwd: string,
     name?: string,
     requestId?: string,
+    options?: { agentId?: string; command?: string; args?: string[] },
   ): Promise<CreateTerminalPayload> {
     const resolvedRequestId = this.createRequestId(requestId);
     const message = SessionInboundMessageSchema.parse({
       type: "create_terminal_request",
       cwd,
       name,
+      agentId: options?.agentId,
+      command: options?.command,
+      args: options?.args,
       requestId: resolvedRequestId,
     });
     return this.sendCorrelatedRequest({
@@ -4310,6 +4403,12 @@ export class DaemonClient {
           workspaceId: msg.payload.kind === "upsert" ? msg.payload.workspace.id : msg.payload.id,
           payload: msg.payload,
         };
+      case "workspace_setup_progress":
+        return {
+          type: "workspace_setup_progress",
+          workspaceId: msg.payload.workspaceId,
+          payload: msg.payload,
+        };
       case "agent_stream":
         return {
           type: "agent_stream",
@@ -4429,6 +4528,7 @@ function resolveAgentConfig(options: CreateAgentRequestOptions): AgentSessionCon
     config,
     provider,
     cwd,
+    workspaceId: _workspaceId,
     initialPrompt: _initialPrompt,
     images: _images,
     git: _git,

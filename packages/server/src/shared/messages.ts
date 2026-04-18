@@ -318,7 +318,27 @@ const NonNullUnknownSchema = z.union([
   z.object({}).passthrough(),
 ]);
 
+const WorktreeSetupCommandSnapshotSchema = z.object({
+  index: z.number().int().positive(),
+  command: z.string(),
+  cwd: z.string(),
+  log: z.string(),
+  status: z.enum(["running", "completed", "failed"]),
+  exitCode: z.number().nullable(),
+  durationMs: z.number().nonnegative().optional(),
+});
+
+const WorktreeSetupDetailPayloadSchema = z.object({
+  type: z.literal("worktree_setup"),
+  worktreePath: z.string(),
+  branchName: z.string(),
+  log: z.string(),
+  commands: z.array(WorktreeSetupCommandSnapshotSchema),
+  truncated: z.boolean().optional(),
+});
+
 const ToolCallDetailPayloadSchema: z.ZodType<ToolCallDetail> = z.discriminatedUnion("type", [
+  WorktreeSetupDetailPayloadSchema,
   z.object({
     type: z.literal("shell"),
     command: z.string(),
@@ -376,23 +396,6 @@ const ToolCallDetailPayloadSchema: z.ZodType<ToolCallDetail> = z.discriminatedUn
     codeText: z.string().optional(),
     bytes: z.number().optional(),
     durationMs: z.number().optional(),
-  }),
-  z.object({
-    type: z.literal("worktree_setup"),
-    worktreePath: z.string(),
-    branchName: z.string(),
-    log: z.string(),
-    commands: z.array(
-      z.object({
-        index: z.number().int().positive(),
-        command: z.string(),
-        cwd: z.string(),
-        status: z.enum(["running", "completed", "failed"]),
-        exitCode: z.number().nullable(),
-        durationMs: z.number().nonnegative().optional(),
-      }),
-    ),
-    truncated: z.boolean().optional(),
   }),
   z.object({
     type: z.literal("sub_agent"),
@@ -681,19 +684,59 @@ export const SetVoiceModeMessageSchema = z.object({
   requestId: z.string().optional(),
 });
 
+export const GitHubPrAttachmentSchema = z.object({
+  type: z.literal("github_pr"),
+  mimeType: z.literal("application/github-pr"),
+  number: z.number().int().positive(),
+  title: z.string(),
+  url: z.string(),
+  body: z.string().nullable().optional(),
+  baseRefName: z.string().nullable().optional(),
+  headRefName: z.string().nullable().optional(),
+});
+
+export const GitHubIssueAttachmentSchema = z.object({
+  type: z.literal("github_issue"),
+  mimeType: z.literal("application/github-issue"),
+  number: z.number().int().positive(),
+  title: z.string(),
+  url: z.string(),
+  body: z.string().nullable().optional(),
+});
+
+export const AgentAttachmentSchema = z.discriminatedUnion("type", [
+  GitHubPrAttachmentSchema,
+  GitHubIssueAttachmentSchema,
+]);
+
+function normalizeAgentAttachments(input: unknown): AgentAttachment[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const normalized: AgentAttachment[] = [];
+  for (const item of input) {
+    const parsed = AgentAttachmentSchema.safeParse(item);
+    if (parsed.success) {
+      normalized.push(parsed.data);
+    }
+  }
+  return normalized;
+}
+
+const AgentAttachmentsSchema = z.unknown().transform(normalizeAgentAttachments).optional();
+
+const ImageAttachmentSchema = z.object({
+  data: z.string(), // base64 encoded image
+  mimeType: z.string(), // e.g., "image/jpeg", "image/png"
+});
+
 export const SendAgentMessageSchema = z.object({
   type: z.literal("send_agent_message"),
   agentId: z.string(),
   text: z.string(),
   messageId: z.string().optional(), // Client-provided ID for deduplication
-  images: z
-    .array(
-      z.object({
-        data: z.string(), // base64 encoded image
-        mimeType: z.string(), // e.g., "image/jpeg", "image/png"
-      }),
-    )
-    .optional(),
+  images: z.array(ImageAttachmentSchema).optional(),
+  attachments: AgentAttachmentsSchema,
 });
 
 // ============================================================================
@@ -778,14 +821,8 @@ export const SendAgentMessageRequestSchema = z.object({
   agentId: z.string(),
   text: z.string(),
   messageId: z.string().optional(), // Client-provided ID for deduplication
-  images: z
-    .array(
-      z.object({
-        data: z.string(), // base64 encoded image
-        mimeType: z.string(), // e.g., "image/jpeg", "image/png"
-      }),
-    )
-    .optional(),
+  images: z.array(ImageAttachmentSchema).optional(),
+  attachments: AgentAttachmentsSchema,
 });
 
 export const WaitForFinishRequestSchema = z.object({
@@ -888,6 +925,9 @@ const GitSetupOptionsSchema = z.object({
   newBranchName: z.string().optional(),
   createWorktree: z.boolean().optional(),
   worktreeSlug: z.string().optional(),
+  refName: z.string().min(1).optional(),
+  action: z.enum(["branch-off", "checkout"]).optional(),
+  githubPrNumber: z.number().int().positive().optional(),
 });
 
 export type GitSetupOptions = z.infer<typeof GitSetupOptionsSchema>;
@@ -895,18 +935,13 @@ export type GitSetupOptions = z.infer<typeof GitSetupOptionsSchema>;
 export const CreateAgentRequestMessageSchema = z.object({
   type: z.literal("create_agent_request"),
   config: AgentSessionConfigSchema,
+  workspaceId: z.string().optional(),
   worktreeName: z.string().optional(),
   initialPrompt: z.string().optional(),
   clientMessageId: z.string().optional(),
   outputSchema: z.record(z.unknown()).optional(),
-  images: z
-    .array(
-      z.object({
-        data: z.string(), // base64 encoded image
-        mimeType: z.string(), // e.g., "image/jpeg", "image/png"
-      }),
-    )
-    .optional(),
+  images: z.array(ImageAttachmentSchema).optional(),
+  attachments: AgentAttachmentsSchema,
   git: GitSetupOptionsSchema.optional(),
   labels: z.record(z.string()).default({}),
   requestId: z.string(),
@@ -1275,6 +1310,29 @@ export const BranchSuggestionsRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const GitHubSearchItemSchema = z.object({
+  kind: z.enum(["issue", "pr"]),
+  number: z.number(),
+  title: z.string(),
+  url: z.string(),
+  state: z.string(),
+  body: z.string().nullable(),
+  labels: z.array(z.string()),
+  baseRefName: z.string().nullable().optional(),
+  headRefName: z.string().nullable().optional(),
+});
+
+export const GitHubSearchKindSchema = z.enum(["github-issue", "github-pr"]);
+
+export const GitHubSearchRequestSchema = z.object({
+  type: z.literal("github_search_request"),
+  cwd: z.string(),
+  query: z.string(),
+  limit: z.number().int().min(1).max(50).optional(),
+  kinds: z.array(GitHubSearchKindSchema).optional(),
+  requestId: z.string(),
+});
+
 export const DirectorySuggestionsRequestSchema = z.object({
   type: z.literal("directory_suggestions_request"),
   query: z.string(),
@@ -1304,6 +1362,16 @@ export const CreatePaseoWorktreeRequestSchema = z.object({
   type: z.literal("create_paseo_worktree_request"),
   cwd: z.string(),
   worktreeSlug: z.string().optional(),
+  attachments: AgentAttachmentsSchema,
+  refName: z.string().min(1).optional(),
+  action: z.enum(["branch-off", "checkout"]).optional(),
+  githubPrNumber: z.number().int().positive().optional(),
+  requestId: z.string(),
+});
+
+export const WorkspaceSetupStatusRequestSchema = z.object({
+  type: z.literal("workspace_setup_status_request"),
+  workspaceId: z.string(),
   requestId: z.string(),
 });
 
@@ -1536,6 +1604,16 @@ export const CreateTerminalRequestSchema = z.object({
   type: z.literal("create_terminal_request"),
   cwd: z.string(),
   name: z.string().optional(),
+  agentId: z.string().optional(),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  requestId: z.string(),
+});
+
+export const StartWorkspaceScriptRequestSchema = z.object({
+  type: z.literal("start_workspace_script_request"),
+  workspaceId: z.string(),
+  scriptName: z.string(),
   requestId: z.string(),
 });
 
@@ -1691,10 +1769,12 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   StashListRequestSchema,
   ValidateBranchRequestSchema,
   BranchSuggestionsRequestSchema,
+  GitHubSearchRequestSchema,
   DirectorySuggestionsRequestSchema,
   PaseoWorktreeListRequestSchema,
   PaseoWorktreeArchiveRequestSchema,
   CreatePaseoWorktreeRequestSchema,
+  WorkspaceSetupStatusRequestSchema,
   ListAvailableEditorsRequestSchema,
   OpenInEditorRequestSchema,
   OpenProjectRequestSchema,
@@ -1713,6 +1793,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   SubscribeTerminalsRequestSchema,
   UnsubscribeTerminalsRequestSchema,
   CreateTerminalRequestSchema,
+  StartWorkspaceScriptRequestSchema,
   SubscribeTerminalRequestSchema,
   UnsubscribeTerminalRequestSchema,
   TerminalInputSchema,
@@ -1969,6 +2050,7 @@ export const AgentCreateFailedStatusPayloadSchema = z.object({
   status: z.literal("agent_create_failed"),
   requestId: z.string(),
   error: z.string(),
+  errorCode: z.string().optional(),
 });
 
 export const AgentResumedStatusPayloadSchema = z
@@ -2084,6 +2166,20 @@ export const ProjectPlacementPayloadSchema = z.object({
   checkout: ProjectCheckoutLitePayloadSchema,
 });
 
+export const WorkspaceScriptLifecycleSchema = z.enum(["running", "stopped"]);
+export const WorkspaceScriptHealthSchema = z.enum(["healthy", "unhealthy"]);
+
+export const WorkspaceScriptPayloadSchema = z.object({
+  scriptName: z.string(),
+  type: z.enum(["script", "service"]).optional().default("service"),
+  hostname: z.string(),
+  port: z.number().int().positive().nullable(),
+  proxyUrl: z.string().nullable().optional().default(null),
+  lifecycle: WorkspaceScriptLifecycleSchema,
+  health: WorkspaceScriptHealthSchema.nullable(),
+  exitCode: z.number().nullable().optional().default(null),
+});
+
 const WorkspaceGitRuntimePayloadSchema = z
   .object({
     currentBranch: z.string().nullable().optional(),
@@ -2151,8 +2247,10 @@ export const WorkspaceDescriptorPayloadSchema = z.object({
   projectId: z.string(),
   projectDisplayName: z.string(),
   projectRootPath: z.string(),
-  projectKind: z.enum(["git", "non_git"]),
-  workspaceKind: z.enum(["local_checkout", "worktree", "directory"]),
+  workspaceDirectory: z.string(),
+  projectKind: z.enum(["git", "non_git", "directory"]),
+  // COMPAT(workspaces): keep legacy directory workspace kind parseable.
+  workspaceKind: z.enum(["directory", "local_checkout", "checkout", "worktree"]),
   name: z.string(),
   status: WorkspaceStateBucketSchema,
   activityAt: z.string().nullable(),
@@ -2164,6 +2262,7 @@ export const WorkspaceDescriptorPayloadSchema = z.object({
     .nullable()
     .optional(),
   projectActions: z.array(ProjectActionPayloadSchema).optional().default([]),
+  scripts: z.array(WorkspaceScriptPayloadSchema).default([]),
   gitRuntime: WorkspaceGitRuntimePayloadSchema,
   githubRuntime: WorkspaceGitHubRuntimePayloadSchema,
 });
@@ -2258,11 +2357,55 @@ export const WorkspaceUpdateMessageSchema = z.object({
   ]),
 });
 
+export const ScriptStatusUpdateMessageSchema = z.object({
+  type: z.literal("script_status_update"),
+  payload: z.object({
+    workspaceId: z.string(),
+    scripts: z.array(WorkspaceScriptPayloadSchema),
+  }),
+});
+
+export const WorkspaceSetupProgressMessageSchema = z.object({
+  type: z.literal("workspace_setup_progress"),
+  payload: z.object({
+    workspaceId: z.string(),
+    status: z.enum(["running", "completed", "failed"]),
+    detail: WorktreeSetupDetailPayloadSchema,
+    error: z.string().nullable(),
+  }),
+});
+
+export const WorkspaceSetupSnapshotSchema = z.object({
+  status: z.enum(["running", "completed", "failed"]),
+  detail: WorktreeSetupDetailPayloadSchema,
+  error: z.string().nullable(),
+});
+
+export const WorkspaceSetupStatusResponseMessageSchema = z.object({
+  type: z.literal("workspace_setup_status_response"),
+  payload: z.object({
+    requestId: z.string(),
+    workspaceId: z.string(),
+    snapshot: WorkspaceSetupSnapshotSchema.nullable(),
+  }),
+});
+
 export const OpenProjectResponseMessageSchema = z.object({
   type: z.literal("open_project_response"),
   payload: z.object({
     requestId: z.string(),
     workspace: WorkspaceDescriptorPayloadSchema.nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const StartWorkspaceScriptResponseMessageSchema = z.object({
+  type: z.literal("start_workspace_script_response"),
+  payload: z.object({
+    requestId: z.string(),
+    workspaceId: z.string(),
+    scriptName: z.string(),
+    terminalId: z.string().nullable(),
     error: z.string().nullable(),
   }),
 });
@@ -2712,6 +2855,17 @@ const CheckoutPrStatusSchema = z.object({
   baseRefName: z.string(),
   headRefName: z.string(),
   isMerged: z.boolean(),
+  checks: z
+    .array(
+      z.object({
+        name: z.string(),
+        status: z.string(),
+        url: z.string().nullable(),
+      }),
+    )
+    .optional(),
+  checksStatus: z.string().optional(),
+  reviewDecision: z.string().nullable().optional(),
 });
 
 export const CheckoutPrStatusResponseSchema = z.object({
@@ -2793,6 +2947,16 @@ export const BranchSuggestionsResponseSchema = z.object({
   }),
 });
 
+export const GitHubSearchResponseSchema = z.object({
+  type: z.literal("github_search_response"),
+  payload: z.object({
+    items: z.array(GitHubSearchItemSchema),
+    githubFeaturesEnabled: z.boolean(),
+    error: z.string().nullable(),
+    requestId: z.string(),
+  }),
+});
+
 export const DirectorySuggestionsResponseSchema = z.object({
   type: z.literal("directory_suggestions_response"),
   payload: z.object({
@@ -2842,6 +3006,7 @@ export const CreatePaseoWorktreeResponseSchema = z.object({
   payload: z.object({
     workspace: WorkspaceDescriptorPayloadSchema.nullable(),
     error: z.string().nullable(),
+    errorCode: z.string().optional(),
     setupTerminalId: z.string().nullable(),
     requestId: z.string(),
   }),
@@ -3011,6 +3176,7 @@ const TerminalInfoSchema = z.object({
   id: z.string(),
   name: z.string(),
   cwd: z.string(),
+  title: z.string().optional(),
 });
 
 export const TerminalCellSchema = z
@@ -3048,6 +3214,7 @@ export const TerminalStateSchema = z
     grid: z.array(z.array(TerminalCellSchema)),
     scrollback: z.array(z.array(TerminalCellSchema)),
     cursor: TerminalCursorSchema,
+    title: z.string().optional(),
   })
   .strict();
 
@@ -3208,11 +3375,15 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ArtifactMessageSchema,
   AgentUpdateMessageSchema,
   WorkspaceUpdateMessageSchema,
+  ScriptStatusUpdateMessageSchema,
+  WorkspaceSetupProgressMessageSchema,
+  WorkspaceSetupStatusResponseMessageSchema,
   AgentStreamMessageSchema,
   AgentStatusMessageSchema,
   FetchAgentsResponseMessageSchema,
   FetchWorkspacesResponseMessageSchema,
   OpenProjectResponseMessageSchema,
+  StartWorkspaceScriptResponseMessageSchema,
   ListAvailableEditorsResponseMessageSchema,
   OpenInEditorResponseMessageSchema,
   ArchiveWorkspaceResponseMessageSchema,
@@ -3260,6 +3431,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   StashListResponseSchema,
   ValidateBranchResponseSchema,
   BranchSuggestionsResponseSchema,
+  GitHubSearchResponseSchema,
   DirectorySuggestionsResponseSchema,
   PaseoWorktreeListResponseSchema,
   PaseoWorktreeArchiveResponseSchema,
@@ -3326,6 +3498,11 @@ export type ServerInfoStatusPayload = z.infer<typeof ServerInfoStatusPayloadSche
 export type RpcErrorMessage = z.infer<typeof RpcErrorMessageSchema>;
 export type ArtifactMessage = z.infer<typeof ArtifactMessageSchema>;
 export type AgentUpdateMessage = z.infer<typeof AgentUpdateMessageSchema>;
+export type WorkspaceSetupProgressMessage = z.infer<typeof WorkspaceSetupProgressMessageSchema>;
+export type WorkspaceSetupSnapshot = z.infer<typeof WorkspaceSetupSnapshotSchema>;
+export type WorkspaceSetupStatusResponseMessage = z.infer<
+  typeof WorkspaceSetupStatusResponseMessageSchema
+>;
 export type AgentStreamMessage = z.infer<typeof AgentStreamMessageSchema>;
 export type AgentStatusMessage = z.infer<typeof AgentStatusMessageSchema>;
 export type ProjectCheckoutLitePayload = z.infer<typeof ProjectCheckoutLitePayloadSchema>;
@@ -3334,13 +3511,20 @@ export type ProjectActionIcon = z.infer<typeof ProjectActionIconSchema>;
 export type ProjectActionPayload = z.infer<typeof ProjectActionPayloadSchema>;
 export type WorkspaceStateBucket = z.infer<typeof WorkspaceStateBucketSchema>;
 export type WorkspaceDescriptorPayload = z.infer<typeof WorkspaceDescriptorPayloadSchema>;
+export type WorkspaceScriptLifecycle = z.infer<typeof WorkspaceScriptLifecycleSchema>;
+export type WorkspaceScriptHealth = z.infer<typeof WorkspaceScriptHealthSchema>;
+export type WorkspaceScriptPayload = z.infer<typeof WorkspaceScriptPayloadSchema>;
 export type KnownEditorTargetId = z.infer<typeof KnownEditorTargetIdSchema>;
 export type LegacyEditorTargetId = z.infer<typeof LegacyEditorTargetIdSchema>;
 export type EditorTargetId = LiteralUnion<KnownEditorTargetId, string>;
 export type EditorTargetDescriptorPayload = z.infer<typeof EditorTargetDescriptorPayloadSchema>;
 export type FetchAgentsResponseMessage = z.infer<typeof FetchAgentsResponseMessageSchema>;
 export type FetchWorkspacesResponseMessage = z.infer<typeof FetchWorkspacesResponseMessageSchema>;
+export type ScriptStatusUpdateMessage = z.infer<typeof ScriptStatusUpdateMessageSchema>;
 export type OpenProjectResponseMessage = z.infer<typeof OpenProjectResponseMessageSchema>;
+export type StartWorkspaceScriptResponseMessage = z.infer<
+  typeof StartWorkspaceScriptResponseMessageSchema
+>;
 export type ListAvailableEditorsResponseMessage = z.infer<
   typeof ListAvailableEditorsResponseMessageSchema
 >;
@@ -3442,6 +3626,7 @@ export type RejectSecureTerminalExecRequestMessage = z.infer<
   typeof RejectSecureTerminalExecRequestMessageSchema
 >;
 export type CreateAgentRequestMessage = z.infer<typeof CreateAgentRequestMessageSchema>;
+export type AgentAttachment = z.infer<typeof AgentAttachmentSchema>;
 export type ListProviderModelsRequestMessage = z.infer<
   typeof ListProviderModelsRequestMessageSchema
 >;
@@ -3524,12 +3709,18 @@ export type ValidateBranchRequest = z.infer<typeof ValidateBranchRequestSchema>;
 export type ValidateBranchResponse = z.infer<typeof ValidateBranchResponseSchema>;
 export type BranchSuggestionsRequest = z.infer<typeof BranchSuggestionsRequestSchema>;
 export type BranchSuggestionsResponse = z.infer<typeof BranchSuggestionsResponseSchema>;
+export type GitHubSearchItem = z.infer<typeof GitHubSearchItemSchema>;
+export type GitHubSearchKind = z.infer<typeof GitHubSearchKindSchema>;
+export type GitHubSearchRequest = z.infer<typeof GitHubSearchRequestSchema>;
+export type GitHubSearchResponse = z.infer<typeof GitHubSearchResponseSchema>;
+export type CreatePaseoWorktreeRequest = z.infer<typeof CreatePaseoWorktreeRequestSchema>;
 export type DirectorySuggestionsRequest = z.infer<typeof DirectorySuggestionsRequestSchema>;
 export type DirectorySuggestionsResponse = z.infer<typeof DirectorySuggestionsResponseSchema>;
 export type PaseoWorktreeListRequest = z.infer<typeof PaseoWorktreeListRequestSchema>;
 export type PaseoWorktreeListResponse = z.infer<typeof PaseoWorktreeListResponseSchema>;
 export type PaseoWorktreeArchiveRequest = z.infer<typeof PaseoWorktreeArchiveRequestSchema>;
 export type PaseoWorktreeArchiveResponse = z.infer<typeof PaseoWorktreeArchiveResponseSchema>;
+export type WorkspaceSetupStatusRequest = z.infer<typeof WorkspaceSetupStatusRequestSchema>;
 export type ListAvailableEditorsRequest = z.infer<typeof ListAvailableEditorsRequestSchema>;
 export type OpenInEditorRequest = z.infer<typeof OpenInEditorRequestSchema>;
 export type OpenProjectRequest = z.infer<typeof OpenProjectRequestSchema>;
@@ -3564,6 +3755,10 @@ export type UnsubscribeTerminalsRequest = z.infer<typeof UnsubscribeTerminalsReq
 export type TerminalsChanged = z.infer<typeof TerminalsChangedSchema>;
 export type CreateTerminalRequest = z.infer<typeof CreateTerminalRequestSchema>;
 export type CreateTerminalResponse = z.infer<typeof CreateTerminalResponseSchema>;
+export type StartWorkspaceScriptRequest = z.infer<typeof StartWorkspaceScriptRequestSchema>;
+export type StartWorkspaceScriptResponse = z.infer<
+  typeof StartWorkspaceScriptResponseMessageSchema
+>;
 export type SubscribeTerminalRequest = z.infer<typeof SubscribeTerminalRequestSchema>;
 export type SubscribeTerminalResponse = z.infer<typeof SubscribeTerminalResponseSchema>;
 export type UnsubscribeTerminalRequest = z.infer<typeof UnsubscribeTerminalRequestSchema>;

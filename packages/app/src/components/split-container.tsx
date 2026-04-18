@@ -89,16 +89,18 @@ interface SplitContainerProps {
   onCloseTabsToLeft: (tabId: string, paneTabs: WorkspaceTabDescriptor[]) => Promise<void> | void;
   onCloseTabsToRight: (tabId: string, paneTabs: WorkspaceTabDescriptor[]) => Promise<void> | void;
   onCloseOtherTabs: (tabId: string, paneTabs: WorkspaceTabDescriptor[]) => Promise<void> | void;
-  onSelectNewTabOption: (selection: {
+  onSelectNewTabOption?: (selection: {
     optionId: "__new_tab_agent__" | "__new_tab_terminal__" | "__new_tab_port_forwards__";
     paneId?: string;
   }) => void;
-  onNewTerminalTab: (input: { paneId?: string }) => void;
+  onNewTerminalTab?: (input: { paneId?: string }) => void;
   newTabAgentOptionId?: "__new_tab_agent__" | "__new_tab_terminal__" | "__new_tab_port_forwards__";
   newTabPortForwardsOptionId?:
     | "__new_tab_agent__"
     | "__new_tab_terminal__"
     | "__new_tab_port_forwards__";
+  onCreateDraftTab?: (input: { paneId?: string }) => void;
+  onCreateTerminalTab?: (input: { paneId?: string }) => void;
   buildPaneContentModel: (input: {
     paneId: string;
     isPaneFocused: boolean;
@@ -266,6 +268,8 @@ export function SplitContainer({
   onNewTerminalTab,
   newTabAgentOptionId = "__new_tab_agent__",
   newTabPortForwardsOptionId = "__new_tab_port_forwards__",
+  onCreateDraftTab,
+  onCreateTerminalTab,
   buildPaneContentModel,
   onFocusPane,
   onSplitPane,
@@ -537,6 +541,8 @@ export function SplitContainer({
         onNewTerminalTab={onNewTerminalTab}
         newTabAgentOptionId={newTabAgentOptionId}
         newTabPortForwardsOptionId={newTabPortForwardsOptionId}
+        onCreateDraftTab={onCreateDraftTab}
+        onCreateTerminalTab={onCreateTerminalTab}
         buildPaneContentModel={buildPaneContentModel}
         onFocusPane={onFocusPane}
         onSplitPane={onSplitPane}
@@ -661,6 +667,8 @@ function SplitNodeView({
   onNewTerminalTab,
   newTabAgentOptionId,
   newTabPortForwardsOptionId,
+  onCreateDraftTab,
+  onCreateTerminalTab,
   buildPaneContentModel,
   onFocusPane,
   onSplitPane,
@@ -698,6 +706,8 @@ function SplitNodeView({
         onNewTerminalTab={onNewTerminalTab}
         newTabAgentOptionId={newTabAgentOptionId}
         newTabPortForwardsOptionId={newTabPortForwardsOptionId}
+        onCreateDraftTab={onCreateDraftTab}
+        onCreateTerminalTab={onCreateTerminalTab}
         buildPaneContentModel={buildPaneContentModel}
         onFocusPane={onFocusPane}
         onSplitPane={onSplitPane}
@@ -746,9 +756,8 @@ function SplitNodeView({
               onCloseTabsToLeft={onCloseTabsToLeft}
               onCloseTabsToRight={onCloseTabsToRight}
               onCloseOtherTabs={onCloseOtherTabs}
-              onSelectNewTabOption={onSelectNewTabOption}
-              onNewTerminalTab={onNewTerminalTab}
-              newTabAgentOptionId={newTabAgentOptionId}
+              onCreateDraftTab={onCreateDraftTab}
+              onCreateTerminalTab={onCreateTerminalTab}
               buildPaneContentModel={buildPaneContentModel}
               onFocusPane={onFocusPane}
               onSplitPane={onSplitPane}
@@ -800,6 +809,8 @@ function SplitPaneView({
   onNewTerminalTab,
   newTabAgentOptionId,
   newTabPortForwardsOptionId,
+  onCreateDraftTab,
+  onCreateTerminalTab,
   buildPaneContentModel,
   onFocusPane,
   onSplitPane,
@@ -908,6 +919,8 @@ function SplitPaneView({
           onNewTerminalTab={onNewTerminalTab}
           newTabAgentOptionId={newTabAgentOptionId ?? "__new_tab_agent__"}
           newTabPortForwardsOptionId={newTabPortForwardsOptionId ?? "__new_tab_port_forwards__"}
+          onCreateDraftTab={onCreateDraftTab}
+          onCreateTerminalTab={onCreateTerminalTab}
           onReorderTabs={(nextTabs) => {
             onReorderTabsInPane(
               pane.id,

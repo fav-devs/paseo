@@ -4,15 +4,13 @@ import ReanimatedAnimated from "react-native-reanimated";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useShallow } from "zustand/shallow";
 import { useStoreWithEqualityFn } from "zustand/traditional";
-import { Bot } from "lucide-react-native";
 import invariant from "tiny-invariant";
 import { AgentStreamView, type AgentStreamViewHandle } from "@/components/agent-stream-view";
-import { AgentInputArea } from "@/components/agent-input-area";
+import { Composer } from "@/components/composer";
 import { ArchivedAgentCallout } from "@/components/archived-agent-callout";
-import { HandoffSheet } from "@/components/handoff-sheet";
 import { FileDropZone } from "@/components/file-drop-zone";
-import type { ImageAttachment } from "@/components/message-input";
 import { getProviderIcon } from "@/components/provider-icons";
+import type { ImageAttachment } from "@/components/message-input";
 import { ToastViewport, useToastHost } from "@/components/toast-host";
 import { useAgentAttentionClear } from "@/hooks/use-agent-attention-clear";
 import { useAgentInitialization } from "@/hooks/use-agent-initialization";
@@ -41,10 +39,6 @@ import { mergePendingCreateImages } from "@/utils/pending-create-images";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { buildDraftStoreKey } from "@/stores/draft-keys";
-import {
-  buildWorkspaceTabPersistenceKey,
-  useWorkspaceLayoutStore,
-} from "@/stores/workspace-layout-store";
 import { useSessionStore, type Agent } from "@/stores/session-store";
 import type { PendingPermission } from "@/types/shared";
 import type { StreamItem } from "@/types/stream";
@@ -52,8 +46,6 @@ import {
   deriveRouteBottomAnchorIntent,
   deriveRouteBottomAnchorRequest,
 } from "@/screens/agent/agent-ready-screen-bottom-anchor";
-import { buildHostAgentDetailRoute } from "@/utils/host-routes";
-import { useRouter } from "expo-router";
 import { isNative } from "@/constants/platform";
 
 function formatProviderLabel(provider: Agent["provider"]): string {
@@ -81,13 +73,6 @@ function resolveWorkspaceAgentTabLabel(title: string | null | undefined): string
   return normalized;
 }
 
-interface BranchSheetState {
-  variant: "fork" | "edit";
-  initialFromMessageId: string | null;
-  initialPrompt: string;
-  initialTargetProvider: Agent["provider"] | null;
-}
-
 function useAgentPanelDescriptor(
   target: { kind: "agent"; agentId: string },
   context: { serverId: string },
@@ -107,7 +92,7 @@ function useAgentPanelDescriptor(
   );
   const provider = descriptorState.provider;
   const label = resolveWorkspaceAgentTabLabel(descriptorState.title);
-  const icon = getProviderIcon(provider) ?? Bot;
+  const icon = getProviderIcon(provider);
 
   return {
     label: label ?? "",
@@ -126,30 +111,20 @@ function useAgentPanelDescriptor(
 }
 
 function AgentPanel() {
-  const { serverId, workspaceId, tabId, target, isPaneFocused, openFileInWorkspace } =
-    usePaneContext();
+  const { serverId, target, isPaneFocused, openFileInWorkspace } = usePaneContext();
   invariant(target.kind === "agent", "AgentPanel requires agent target");
-  const focusWorkspaceTab = useWorkspaceLayoutStore((state) => state.focusTab);
 
   function openWorkspaceFile(input: { filePath: string }) {
     openFileInWorkspace(input.filePath);
   }
 
   const handleOpenWorkspaceFile = useStableEvent(openWorkspaceFile);
-  const handleActivateTab = useCallback(() => {
-    const workspaceKey = buildWorkspaceTabPersistenceKey({ serverId, workspaceId });
-    if (!workspaceKey) {
-      return;
-    }
-    focusWorkspaceTab(workspaceKey, tabId);
-  }, [focusWorkspaceTab, serverId, tabId, workspaceId]);
 
   return (
     <AgentPanelContent
       serverId={serverId}
       agentId={target.agentId}
       isPaneFocused={isPaneFocused}
-      onActivateTab={handleActivateTab}
       onOpenWorkspaceFile={handleOpenWorkspaceFile}
     />
   );
@@ -176,17 +151,21 @@ function isNotFoundErrorMessage(message: string): boolean {
   return /agent not found|not found/i.test(message);
 }
 
+type AgentLookupState =
+  | { tag: "idle" }
+  | { tag: "loading" }
+  | { tag: "not_found"; message: string }
+  | { tag: "error"; message: string };
+
 function AgentPanelContent({
   serverId,
   agentId,
   isPaneFocused,
-  onActivateTab,
   onOpenWorkspaceFile,
 }: {
   serverId: string;
   agentId: string;
   isPaneFocused: boolean;
-  onActivateTab?: () => void;
   onOpenWorkspaceFile?: (input: { filePath: string }) => void;
 }) {
   const resolvedAgentId = agentId.trim() || undefined;
@@ -226,7 +205,6 @@ function AgentPanelContent({
       serverId={resolvedServerId}
       agentId={resolvedAgentId}
       isPaneFocused={isPaneFocused}
-      onActivateTab={onActivateTab}
       client={runtimeClient}
       isConnected={runtimeIsConnected}
       connectionStatus={connectionStatus}
@@ -239,7 +217,6 @@ function AgentPanelBody({
   serverId,
   agentId,
   isPaneFocused,
-  onActivateTab,
   client,
   isConnected,
   connectionStatus,
@@ -248,17 +225,203 @@ function AgentPanelBody({
   serverId: string;
   agentId?: string;
   isPaneFocused: boolean;
-  onActivateTab?: () => void;
   client: NonNullable<ReturnType<typeof useHostRuntimeClient>>;
   isConnected: boolean;
   connectionStatus: HostRuntimeConnectionStatus;
   onOpenWorkspaceFile?: (input: { filePath: string }) => void;
 }) {
   const { theme } = useUnistyles();
-  const router = useRouter();
+  const { isArchivingAgent } = useArchiveAgent();
+  const hasSession = useSessionStore((state) => Boolean(state.sessions[serverId]));
+  const setAgents = useSessionStore((state) => state.setAgents);
+  const setPendingPermissions = useSessionStore((state) => state.setPendingPermissions);
+  const projectPlacement = useStoreWithEqualityFn(
+    useSessionStore,
+    (state) =>
+      agentId ? (state.sessions[serverId]?.agents?.get(agentId)?.projectPlacement ?? null) : null,
+    (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b),
+  );
+  const agentState = useSessionStore(
+    useShallow((state) => {
+      const agent = agentId ? (state.sessions[serverId]?.agents?.get(agentId) ?? null) : null;
+      return {
+        serverId: agent?.serverId ?? null,
+        id: agent?.id ?? null,
+        status: agent?.status ?? null,
+        cwd: agent?.cwd ?? null,
+        lastError: agent?.lastError ?? null,
+        archivedAt: agent?.archivedAt ?? null,
+      };
+    }),
+  );
+  const [lookupState, setLookupState] = useState<AgentLookupState>({ tag: "idle" });
+  const lookupAttemptTokenRef = useRef(0);
+
+  useEffect(() => {
+    lookupAttemptTokenRef.current += 1;
+    setLookupState({ tag: "idle" });
+  }, [agentId, serverId]);
+
+  useEffect(() => {
+    if (!agentId) {
+      return;
+    }
+    if (agentState.id) {
+      if (lookupState.tag !== "idle") {
+        setLookupState({ tag: "idle" });
+      }
+      return;
+    }
+    if (!isConnected || !hasSession) {
+      return;
+    }
+    if (lookupState.tag === "loading" || lookupState.tag === "not_found") {
+      return;
+    }
+
+    setLookupState({ tag: "loading" });
+    const attemptToken = ++lookupAttemptTokenRef.current;
+
+    client
+      .fetchAgent(agentId)
+      .then((result) => {
+        if (attemptToken !== lookupAttemptTokenRef.current) {
+          return;
+        }
+        if (!result) {
+          setLookupState({
+            tag: "not_found",
+            message: `Agent not found: ${agentId}`,
+          });
+          return;
+        }
+
+        const normalized = normalizeAgentSnapshot(result.agent, serverId);
+        const hydrated = {
+          ...normalized,
+          projectPlacement: result.project,
+        };
+        setAgents(serverId, (previous) => {
+          const next = new Map(previous);
+          next.set(hydrated.id, hydrated);
+          return next;
+        });
+        setPendingPermissions(serverId, (previous) => {
+          const next = new Map(previous);
+          for (const [key, pending] of next.entries()) {
+            if (pending.agentId === hydrated.id) {
+              next.delete(key);
+            }
+          }
+          for (const request of hydrated.pendingPermissions) {
+            const key = derivePendingPermissionKey(hydrated.id, request);
+            next.set(key, { key, agentId: hydrated.id, request });
+          }
+          return next;
+        });
+        setLookupState({ tag: "idle" });
+      })
+      .catch((error) => {
+        if (attemptToken !== lookupAttemptTokenRef.current) {
+          return;
+        }
+        const message = toErrorMessage(error);
+        if (isNotFoundErrorMessage(message)) {
+          setLookupState({ tag: "not_found", message });
+          return;
+        }
+        setLookupState({ tag: "error", message });
+      });
+  }, [
+    agentId,
+    agentState.id,
+    client,
+    hasSession,
+    isConnected,
+    lookupState.tag,
+    serverId,
+    setAgents,
+    setPendingPermissions,
+  ]);
+
+  if (lookupState.tag === "not_found") {
+    return (
+      <View style={styles.container} testID="agent-not-found">
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>Agent not found</Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (lookupState.tag === "error") {
+    return (
+      <View style={styles.container} testID="agent-load-error">
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>Failed to load agent</Text>
+          <Text style={styles.statusText}>{lookupState.message}</Text>
+        </View>
+      </View>
+    );
+  }
+
+  const agent: AgentScreenAgent | null =
+    agentState.serverId && agentState.id && agentState.status && agentState.cwd
+      ? {
+          serverId: agentState.serverId,
+          id: agentState.id,
+          status: agentState.status,
+          cwd: agentState.cwd,
+          lastError: agentState.lastError ?? null,
+          projectPlacement,
+        }
+      : null;
+
+  if (!agent) {
+    return (
+      <View style={styles.container} testID="agent-loading">
+        <View style={styles.errorContainer}>
+          <ActivityIndicator size="large" color={theme.colors.foregroundMuted} />
+        </View>
+      </View>
+    );
+  }
+
+  const isArchivingCurrentAgent = Boolean(agentId && isArchivingAgent({ serverId, agentId }));
+
+  return (
+    <ChatAgentContent
+      serverId={serverId}
+      agentId={agentId}
+      isPaneFocused={isPaneFocused}
+      client={client}
+      isConnected={isConnected}
+      connectionStatus={connectionStatus}
+      onOpenWorkspaceFile={onOpenWorkspaceFile}
+    />
+  );
+}
+
+function ChatAgentContent({
+  serverId,
+  agentId,
+  isPaneFocused,
+  client,
+  isConnected,
+  connectionStatus,
+  onOpenWorkspaceFile,
+}: {
+  serverId: string;
+  agentId?: string;
+  isPaneFocused: boolean;
+  client: NonNullable<ReturnType<typeof useHostRuntimeClient>>;
+  isConnected: boolean;
+  connectionStatus: HostRuntimeConnectionStatus;
+  onOpenWorkspaceFile?: (input: { filePath: string }) => void;
+}) {
+  const { theme } = useUnistyles();
   const panelToast = useToastHost();
   const { isArchivingAgent } = useArchiveAgent();
-  const [branchSheetState, setBranchSheetState] = useState<BranchSheetState | null>(null);
   const streamViewRef = useRef<AgentStreamViewHandle>(null);
   const addImagesRef = useRef<((images: ImageAttachment[]) => void) | null>(null);
   const clearOnAgentBlurRef = useRef<() => void>(() => {});
@@ -269,40 +432,12 @@ function AgentPanelBody({
     routeKey: string;
     reason: "initial-entry" | "resume";
   } | null>(null);
-  const agentInputDraft = useAgentInputDraft(
-    buildDraftStoreKey({
-      serverId,
-      agentId: agentId ?? "__pending__",
-    }),
-  );
-
   const handleFilesDropped = useCallback((files: ImageAttachment[]) => {
     addImagesRef.current?.(files);
   }, []);
 
   const handleAddImagesCallback = useCallback((addImages: (images: ImageAttachment[]) => void) => {
     addImagesRef.current = addImages;
-  }, []);
-
-  const handleForked = useCallback(
-    (newAgentId: string) => {
-      if (newAgentId === agentId) {
-        return;
-      }
-      const route = buildHostAgentDetailRoute(serverId, newAgentId);
-      if (route !== "/") {
-        router.navigate(route as Parameters<typeof router.navigate>[0]);
-      }
-    },
-    [agentId, router, serverId],
-  );
-
-  const openBranchSheet = useCallback((next: BranchSheetState) => {
-    setBranchSheetState(next);
-  }, []);
-
-  const closeBranchSheet = useCallback(() => {
-    setBranchSheetState(null);
   }, []);
 
   const agentState = useSessionStore(
@@ -313,13 +448,20 @@ function AgentPanelBody({
         id: agent?.id ?? null,
         status: agent?.status ?? null,
         cwd: agent?.cwd ?? null,
+        lastError: agent?.lastError ?? null,
         archivedAt: agent?.archivedAt ?? null,
         requiresAttention: agent?.requiresAttention ?? false,
         attentionReason: agent?.attentionReason ?? null,
-        provider: agent?.provider ?? null,
       };
     }),
   );
+  const agentInputDraft = useAgentInputDraft({
+    draftKey: buildDraftStoreKey({
+      serverId,
+      agentId: agentId ?? "__pending__",
+    }),
+    initialCwd: agentState.cwd ?? "",
+  });
   const projectPlacement = useStoreWithEqualityFn(
     useSessionStore,
     (state) =>
@@ -545,10 +687,18 @@ function AgentPanelBody({
             id: agentState.id,
             status: agentState.status,
             cwd: agentState.cwd,
+            lastError: agentState.lastError ?? null,
             projectPlacement,
           }
         : null,
-    [agentState.serverId, agentState.id, agentState.status, agentState.cwd, projectPlacement],
+    [
+      agentState.serverId,
+      agentState.id,
+      agentState.status,
+      agentState.cwd,
+      agentState.lastError,
+      projectPlacement,
+    ],
   );
 
   const placeholderAgent: AgentScreenAgent | null = useMemo(() => {
@@ -807,43 +957,20 @@ function AgentPanelBody({
                 routeBottomAnchorRequest={routeBottomAnchorRequest}
                 isAuthoritativeHistoryReady={hasAppliedAuthoritativeHistory}
                 onOpenWorkspaceFile={onOpenWorkspaceFile}
-                currentProvider={agentState.provider}
-                onForkMessage={({ messageId }) => {
-                  if (!agentState.provider) {
-                    return;
-                  }
-                  openBranchSheet({
-                    variant: "fork",
-                    initialFromMessageId: messageId,
-                    initialPrompt: "",
-                    initialTargetProvider: agentState.provider,
-                  });
-                }}
-                onEditMessageAsBranch={({ messageId, text }) => {
-                  if (!agentState.provider) {
-                    return;
-                  }
-                  openBranchSheet({
-                    variant: "edit",
-                    initialFromMessageId: messageId,
-                    initialPrompt: text,
-                    initialTargetProvider: agentState.provider,
-                  });
-                }}
               />
             </ReanimatedAnimated.View>
           </View>
 
           {agentId && !isArchivingCurrentAgent && !agentState.archivedAt ? (
-            <AgentInputArea
+            <Composer
               agentId={agentId}
               serverId={serverId}
               isPaneFocused={isPaneFocused}
-              onActivateTab={onActivateTab}
               value={agentInputDraft.text}
               onChangeText={agentInputDraft.setText}
-              images={agentInputDraft.images}
-              onChangeImages={agentInputDraft.setImages}
+              attachments={agentInputDraft.attachments}
+              onChangeAttachments={agentInputDraft.setAttachments}
+              cwd={agentInputDraft.cwd}
               clearDraft={agentInputDraft.clear}
               autoFocus={isPaneFocused}
               isSubmitLoading={showPendingCreateSubmitLoading}
@@ -865,21 +992,7 @@ function AgentPanelBody({
               }}
             />
           ) : agentId && agentState.archivedAt ? (
-            <ArchivedAgentCallout
-              serverId={serverId}
-              agentId={agentId}
-              onHandoff={
-                isConnected && agentState.provider
-                  ? () =>
-                      openBranchSheet({
-                        variant: "fork",
-                        initialFromMessageId: null,
-                        initialPrompt: "",
-                        initialTargetProvider: agentState.provider,
-                      })
-                  : undefined
-              }
-            />
+            <ArchivedAgentCallout serverId={serverId} agentId={agentId} />
           ) : null}
 
           {viewState.tag === "ready" &&
@@ -904,22 +1017,6 @@ function AgentPanelBody({
           <Text style={styles.archivingTitle}>Archiving agent...</Text>
           <Text style={styles.archivingSubtitle}>Please wait while we archive this agent.</Text>
         </View>
-      ) : null}
-
-      {agentId && agentState.provider ? (
-        <HandoffSheet
-          visible={branchSheetState !== null}
-          onClose={closeBranchSheet}
-          serverId={serverId}
-          sourceAgentId={agentId}
-          currentProvider={agentState.provider}
-          streamItems={streamItems}
-          onForked={handleForked}
-          variant={branchSheetState?.variant ?? "fork"}
-          initialFromMessageId={branchSheetState?.initialFromMessageId ?? null}
-          initialPrompt={branchSheetState?.initialPrompt ?? ""}
-          initialTargetProvider={branchSheetState?.initialTargetProvider ?? agentState.provider}
-        />
       ) : null}
     </View>
   );

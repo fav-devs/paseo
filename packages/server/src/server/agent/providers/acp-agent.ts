@@ -84,6 +84,7 @@ import {
   resolveProviderCommandPrefix,
   type ProviderRuntimeSettings,
 } from "../provider-launch-config.js";
+import { renderPromptAttachmentAsText } from "../prompt-attachments.js";
 import { findExecutable } from "../../../utils/executable.js";
 import { spawnProcess } from "../../../utils/spawn.js";
 
@@ -105,6 +106,11 @@ const ACP_CLIENT_CAPABILITIES: ACPClientCapabilities = {
 };
 
 const COPILOT_AUTOPILOT_MODE = "https://agentclientprotocol.com/protocol/session-modes#autopilot";
+
+// Suppress interactive auth side-effects (e.g. Gemini CLI opening a Google
+// sign-in URL in the browser) when probing an ACP agent for models/modes.
+// NO_BROWSER is honored by Gemini CLI; other ACP agents ignore it.
+const PROBE_ENV: Record<string, string> = { NO_BROWSER: "true" };
 
 type ACPAgentClientOptions = {
   provider: string;
@@ -419,7 +425,7 @@ export class ACPAgentClient implements AgentClient {
 
   async listModels(options?: ListModelsOptions): Promise<AgentModelDefinition[]> {
     const cwd = options?.cwd ?? process.cwd();
-    const probe = await this.spawnProcess(undefined);
+    const probe = await this.spawnProcess(PROBE_ENV);
     try {
       const response = await probe.connection.newSession({
         cwd,
@@ -439,7 +445,7 @@ export class ACPAgentClient implements AgentClient {
 
   async listModes(options?: ListModesOptions): Promise<AgentMode[]> {
     const cwd = options?.cwd ?? process.cwd();
-    const probe = await this.spawnProcess(undefined);
+    const probe = await this.spawnProcess(PROBE_ENV);
     try {
       const response = await probe.connection.newSession({
         cwd,
@@ -460,7 +466,7 @@ export class ACPAgentClient implements AgentClient {
   async listPersistedAgents(
     options?: ListPersistedAgentsOptions,
   ): Promise<PersistedAgentDescriptor[]> {
-    const probe = await this.spawnProcess(undefined);
+    const probe = await this.spawnProcess(PROBE_ENV);
     try {
       if (!probe.initialize.agentCapabilities?.sessionCapabilities?.list) {
         return [];
@@ -1837,6 +1843,9 @@ function toACPContentBlocks(prompt: AgentPromptInput): ContentBlock[] {
   return prompt.map((block: AgentPromptContentBlock) => {
     if (block.type === "text") {
       return { type: "text", text: block.text };
+    }
+    if (block.type === "github_pr" || block.type === "github_issue") {
+      return { type: "text", text: renderPromptAttachmentAsText(block) };
     }
     return {
       type: "image",

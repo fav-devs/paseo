@@ -13,6 +13,7 @@ import {
 } from "@/contexts/session-stream-reducers";
 import type {
   ActivityLogPayload,
+  AgentAttachment,
   AgentStreamEventPayload,
   SessionOutboundMessage,
 } from "@server/shared/messages";
@@ -37,6 +38,7 @@ import {
   normalizeWorkspaceDescriptor,
 } from "@/stores/session-store";
 import { useDraftStore } from "@/stores/draft-store";
+import { useWorkspaceSetupStore } from "@/stores/workspace-setup-store";
 import type { AgentDirectoryEntry } from "@/types/agent-directory";
 import { sendOsNotification } from "@/utils/os-notifications";
 import { getIsAppActivelyVisible } from "@/utils/app-visibility";
@@ -51,7 +53,9 @@ import { derivePendingPermissionKey, normalizeAgentSnapshot } from "@/utils/agen
 import { resolveProjectPlacement } from "@/utils/project-placement";
 import { buildDraftStoreKey } from "@/stores/draft-keys";
 import type { AttachmentMetadata } from "@/attachments/types";
+import { splitComposerAttachmentsForSubmit } from "@/components/composer-attachments";
 import { reconcilePreviousAgentStatuses } from "@/contexts/session-status-tracking";
+import { patchWorkspaceScripts } from "@/contexts/session-workspace-scripts";
 import { isNative } from "@/constants/platform";
 
 // Re-export types from session-store and draft-store for backward compatibility
@@ -200,6 +204,10 @@ type WorkspaceUpdatePayload = Extract<
   SessionOutboundMessage,
   { type: "workspace_update" }
 >["payload"];
+type WorkspaceSetupProgressPayload = Extract<
+  SessionOutboundMessage,
+  { type: "workspace_setup_progress" }
+>["payload"];
 
 const getAgentIdFromUpdate = (update: AgentUpdatePayload): string =>
   update.kind === "remove" ? update.agentId : update.agent.id;
@@ -305,6 +313,9 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
   const setQueuedMessages = useSessionStore((state) => state.setQueuedMessages);
   const updateSessionClient = useSessionStore((state) => state.updateSessionClient);
   const updateSessionServerInfo = useSessionStore((state) => state.updateSessionServerInfo);
+  const upsertWorkspaceSetupProgress = useWorkspaceSetupStore((state) => state.upsertProgress);
+  const removeWorkspaceSetup = useWorkspaceSetupStore((state) => state.removeWorkspace);
+  const clearWorkspaceSetupServer = useWorkspaceSetupStore((state) => state.clearServer);
 
   // Track focused agent for heartbeat
   const focusedAgentId = useSessionStore(
@@ -314,7 +325,13 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
 
   const previousAgentStatusRef = useRef<Map<string, AgentLifecycleStatus>>(new Map());
   const sendAgentMessageRef = useRef<
-    ((agentId: string, message: string, images?: AttachmentMetadata[]) => Promise<void>) | null
+    | ((
+        agentId: string,
+        message: string,
+        images?: AttachmentMetadata[],
+        attachments?: AgentAttachment[],
+      ) => Promise<void>)
+    | null
   >(null);
   const sessionStateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attentionNotifiedRef = useRef<Map<string, number>>(new Map());
@@ -507,7 +524,13 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         if (queue && queue.length > 0) {
           const [next, ...rest] = queue;
           if (sendAgentMessageRef.current) {
-            void sendAgentMessageRef.current(agent.id, next.text, next.images);
+            const wirePayload = splitComposerAttachmentsForSubmit(next.attachments);
+            void sendAgentMessageRef.current(
+              agent.id,
+              next.text,
+              wirePayload.images,
+              wirePayload.attachments,
+            );
           }
           setQueuedMessages(serverId, (prev) => {
             const updated = new Map(prev);
@@ -858,6 +881,13 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     ],
   );
 
+  const applyWorkspaceSetupProgress = useCallback(
+    (payload: WorkspaceSetupProgressPayload) => {
+      upsertWorkspaceSetupProgress({ serverId, payload });
+    },
+    [serverId, upsertWorkspaceSetupProgress],
+  );
+
   const requestCanonicalCatchUp = useCallback(
     (agentId: string, cursor: { epoch: string; endSeq: number }) => {
       void client
@@ -1200,7 +1230,8 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     const unsubWorkspaceUpdate = client.on("workspace_update", (message) => {
       if (message.type !== "workspace_update") return;
       if (message.payload.kind === "remove") {
-        removeWorkspace(serverId, message.payload.id);
+        removeWorkspaceSetup({ serverId, workspaceId: String(message.payload.id) });
+        removeWorkspace(serverId, String(message.payload.id));
         return;
       }
       const workspace = normalizeWorkspaceDescriptor(message.payload.workspace);
@@ -1209,6 +1240,27 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         .sessions[serverId]?.workspaces.get(workspace.id);
       mergeWorkspaces(serverId, [workspace]);
     });
+
+    const unsubScriptStatusUpdate = client.on("script_status_update", (message) => {
+      if (message.type !== "script_status_update") return;
+      setWorkspaces(serverId, (prev) => patchWorkspaceScripts(prev, message.payload));
+    });
+
+    const unsubWorkspaceSetupProgress = client.on("workspace_setup_progress", (message) => {
+      if (message.type !== "workspace_setup_progress") return;
+      applyWorkspaceSetupProgress(message.payload);
+    });
+
+    const unsubWorkspaceSetupStatusResponse = client.on(
+      "workspace_setup_status_response",
+      (message) => {
+        if (message.type !== "workspace_setup_status_response") return;
+        const { workspaceId, snapshot } = message.payload;
+        if (snapshot) {
+          applyWorkspaceSetupProgress({ workspaceId, ...snapshot });
+        }
+      },
+    );
 
     const unsubStatus = client.on("status", (message) => {
       if (message.type !== "status") return;
@@ -1599,6 +1651,9 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       unsubAgentStream();
       unsubAgentTimeline();
       unsubWorkspaceUpdate();
+      unsubScriptStatusUpdate();
+      unsubWorkspaceSetupProgress();
+      unsubWorkspaceSetupStatusResponse();
       unsubStatus();
       unsubPermissionRequest();
       unsubPermissionResolved();
@@ -1625,8 +1680,10 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     setAgentTimelineCursor,
     setInitializingAgents,
     setAgents,
+    setWorkspaces,
     mergeWorkspaces,
     removeWorkspace,
+    removeWorkspaceSetup,
     setAgentLastActivity,
     setPendingPermissions,
     setHasHydratedAgents,
@@ -1634,13 +1691,19 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     notifyAgentAttention,
     requestCanonicalCatchUp,
     applyAgentUpdatePayload,
+    applyWorkspaceSetupProgress,
     applyTimelineResponse,
     voiceRuntime,
     voiceAudioEngine,
   ]);
 
   const sendAgentMessage = useCallback(
-    async (agentId: string, message: string, images?: AttachmentMetadata[]) => {
+    async (
+      agentId: string,
+      message: string,
+      images?: AttachmentMetadata[],
+      attachments?: AgentAttachment[],
+    ) => {
       const messageId = generateMessageId();
       const userMessage: StreamItem = {
         kind: "user_message",
@@ -1680,6 +1743,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         .sendAgentMessage(agentId, message, {
           messageId,
           ...(imagesData && imagesData.length > 0 ? { images: imagesData } : {}),
+          ...(attachments && attachments.length > 0 ? { attachments } : {}),
         })
         .catch((error) => {
           console.error("[Session] Failed to send agent message:", error);
@@ -1748,6 +1812,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       config,
       initialPrompt,
       images,
+      attachments,
       git,
       worktreeName,
       requestId,
@@ -1755,6 +1820,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       config: any;
       initialPrompt: string;
       images?: AttachmentMetadata[];
+      attachments?: AgentAttachment[];
       git?: any;
       worktreeName?: string;
       requestId?: string;
@@ -1774,6 +1840,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         config,
         ...(trimmedPrompt ? { initialPrompt: trimmedPrompt } : {}),
         ...(imagesData && imagesData.length > 0 ? { images: imagesData } : {}),
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
         ...(git ? { git } : {}),
         ...(worktreeName ? { worktreeName } : {}),
         ...(requestId ? { requestId } : {}),
@@ -1837,9 +1904,10 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      clearWorkspaceSetupServer(serverId);
       clearSession(serverId);
     };
-  }, [clearSession, serverId]);
+  }, [clearSession, clearWorkspaceSetupServer, serverId]);
 
   return children;
 }
