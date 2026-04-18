@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { ScrollView, Text, View, Pressable, type LayoutChangeEvent } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { File, Folder } from "lucide-react-native";
+import { File, Folder, KeyRound } from "lucide-react-native";
 import { Theme } from "@/styles/theme";
 import { getAutocompleteScrollOffset } from "./autocomplete-utils";
 
@@ -10,7 +10,7 @@ export interface AutocompleteOption {
   label: string;
   detail?: string;
   description?: string;
-  kind?: "command" | "file" | "directory";
+  kind?: "command" | "file" | "directory" | "env";
 }
 
 interface AutocompleteProps {
@@ -185,6 +185,7 @@ export function Autocomplete({
             const optionLabel = removeBoltGlyphs(option.label) ?? option.label;
             const optionDescription = removeBoltGlyphs(option.description);
             const isFileOrDir = option.kind === "directory" || option.kind === "file";
+            const isEnv = option.kind === "env";
             return (
               <Pressable
                 key={option.id}
@@ -195,10 +196,12 @@ export function Autocomplete({
                   (hovered || pressed || isSelected) && styles.itemActive,
                 ]}
               >
-                {isFileOrDir ? (
+                {isFileOrDir || isEnv ? (
                   <>
                     <View style={styles.itemLeading}>
-                      {option.kind === "directory" ? (
+                      {isEnv ? (
+                        <KeyRound size={14} color={theme.colors.foregroundMuted} />
+                      ) : option.kind === "directory" ? (
                         <Folder size={14} color={theme.colors.foregroundMuted} />
                       ) : (
                         <File size={14} color={theme.colors.foregroundMuted} />

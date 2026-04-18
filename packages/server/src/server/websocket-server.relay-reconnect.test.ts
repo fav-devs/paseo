@@ -200,6 +200,8 @@ function createServer(options?: { speechReadiness?: SpeechReadinessSnapshot | nu
       })),
       dispose: vi.fn(),
     } as any,
+    undefined,
+    undefined,
   );
 }
 

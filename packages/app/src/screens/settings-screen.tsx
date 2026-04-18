@@ -81,6 +81,7 @@ import {
   AGENT_PROVIDER_DEFINITIONS,
   type AgentProviderDefinition,
 } from "@server/server/agent/provider-manifest";
+import type { SecretsPolicy } from "@server/shared/messages";
 
 // ---------------------------------------------------------------------------
 // Section definitions
@@ -89,6 +90,7 @@ import {
 type SettingsSectionId =
   | "hosts"
   | "general"
+  | "secrets"
   | "shortcuts"
   | "integrations"
   | "providers"
@@ -108,6 +110,7 @@ function getSettingsSections(context: { isDesktopApp: boolean }): SettingsSectio
   const sections: SettingsSectionDef[] = [
     { id: "hosts", label: "Hosts", icon: Server },
     { id: "general", label: "General", icon: Settings },
+    { id: "secrets", label: "Secrets", icon: Shield },
     { id: "permissions", label: "Permissions", icon: Shield },
   ];
 
@@ -519,6 +522,447 @@ function GeneralSection({
         ) : null}
       </View>
     </View>
+  );
+}
+
+function SecretExecPolicySection({ routeServerId }: { routeServerId: string }) {
+  const isConnected = useHostRuntimeIsConnected(routeServerId);
+  const { config, patchConfig, isLoading } = useDaemonConfig(routeServerId);
+
+  const [cwdLines, setCwdLines] = useState("");
+  const [deniedLines, setDeniedLines] = useState("");
+  const [approvalCsv, setApprovalCsv] = useState("");
+  const [blockDump, setBlockDump] = useState(false);
+  const [timeoutSec, setTimeoutSec] = useState("120");
+  const [saving, setSaving] = useState(false);
+
+  const syncedPolicyJson = JSON.stringify(config?.secrets?.policy ?? null);
+  useEffect(() => {
+    const policy = config?.secrets?.policy;
+    setCwdLines((policy?.allowedSecureExecCwdPrefixes ?? []).join("\n"));
+    setDeniedLines((policy?.deniedCommandSubstrings ?? []).join("\n"));
+    setApprovalCsv((policy?.aliasesRequiringApproval ?? []).join(", "));
+    setBlockDump(policy?.blockEnvDumpCommands ?? false);
+    const ms = policy?.approvalTimeoutMs ?? 120_000;
+    setTimeoutSec(String(Math.round(ms / 1000)));
+  }, [syncedPolicyJson]);
+
+  const buildPolicy = useCallback(
+    (override?: Partial<SecretsPolicy>): SecretsPolicy => {
+      let sec = Number.parseInt(timeoutSec.trim(), 10);
+      if (!Number.isFinite(sec)) {
+        sec = 120;
+      }
+      sec = Math.min(600, Math.max(5, sec));
+      return {
+        allowedSecureExecCwdPrefixes: cwdLines
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0),
+        deniedCommandSubstrings: deniedLines
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0),
+        blockEnvDumpCommands: override?.blockEnvDumpCommands ?? blockDump,
+        aliasesRequiringApproval: approvalCsv
+          .split(",")
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0),
+        approvalTimeoutMs: sec * 1000,
+      };
+    },
+    [approvalCsv, blockDump, cwdLines, deniedLines, timeoutSec],
+  );
+
+  const handleSave = useCallback(async () => {
+    const parsed = Number.parseInt(timeoutSec.trim(), 10);
+    if (!Number.isFinite(parsed) || parsed < 5 || parsed > 600) {
+      Alert.alert("Invalid timeout", "Enter a number of seconds between 5 and 600.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const nextConfig = await patchConfig({
+        secrets: {
+          policy: buildPolicy(),
+        },
+      });
+      if (nextConfig === undefined) {
+        Alert.alert("Unable to save", "Host is not connected.");
+        return;
+      }
+    } catch (error) {
+      Alert.alert("Unable to save", error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      setSaving(false);
+    }
+  }, [buildPolicy, patchConfig, timeoutSec]);
+
+  const handleToggleBlockDump = useCallback(
+    (value: string) => {
+      const next = value === "on";
+      setBlockDump(next);
+      void (async () => {
+        try {
+          const nextConfig = await patchConfig({
+            secrets: {
+              policy: buildPolicy({ blockEnvDumpCommands: next }),
+            },
+          });
+          if (nextConfig === undefined) {
+            setBlockDump(!next);
+            Alert.alert("Unable to save", "Host is not connected.");
+            return;
+          }
+        } catch (error) {
+          setBlockDump(!next);
+          Alert.alert("Unable to save", error instanceof Error ? error.message : "Unknown error");
+        }
+      })();
+    },
+    [buildPolicy, patchConfig],
+  );
+
+  return (
+    <View style={settingsStyles.section}>
+      <View style={settingsStyles.sectionHeader}>
+        <Text style={settingsStyles.sectionHeaderTitle}>Secure exec policy</Text>
+      </View>
+      {!isConnected ? (
+        <View style={[settingsStyles.card, styles.emptyCard]}>
+          <Text style={styles.emptyText}>Connect to a host to edit policy</Text>
+        </View>
+      ) : (
+        <View style={[settingsStyles.card, styles.audioCard]}>
+          {isLoading ? (
+            <Text style={styles.aboutHintText}>Loading…</Text>
+          ) : (
+            <>
+              <Text style={styles.aboutHintText}>
+                Rules for terminal commands that inject secrets via @env aliases. Empty allowed cwd
+                list means any working directory is permitted.
+              </Text>
+              <Text style={styles.audioRowTitle}>Allowed cwd prefixes</Text>
+              <Text style={styles.aboutHintText}>
+                One absolute path per line. When non-empty, secure exec is only allowed when the
+                agent cwd is under one of these prefixes.
+              </Text>
+              <AdaptiveTextInput
+                value={cwdLines}
+                onChangeText={setCwdLines}
+                placeholder={"/home/you/repos\n/opt/work"}
+                multiline
+                style={styles.policyTextArea}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Text style={styles.audioRowTitle}>Denied command substrings</Text>
+              <Text style={styles.aboutHintText}>
+                Case-insensitive substrings matched against the first line of the command (one per
+                line).
+              </Text>
+              <AdaptiveTextInput
+                value={deniedLines}
+                onChangeText={setDeniedLines}
+                placeholder={"curl\nwget"}
+                multiline
+                style={styles.policyTextArea}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <View style={styles.audioRow}>
+                <View style={styles.audioRowContent}>
+                  <Text style={styles.audioRowTitle}>Block env-dump commands</Text>
+                  <Text style={styles.audioRowSubtitle}>
+                    Reject common patterns like env, printenv, export -p
+                  </Text>
+                </View>
+                <SegmentedControl
+                  size="sm"
+                  value={blockDump ? "on" : "off"}
+                  onValueChange={handleToggleBlockDump}
+                  options={[
+                    { value: "on", label: "On" },
+                    { value: "off", label: "Off" },
+                  ]}
+                />
+              </View>
+              <Text style={styles.audioRowTitle}>Aliases requiring approval</Text>
+              <Text style={styles.aboutHintText}>
+                Comma-separated @env aliases that require an in-app approve/deny prompt before the
+                command runs.
+              </Text>
+              <AdaptiveTextInput
+                value={approvalCsv}
+                onChangeText={setApprovalCsv}
+                placeholder="PROD_DB, STRIPE_SECRET"
+                autoCapitalize="characters"
+                autoCorrect={false}
+              />
+              <Text style={styles.audioRowTitle}>Approval timeout</Text>
+              <Text style={styles.aboutHintText}>
+                How long to wait for your approval before the secure exec fails (5–600 seconds).
+              </Text>
+              <AdaptiveTextInput
+                value={timeoutSec}
+                onChangeText={setTimeoutSec}
+                placeholder="120"
+                keyboardType="number-pad"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <View style={styles.secretFormActions}>
+                <Button onPress={() => void handleSave()} disabled={saving}>
+                  {saving ? "Saving…" : "Save policy"}
+                </Button>
+              </View>
+            </>
+          )}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function SecretsSection({ routeServerId }: { routeServerId: string }) {
+  const { theme } = useUnistyles();
+  const client = useHostRuntimeClient(routeServerId);
+  const isConnected = useHostRuntimeIsConnected(routeServerId);
+  const [aliases, setAliases] = useState<
+    Array<{
+      alias: string;
+      updatedAt: string;
+      scope: "global" | "project";
+      projectRoot: string | null;
+    }>
+  >([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [showAddSecret, setShowAddSecret] = useState(false);
+  const [newAlias, setNewAlias] = useState("");
+  const [newValue, setNewValue] = useState("");
+  const [newScope, setNewScope] = useState<"global" | "project">("global");
+  const [newProjectRoot, setNewProjectRoot] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const refresh = useCallback(async () => {
+    if (!client || !isConnected) {
+      setAliases([]);
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const payload = await client.listSecretAliases();
+      setAliases(payload.aliases);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [client, isConnected]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const handleAdd = useCallback(async () => {
+    if (!client) {
+      return;
+    }
+    const alias = newAlias.trim();
+    if (!alias || !newValue) {
+      Alert.alert("Missing fields", "Alias and value are required.");
+      return;
+    }
+    if (newScope === "project" && !newProjectRoot.trim()) {
+      Alert.alert(
+        "Missing project root",
+        "Project-scoped secrets need an absolute project directory.",
+      );
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await client.upsertSecretAlias({
+        alias,
+        value: newValue,
+        ...(newScope === "project"
+          ? { scope: "project" as const, projectRoot: newProjectRoot.trim() }
+          : { scope: "global" as const }),
+      });
+      if (!result.success) {
+        Alert.alert("Unable to save", result.error ?? "Unknown error");
+        return;
+      }
+      setShowAddSecret(false);
+      setNewAlias("");
+      setNewValue("");
+      setNewScope("global");
+      setNewProjectRoot("");
+      await refresh();
+    } finally {
+      setSaving(false);
+    }
+  }, [client, newAlias, newProjectRoot, newScope, newValue, refresh]);
+
+  const handleDelete = useCallback(
+    (entry: { alias: string; scope: "global" | "project"; projectRoot: string | null }) => {
+      void confirmDialog({
+        title: "Delete secret alias",
+        message: `Remove ${entry.alias}? This cannot be undone.`,
+        confirmLabel: "Delete",
+        cancelLabel: "Cancel",
+      }).then(async (confirmed) => {
+        if (!confirmed || !client) {
+          return;
+        }
+        const result = await client.deleteSecretAlias({
+          alias: entry.alias,
+          ...(entry.scope === "project" && entry.projectRoot
+            ? { scope: "project" as const, projectRoot: entry.projectRoot }
+            : { scope: "global" as const }),
+        });
+        if (!result.success) {
+          Alert.alert("Unable to delete", result.error ?? "Alias not found");
+          return;
+        }
+        await refresh();
+      });
+    },
+    [client, refresh],
+  );
+
+  return (
+    <>
+      <SecretExecPolicySection routeServerId={routeServerId} />
+      <View style={settingsStyles.section}>
+        <View style={settingsStyles.sectionHeader}>
+          <Text style={settingsStyles.sectionHeaderTitle}>Secret aliases</Text>
+          <Button
+            size="sm"
+            variant="outline"
+            onPress={() => {
+              setNewScope("global");
+              setNewProjectRoot("");
+              setShowAddSecret(true);
+            }}
+            disabled={!isConnected || !client}
+          >
+            Add
+          </Button>
+        </View>
+        {!isConnected || !client ? (
+          <View style={[settingsStyles.card, styles.emptyCard]}>
+            <Text style={styles.emptyText}>Connect to a host to manage secrets</Text>
+          </View>
+        ) : (
+          <View style={[settingsStyles.card, styles.audioCard]}>
+            {isLoading ? (
+              <Text style={styles.aboutHintText}>Loading…</Text>
+            ) : aliases.length === 0 ? (
+              <Text style={styles.aboutHintText}>
+                No aliases yet. Reference them in chat with `@env:ALIAS` (project secrets apply when
+                the agent cwd is under that project root).
+              </Text>
+            ) : (
+              aliases.map((entry, index) => (
+                <View
+                  key={`${entry.scope}:${entry.projectRoot ?? "global"}:${entry.alias}`}
+                  style={[styles.audioRow, index > 0 ? styles.audioRowBorder : undefined]}
+                >
+                  <View style={styles.audioRowContent}>
+                    <Text style={styles.audioRowTitle}>{entry.alias}</Text>
+                    <Text style={styles.aboutHintText}>
+                      {entry.scope === "project" && entry.projectRoot
+                        ? `Project · ${entry.projectRoot}`
+                        : "Global"}{" "}
+                      · updated {new Date(entry.updatedAt).toLocaleString()}
+                    </Text>
+                  </View>
+                  <Pressable
+                    onPress={() => handleDelete(entry)}
+                    accessibilityRole="button"
+                    hitSlop={8}
+                  >
+                    <Trash2 size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
+                  </Pressable>
+                </View>
+              ))
+            )}
+          </View>
+        )}
+      </View>
+
+      {showAddSecret ? (
+        <AdaptiveModalSheet
+          title="Add secret alias"
+          visible
+          onClose={() => {
+            if (!saving) {
+              setShowAddSecret(false);
+              setNewScope("global");
+              setNewProjectRoot("");
+            }
+          }}
+        >
+          <View style={styles.secretForm}>
+            <AdaptiveTextInput
+              value={newAlias}
+              onChangeText={setNewAlias}
+              placeholder="Alias (e.g. DB_URL_PROD)"
+              autoCapitalize="characters"
+            />
+            <AdaptiveTextInput
+              value={newValue}
+              onChangeText={setNewValue}
+              placeholder="Secret value"
+              secureTextEntry
+              autoCapitalize="none"
+            />
+            <View style={styles.audioRow}>
+              <View style={styles.audioRowContent}>
+                <Text style={styles.audioRowTitle}>Scope</Text>
+                <Text style={styles.audioRowSubtitle}>
+                  Project secrets override global for agents running inside that directory tree
+                </Text>
+              </View>
+              <SegmentedControl
+                size="sm"
+                value={newScope}
+                onValueChange={(value) => setNewScope(value as "global" | "project")}
+                options={[
+                  { value: "global", label: "Global" },
+                  { value: "project", label: "Project" },
+                ]}
+              />
+            </View>
+            {newScope === "project" ? (
+              <AdaptiveTextInput
+                value={newProjectRoot}
+                onChangeText={setNewProjectRoot}
+                placeholder="Project root (absolute path)"
+                autoCapitalize="none"
+              />
+            ) : null}
+            <View style={styles.secretFormActions}>
+              <Button
+                variant="outline"
+                onPress={() => {
+                  if (!saving) {
+                    setShowAddSecret(false);
+                    setNewScope("global");
+                    setNewProjectRoot("");
+                  }
+                }}
+                disabled={saving}
+              >
+                Cancel
+              </Button>
+              <Button onPress={() => void handleAdd()} disabled={saving}>
+                {saving ? "Saving…" : "Save"}
+              </Button>
+            </View>
+          </View>
+        </AdaptiveModalSheet>
+      ) : null}
+    </>
   );
 }
 
@@ -968,6 +1412,7 @@ interface SettingsSectionContentProps {
   sectionId: SettingsSectionId;
   hostsProps: HostsSectionProps;
   generalProps: GeneralSectionProps;
+  secretsProps: { routeServerId: string };
   permissionsProps: PermissionsSectionProps;
   providersProps: ProvidersSectionProps;
   diagnosticsProps: DiagnosticsSectionProps;
@@ -981,6 +1426,7 @@ function SettingsSectionContent({
   sectionId,
   hostsProps,
   generalProps,
+  secretsProps,
   permissionsProps,
   providersProps,
   diagnosticsProps,
@@ -994,6 +1440,8 @@ function SettingsSectionContent({
       return <HostsSection {...hostsProps} />;
     case "general":
       return <GeneralSection {...generalProps} />;
+    case "secrets":
+      return <SecretsSection {...secretsProps} />;
     case "shortcuts":
       return <KeyboardShortcutsSection />;
     case "providers":
@@ -1435,6 +1883,7 @@ export default function SettingsScreen() {
   const sectionContentProps: Omit<SettingsSectionContentProps, "sectionId"> = {
     hostsProps,
     generalProps,
+    secretsProps: { routeServerId },
     permissionsProps,
     providersProps,
     diagnosticsProps,
@@ -2035,6 +2484,19 @@ const styles = StyleSheet.create((theme) => ({
     width: "100%",
     maxWidth: 720,
     alignSelf: "center",
+  },
+  secretForm: {
+    gap: theme.spacing[3],
+  },
+  policyTextArea: {
+    minHeight: 88,
+    paddingTop: theme.spacing[2],
+    textAlignVertical: "top",
+  },
+  secretFormActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: theme.spacing[2],
   },
   label: {
     color: theme.colors.foregroundMuted,

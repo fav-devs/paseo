@@ -101,8 +101,9 @@ interface AgentInputAreaProps {
 }
 
 const EMPTY_ARRAY: readonly QueuedMessage[] = [];
-const DESKTOP_MESSAGE_PLACEHOLDER = "Message the agent, tag @files, or use /commands and /skills";
-const MOBILE_MESSAGE_PLACEHOLDER = "Message, @files, /commands";
+const DESKTOP_MESSAGE_PLACEHOLDER =
+  "Message the agent, tag @files or @env:ALIAS, or use /commands and /skills";
+const MOBILE_MESSAGE_PLACEHOLDER = "Message, @files, @env:ALIAS, /commands";
 
 export function AgentInputArea({
   agentId,

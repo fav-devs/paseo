@@ -107,6 +107,9 @@ import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { LoopService } from "./loop-service.js";
 import { ScheduleService } from "./schedule/service.js";
 import { DaemonConfigStore } from "./daemon-config-store.js";
+import { loadPersistedConfig } from "./persisted-config.js";
+import { SecretsMutableConfigSchema } from "../shared/messages.js";
+import { SecureTerminalExecCoordinator } from "./secure-terminal-exec-coordinator.js";
 import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
 import { createTerminalManager, type TerminalManager } from "../terminal/terminal-manager.js";
 import {
@@ -208,10 +211,20 @@ export async function createPaseoDaemon(
   const bootstrapStart = performance.now();
   const elapsed = () => `${(performance.now() - bootstrapStart).toFixed(0)}ms`;
   const daemonVersion = resolveDaemonVersion(import.meta.url);
+  const persistedBootstrap = loadPersistedConfig(config.paseoHome, logger);
+  const persistedSecrets = persistedBootstrap.daemon?.secrets;
+  const parsedPersistedSecrets = persistedSecrets
+    ? SecretsMutableConfigSchema.safeParse(persistedSecrets)
+    : null;
+  const secureTerminalExecCoordinator = new SecureTerminalExecCoordinator();
   const daemonConfigStore = new DaemonConfigStore(
     config.paseoHome,
     {
-      mcp: { injectIntoAgents: config.mcpInjectIntoAgents ?? true },
+      mcp: {
+        injectIntoAgents:
+          config.mcpInjectIntoAgents ?? persistedBootstrap.daemon?.mcp?.injectIntoAgents ?? true,
+      },
+      ...(parsedPersistedSecrets?.success ? { secrets: parsedPersistedSecrets.data } : {}),
     },
     logger,
   );
@@ -448,6 +461,8 @@ export async function createPaseoDaemon(
           enableVoiceTools: false,
           resolveSpeakHandler: (agentId) => wsServer?.resolveVoiceSpeakHandler(agentId) ?? null,
           resolveCallerContext: (agentId) => wsServer?.resolveVoiceCallerContext(agentId) ?? null,
+          daemonConfigStore,
+          secureTerminalExecCoordinator,
           logger,
         });
 
@@ -634,6 +649,7 @@ export async function createPaseoDaemon(
               scheduleService,
               checkoutDiffManager,
               workspaceGitService,
+              secureTerminalExecCoordinator,
             );
 
             if (typeof process.send === "function" && process.env.PASEO_SUPERVISED === "1") {

@@ -237,6 +237,21 @@ export const PersistedConfigSchema = z
           })
           .passthrough()
           .optional(),
+        secrets: z
+          .object({
+            policy: z
+              .object({
+                allowedSecureExecCwdPrefixes: z.array(z.string()).optional(),
+                deniedCommandSubstrings: z.array(z.string()).optional(),
+                blockEnvDumpCommands: z.boolean().optional(),
+                aliasesRequiringApproval: z.array(z.string()).optional(),
+                approvalTimeoutMs: z.number().optional(),
+              })
+              .passthrough()
+              .optional(),
+          })
+          .strict()
+          .optional(),
         cors: z
           .object({
             allowedOrigins: z.array(z.string()).optional(),

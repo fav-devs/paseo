@@ -104,6 +104,8 @@ function createServer(agentManagerOverrides?: Record<string, unknown>) {
       })),
       dispose: vi.fn(),
     } as any,
+    undefined,
+    undefined,
   );
 
   return { server, agentManager };

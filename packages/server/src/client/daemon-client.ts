@@ -171,6 +171,13 @@ export type DaemonEvent =
       type: "providers_snapshot_update";
       payload: Extract<SessionOutboundMessage, { type: "providers_snapshot_update" }>["payload"];
     }
+  | {
+      type: "secure_terminal_exec_approval_required";
+      payload: Extract<
+        SessionOutboundMessage,
+        { type: "secure_terminal_exec_approval_required" }
+      >["payload"];
+    }
   | { type: "error"; message: string };
 
 export type DaemonEventHandler = (event: DaemonEvent) => void;
@@ -308,6 +315,30 @@ type CloseItemsPayload = CloseItemsResponse["payload"];
 type KillTerminalPayload = KillTerminalResponse["payload"];
 type ClosePortForwardPayload = ClosePortForwardResponse["payload"];
 type CaptureTerminalPayload = CaptureTerminalResponse["payload"];
+type ListSecretAliasesPayload = Extract<
+  SessionOutboundMessage,
+  { type: "list_secret_aliases_response" }
+>["payload"];
+type UpsertSecretAliasPayload = Extract<
+  SessionOutboundMessage,
+  { type: "upsert_secret_alias_response" }
+>["payload"];
+type DeleteSecretAliasPayload = Extract<
+  SessionOutboundMessage,
+  { type: "delete_secret_alias_response" }
+>["payload"];
+type SecureTerminalExecPayload = Extract<
+  SessionOutboundMessage,
+  { type: "secure_terminal_exec_response" }
+>["payload"];
+type ApproveSecureTerminalExecPayload = Extract<
+  SessionOutboundMessage,
+  { type: "approve_secure_terminal_exec_response" }
+>["payload"];
+type RejectSecureTerminalExecPayload = Extract<
+  SessionOutboundMessage,
+  { type: "reject_secure_terminal_exec_response" }
+>["payload"];
 type ChatCreatePayload = Extract<
   SessionOutboundMessage,
   { type: "chat/create/response" }
@@ -2922,6 +2953,121 @@ export class DaemonClient {
     });
   }
 
+  async listSecretAliases(options?: {
+    cwd?: string;
+    requestId?: string;
+  }): Promise<ListSecretAliasesPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options?.requestId,
+      message: {
+        type: "list_secret_aliases_request",
+        ...(options?.cwd ? { cwd: options.cwd } : {}),
+      },
+      responseType: "list_secret_aliases_response",
+      timeout: 10000,
+    });
+  }
+
+  async upsertSecretAlias(
+    input: {
+      alias: string;
+      value: string;
+      scope?: "global" | "project";
+      projectRoot?: string;
+    },
+    requestId?: string,
+  ): Promise<UpsertSecretAliasPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "upsert_secret_alias_request",
+        alias: input.alias,
+        value: input.value,
+        ...(input.scope ? { scope: input.scope } : {}),
+        ...(input.projectRoot ? { projectRoot: input.projectRoot } : {}),
+      },
+      responseType: "upsert_secret_alias_response",
+      timeout: 10000,
+    });
+  }
+
+  async deleteSecretAlias(
+    input: {
+      alias: string;
+      scope?: "global" | "project";
+      projectRoot?: string;
+    },
+    requestId?: string,
+  ): Promise<DeleteSecretAliasPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "delete_secret_alias_request",
+        alias: input.alias,
+        ...(input.scope ? { scope: input.scope } : {}),
+        ...(input.projectRoot ? { projectRoot: input.projectRoot } : {}),
+      },
+      responseType: "delete_secret_alias_response",
+      timeout: 10000,
+    });
+  }
+
+  async secureTerminalExec(
+    input: {
+      cwd: string;
+      command: string;
+      secretAliases: string[];
+      captureLines?: number;
+      waitMs?: number;
+    },
+    requestId?: string,
+  ): Promise<SecureTerminalExecPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "secure_terminal_exec_request",
+        cwd: input.cwd,
+        command: input.command,
+        secretAliases: input.secretAliases,
+        captureLines: input.captureLines,
+        waitMs: input.waitMs,
+      },
+      responseType: "secure_terminal_exec_response",
+      timeout: 120000,
+    });
+  }
+
+  async approveSecureTerminalExec(
+    approvalId: string,
+    requestId?: string,
+  ): Promise<ApproveSecureTerminalExecPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "approve_secure_terminal_exec_request",
+        approvalId,
+      },
+      responseType: "approve_secure_terminal_exec_response",
+      timeout: 10000,
+    });
+  }
+
+  async rejectSecureTerminalExec(
+    input: { approvalId: string; reason?: string },
+    requestId?: string,
+  ): Promise<RejectSecureTerminalExecPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "reject_secure_terminal_exec_request",
+        approvalId: input.approvalId,
+        ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      },
+      responseType: "reject_secure_terminal_exec_response",
+      timeout: 10000,
+    });
+  }
+
   async refreshProvidersSnapshot(options?: {
     cwd?: string;
     providers?: AgentProvider[];
@@ -4193,6 +4339,11 @@ export class DaemonClient {
       case "providers_snapshot_update":
         return {
           type: "providers_snapshot_update",
+          payload: msg.payload,
+        };
+      case "secure_terminal_exec_approval_required":
+        return {
+          type: "secure_terminal_exec_approval_required",
           payload: msg.payload,
         };
       default:

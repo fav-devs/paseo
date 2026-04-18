@@ -27,6 +27,7 @@ import { asUint8Array, decodeTerminalStreamFrame } from "../shared/terminal-stre
 import type { HostnamesConfig } from "./hostnames.js";
 import { isHostnameAllowed } from "./hostnames.js";
 import { Session, type SessionLifecycleIntent, type SessionRuntimeMetrics } from "./session.js";
+import type { SecureTerminalExecCoordinator } from "./secure-terminal-exec-coordinator.js";
 import type { AgentProvider } from "./agent/agent-sdk-types.js";
 import type {
   AgentProviderRuntimeSettingsMap,
@@ -313,6 +314,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly scheduleService: ScheduleService;
   private readonly checkoutDiffManager: CheckoutDiffManager;
   private readonly workspaceGitService: WorkspaceGitServiceImpl;
+  private readonly secureTerminalExecCoordinator: SecureTerminalExecCoordinator | null;
   private readonly downloadTokenStore: DownloadTokenStore;
   private readonly paseoHome: string;
   private readonly daemonConfigStore: DaemonConfigStore;
@@ -385,6 +387,7 @@ export class VoiceAssistantWebSocketServer {
     scheduleService?: ScheduleService,
     checkoutDiffManager?: CheckoutDiffManager,
     workspaceGitService?: WorkspaceGitServiceImpl,
+    secureTerminalExecCoordinator?: SecureTerminalExecCoordinator | null,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.serverId = serverId;
@@ -413,6 +416,17 @@ export class VoiceAssistantWebSocketServer {
     }
     this.checkoutDiffManager = checkoutDiffManager;
     this.workspaceGitService = workspaceGitService ?? createFallbackWorkspaceGitService();
+    this.secureTerminalExecCoordinator = secureTerminalExecCoordinator ?? null;
+    if (this.secureTerminalExecCoordinator) {
+      this.secureTerminalExecCoordinator.setBroadcaster((payload) => {
+        this.broadcast(
+          wrapSessionMessage({
+            type: "secure_terminal_exec_approval_required",
+            payload,
+          }),
+        );
+      });
+    }
     this.downloadTokenStore = downloadTokenStore;
     this.paseoHome = paseoHome;
     this.daemonConfigStore = daemonConfigStore;
@@ -765,6 +779,7 @@ export class VoiceAssistantWebSocketServer {
           : undefined,
       agentProviderRuntimeSettings: this.agentProviderRuntimeSettings,
       providerOverrides: this.providerOverrides,
+      secureTerminalExecCoordinator: this.secureTerminalExecCoordinator,
     });
 
     connection = {

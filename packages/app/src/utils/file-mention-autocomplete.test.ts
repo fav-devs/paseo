@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyFileMentionReplacement, findActiveFileMention } from "./file-mention-autocomplete";
+import {
+  applyEnvMentionReplacement,
+  applyFileMentionReplacement,
+  findActiveEnvMention,
+  findActiveFileMention,
+} from "./file-mention-autocomplete";
 
 describe("findActiveFileMention", () => {
   it("detects mentions at the start of input", () => {
@@ -36,6 +41,28 @@ describe("findActiveFileMention", () => {
     });
     expect(mention).toBeNull();
   });
+
+  it("does not treat @env: tokens as file mentions", () => {
+    const text = "@env:DB_URL";
+    const mention = findActiveFileMention({
+      text,
+      cursorIndex: text.length,
+    });
+    expect(mention).toBeNull();
+  });
+});
+
+describe("findActiveEnvMention", () => {
+  it("detects @env: mentions", () => {
+    const text = "run with @env:DB";
+    const cursorIndex = text.length;
+    const mention = findActiveEnvMention({ text, cursorIndex });
+    expect(mention).toEqual({
+      start: text.indexOf("@"),
+      end: cursorIndex,
+      query: "env:DB",
+    });
+  });
 });
 
 describe("applyFileMentionReplacement", () => {
@@ -57,5 +84,19 @@ describe("applyFileMentionReplacement", () => {
       relativePath: 'src/"quoted".ts',
     });
     expect(next).toBe('"src/\\"quoted\\".ts"');
+  });
+});
+
+describe("applyEnvMentionReplacement", () => {
+  it("replaces the active env mention with @env:ALIAS", () => {
+    const text = "use @env:DB creds";
+    const mention = findActiveEnvMention({ text, cursorIndex: text.length });
+    expect(mention).not.toBeNull();
+    const next = applyEnvMentionReplacement({
+      text,
+      mention: mention!,
+      alias: "DB_URL_PROD",
+    });
+    expect(next).toBe("use @env:DB_URL_PROD creds");
   });
 });

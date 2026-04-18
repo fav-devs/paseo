@@ -156,6 +156,7 @@ function mergeMutableConfigIntoPersistedConfig(params: {
         ...persisted.daemon?.mcp,
         injectIntoAgents: mutable.mcp.injectIntoAgents,
       },
+      ...(mutable.secrets !== undefined ? { secrets: mutable.secrets } : {}),
     },
   };
 }

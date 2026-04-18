@@ -7,8 +7,11 @@ import { useAutocomplete } from "./use-autocomplete";
 import { useSessionStore } from "@/stores/session-store";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import {
+  applyEnvMentionReplacement,
   applyFileMentionReplacement,
+  findActiveEnvMention,
   findActiveFileMention,
+  type EnvMentionRange,
   type FileMentionRange,
 } from "@/utils/file-mention-autocomplete";
 
@@ -28,6 +31,11 @@ type AgentAutocompleteOption =
       type: "workspace_entry";
       entryPath: string;
       mention: FileMentionRange;
+    })
+  | (AutocompleteOption & {
+      type: "env_alias";
+      alias: string;
+      mention: EnvMentionRange;
     });
 
 interface AgentAutocompleteResult {
@@ -110,16 +118,35 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
   const showCommandAutocomplete = userInput.startsWith("/") && !userInput.includes(" ");
   const commandFilterQuery = showCommandAutocomplete ? userInput.slice(1) : "";
 
-  const activeFileMention = useMemo(
+  const activeEnvMention = useMemo(
     () =>
-      findActiveFileMention({
+      findActiveEnvMention({
         text: userInput,
         cursorIndex,
       }),
     [cursorIndex, userInput],
   );
+  const activeFileMention = useMemo(() => {
+    if (activeEnvMention) {
+      return null;
+    }
+    return findActiveFileMention({
+      text: userInput,
+      cursorIndex,
+    });
+  }, [activeEnvMention, cursorIndex, userInput]);
   const showFileAutocomplete = activeFileMention !== null;
   const fileFilterQuery = activeFileMention?.query ?? "";
+  const envFilterQuery = useMemo(() => {
+    const raw = activeEnvMention?.query ?? "";
+    if (raw.startsWith("env:")) {
+      return raw.slice("env:".length);
+    }
+    if (raw.startsWith("secret:")) {
+      return raw.slice("secret:".length);
+    }
+    return "";
+  }, [activeEnvMention]);
 
   const normalizedDraftConfig = useMemo(
     () => normalizeDraftCommandConfig(draftConfig),
@@ -143,15 +170,18 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
 
-  const mode: "command" | "file" | null = showFileAutocomplete
-    ? "file"
-    : showCommandAutocomplete
-      ? "command"
-      : null;
+  const showEnvAutocomplete = activeEnvMention !== null;
+  const mode: "command" | "file" | "env" | null = showEnvAutocomplete
+    ? "env"
+    : showFileAutocomplete
+      ? "file"
+      : showCommandAutocomplete
+        ? "command"
+        : null;
   const isVisible =
     mode === "command"
       ? canLoadCommands
-      : mode === "file"
+      : mode === "file" || mode === "env"
         ? Boolean(serverId) && autocompleteCwd.length > 0
         : false;
 
@@ -165,6 +195,26 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
     agentId,
     enabled: mode === "command" && canLoadCommands,
     draftConfig: queryDraftConfig,
+  });
+
+  const secretAliasesQuery = useQuery({
+    queryKey: ["secretAliases", serverId, autocompleteCwd, envFilterQuery],
+    queryFn: async () => {
+      if (!client) {
+        throw new Error("Daemon client unavailable");
+      }
+      const response = await client.listSecretAliases({ cwd: autocompleteCwd });
+      return response.aliases;
+    },
+    enabled:
+      mode === "env" &&
+      Boolean(serverId) &&
+      autocompleteCwd.length > 0 &&
+      Boolean(client) &&
+      isConnected,
+    retry: false,
+    staleTime: 15_000,
+    placeholderData: keepPreviousData,
   });
 
   const fileSuggestionsQuery = useQuery({
@@ -215,6 +265,25 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
       }));
     }
 
+    if (mode === "env" && activeEnvMention) {
+      const filterLower = envFilterQuery.toLowerCase();
+      const source = secretAliasesQuery.data ?? [];
+      const matches = source.filter((entry) => entry.alias.toLowerCase().includes(filterLower));
+      const orderedMatches = orderAutocompleteOptions(matches);
+      return orderedMatches.map((entry) => ({
+        type: "env_alias" as const,
+        id: `env:${entry.alias}`,
+        label: `@env:${entry.alias}`,
+        detail:
+          entry.scope === "project" && entry.projectRoot
+            ? `project · ${entry.projectRoot}`
+            : "global",
+        kind: "env",
+        alias: entry.alias,
+        mention: activeEnvMention,
+      }));
+    }
+
     if (mode === "file" && activeFileMention) {
       const orderedEntries = orderAutocompleteOptions(fileSuggestionsQuery.data ?? []);
       return orderedEntries.map((entry) => ({
@@ -228,13 +297,34 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
     }
 
     return [];
-  }, [activeFileMention, commandFilterQuery, commands, fileSuggestionsQuery.data, isVisible, mode]);
+  }, [
+    activeEnvMention,
+    activeFileMention,
+    commandFilterQuery,
+    commands,
+    envFilterQuery,
+    fileSuggestionsQuery.data,
+    isVisible,
+    mode,
+    secretAliasesQuery.data,
+  ]);
 
   const onSelectOption = useCallback(
     (option: AutocompleteOption) => {
       const selected = option as AgentAutocompleteOption;
       if (selected.type === "command") {
         setUserInput(`/${selected.id} `);
+        onAutocompleteApplied?.();
+        return;
+      }
+
+      if (selected.type === "env_alias") {
+        const nextInput = applyEnvMentionReplacement({
+          text: userInput,
+          mention: selected.mention,
+          alias: selected.alias,
+        });
+        setUserInput(nextInput);
         onAutocompleteApplied?.();
         return;
       }
@@ -253,7 +343,8 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
   const { selectedIndex, onKeyPress } = useAutocomplete({
     isVisible,
     options,
-    query: mode === "command" ? commandFilterQuery : fileFilterQuery,
+    query:
+      mode === "command" ? commandFilterQuery : mode === "env" ? envFilterQuery : fileFilterQuery,
     onSelectOption,
     onEscape: mode === "command" ? () => setUserInput("") : undefined,
   });
@@ -261,22 +352,39 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
   const isLoading =
     mode === "command"
       ? isCommandsLoading
-      : mode === "file"
-        ? fileSuggestionsQuery.isPending || (fileSuggestionsQuery.isLoading && options.length === 0)
-        : false;
+      : mode === "env"
+        ? secretAliasesQuery.isPending || (secretAliasesQuery.isLoading && options.length === 0)
+        : mode === "file"
+          ? fileSuggestionsQuery.isPending ||
+            (fileSuggestionsQuery.isLoading && options.length === 0)
+          : false;
   const errorMessage =
     mode === "command"
       ? isError
         ? (error?.message ?? "Failed to load")
         : undefined
-      : mode === "file"
-        ? fileSuggestionsQuery.error instanceof Error
-          ? fileSuggestionsQuery.error.message
+      : mode === "env"
+        ? secretAliasesQuery.error instanceof Error
+          ? secretAliasesQuery.error.message
           : undefined
-        : undefined;
+        : mode === "file"
+          ? fileSuggestionsQuery.error instanceof Error
+            ? fileSuggestionsQuery.error.message
+            : undefined
+          : undefined;
 
-  const loadingText = mode === "file" ? "Searching workspace..." : "Loading commands...";
-  const emptyText = mode === "file" ? "No files or directories found" : "No commands found";
+  const loadingText =
+    mode === "file"
+      ? "Searching workspace..."
+      : mode === "env"
+        ? "Loading secret aliases..."
+        : "Loading commands...";
+  const emptyText =
+    mode === "file"
+      ? "No files or directories found"
+      : mode === "env"
+        ? "No secret aliases found"
+        : "No commands found";
 
   return {
     isVisible,

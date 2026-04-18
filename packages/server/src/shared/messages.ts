@@ -51,6 +51,30 @@ import {
 // Mutable daemon config schemas (shared between server store and client)
 // ---------------------------------------------------------------------------
 
+export const SecretsPolicySchema = z
+  .object({
+    /** When non-empty, secure exec cwd must equal or be under one of these absolute path prefixes. */
+    allowedSecureExecCwdPrefixes: z.array(z.string()).optional(),
+    /** Case-insensitive substring denylist applied to the first line of the command. */
+    deniedCommandSubstrings: z.array(z.string()).optional(),
+    /** When true, blocks common environment-dumping command forms (env, printenv, export -p, …). */
+    blockEnvDumpCommands: z.boolean().optional(),
+    /** Secret aliases that require an explicit client approval before exec (MCP + WS). */
+    aliasesRequiringApproval: z.array(z.string()).optional(),
+    /** How long MCP/WS callers wait for approve_secure_terminal_exec_request (ms). */
+    approvalTimeoutMs: z.number().int().positive().max(600_000).optional(),
+  })
+  .strict();
+
+export const SecretsMutableConfigSchema = z
+  .object({
+    policy: SecretsPolicySchema.optional(),
+  })
+  .strict();
+
+export type SecretsPolicy = z.infer<typeof SecretsPolicySchema>;
+export type SecretsMutableConfig = z.infer<typeof SecretsMutableConfigSchema>;
+
 export const MutableDaemonConfigSchema = z
   .object({
     mcp: z
@@ -58,12 +82,14 @@ export const MutableDaemonConfigSchema = z
         injectIntoAgents: z.boolean(),
       })
       .passthrough(),
+    secrets: SecretsMutableConfigSchema.optional(),
   })
   .passthrough();
 
 export const MutableDaemonConfigPatchSchema = z
   .object({
     mcp: MutableDaemonConfigSchema.shape.mcp.partial().optional(),
+    secrets: SecretsMutableConfigSchema.partial().optional(),
   })
   .partial()
   .passthrough();
@@ -779,6 +805,52 @@ export const SetDaemonConfigRequestMessageSchema = z.object({
   type: z.literal("set_daemon_config_request"),
   requestId: z.string(),
   config: MutableDaemonConfigPatchSchema,
+});
+
+export const ListSecretAliasesRequestMessageSchema = z.object({
+  type: z.literal("list_secret_aliases_request"),
+  requestId: z.string(),
+  cwd: z.string().optional(),
+});
+
+export const UpsertSecretAliasRequestMessageSchema = z.object({
+  type: z.literal("upsert_secret_alias_request"),
+  requestId: z.string(),
+  alias: z.string().min(1),
+  value: z.string().min(1),
+  scope: z.enum(["global", "project"]).optional(),
+  projectRoot: z.string().optional(),
+});
+
+export const DeleteSecretAliasRequestMessageSchema = z.object({
+  type: z.literal("delete_secret_alias_request"),
+  requestId: z.string(),
+  alias: z.string().min(1),
+  scope: z.enum(["global", "project"]).optional(),
+  projectRoot: z.string().optional(),
+});
+
+export const SecureTerminalExecRequestSchema = z.object({
+  type: z.literal("secure_terminal_exec_request"),
+  requestId: z.string(),
+  cwd: z.string(),
+  command: z.string().min(1),
+  secretAliases: z.array(z.string().min(1)).default([]),
+  captureLines: z.number().int().positive().max(500).optional(),
+  waitMs: z.number().int().nonnegative().max(60_000).optional(),
+});
+
+export const ApproveSecureTerminalExecRequestMessageSchema = z.object({
+  type: z.literal("approve_secure_terminal_exec_request"),
+  requestId: z.string(),
+  approvalId: z.string().min(1),
+});
+
+export const RejectSecureTerminalExecRequestMessageSchema = z.object({
+  type: z.literal("reject_secure_terminal_exec_request"),
+  requestId: z.string(),
+  approvalId: z.string().min(1),
+  reason: z.string().optional(),
 });
 
 // ============================================================================
@@ -1573,6 +1645,12 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WaitForFinishRequestSchema,
   GetDaemonConfigRequestMessageSchema,
   SetDaemonConfigRequestMessageSchema,
+  ListSecretAliasesRequestMessageSchema,
+  UpsertSecretAliasRequestMessageSchema,
+  DeleteSecretAliasRequestMessageSchema,
+  SecureTerminalExecRequestSchema,
+  ApproveSecureTerminalExecRequestMessageSchema,
+  RejectSecureTerminalExecRequestMessageSchema,
   DictationStreamStartMessageSchema,
   DictationStreamChunkMessageSchema,
   DictationStreamFinishMessageSchema,
@@ -2336,6 +2414,81 @@ export const SetDaemonConfigResponseMessageSchema = z.object({
     .passthrough(),
 });
 
+export const ListSecretAliasesResponseMessageSchema = z.object({
+  type: z.literal("list_secret_aliases_response"),
+  payload: z.object({
+    requestId: z.string(),
+    aliases: z.array(
+      z.object({
+        alias: z.string(),
+        updatedAt: z.string(),
+        scope: z.enum(["global", "project"]),
+        projectRoot: z.string().nullable(),
+      }),
+    ),
+  }),
+});
+
+export const UpsertSecretAliasResponseMessageSchema = z.object({
+  type: z.literal("upsert_secret_alias_response"),
+  payload: z.object({
+    requestId: z.string(),
+    success: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const DeleteSecretAliasResponseMessageSchema = z.object({
+  type: z.literal("delete_secret_alias_response"),
+  payload: z.object({
+    requestId: z.string(),
+    success: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const SecureTerminalExecResponseMessageSchema = z.object({
+  type: z.literal("secure_terminal_exec_response"),
+  payload: z.object({
+    requestId: z.string(),
+    terminalId: z.string().nullable(),
+    lines: z.array(z.string()),
+    totalLines: z.number().int().nonnegative(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const SecureTerminalExecApprovalRequiredMessageSchema = z.object({
+  type: z.literal("secure_terminal_exec_approval_required"),
+  payload: z.object({
+    approvalId: z.string(),
+    cwd: z.string(),
+    command: z.string(),
+    secretAliases: z.array(z.string()),
+    requestedAt: z.string(),
+    source: z.enum(["mcp", "session"]),
+    agentId: z.string().nullable().optional(),
+  }),
+});
+
+export const ApproveSecureTerminalExecResponseMessageSchema = z.object({
+  type: z.literal("approve_secure_terminal_exec_response"),
+  payload: z.object({
+    requestId: z.string(),
+    success: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const RejectSecureTerminalExecResponseMessageSchema = z.object({
+  type: z.literal("reject_secure_terminal_exec_response"),
+  payload: z.object({
+    requestId: z.string(),
+    success: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
 export const AgentPermissionRequestMessageSchema = z.object({
   type: z.literal("agent_permission_request"),
   payload: z.object({
@@ -3072,6 +3225,13 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   SetVoiceModeResponseMessageSchema,
   GetDaemonConfigResponseMessageSchema,
   SetDaemonConfigResponseMessageSchema,
+  ListSecretAliasesResponseMessageSchema,
+  UpsertSecretAliasResponseMessageSchema,
+  DeleteSecretAliasResponseMessageSchema,
+  SecureTerminalExecResponseMessageSchema,
+  SecureTerminalExecApprovalRequiredMessageSchema,
+  ApproveSecureTerminalExecResponseMessageSchema,
+  RejectSecureTerminalExecResponseMessageSchema,
   SetAgentModeResponseMessageSchema,
   SetAgentModelResponseMessageSchema,
   SetAgentThinkingResponseMessageSchema,
@@ -3196,6 +3356,18 @@ export type FetchAgentTimelineResponseMessage = z.infer<
 export type CancelAgentResponseMessage = z.infer<typeof CancelAgentResponseMessageSchema>;
 export type SendAgentMessageResponseMessage = z.infer<typeof SendAgentMessageResponseMessageSchema>;
 export type SetVoiceModeResponseMessage = z.infer<typeof SetVoiceModeResponseMessageSchema>;
+export type ListSecretAliasesResponseMessage = z.infer<
+  typeof ListSecretAliasesResponseMessageSchema
+>;
+export type UpsertSecretAliasResponseMessage = z.infer<
+  typeof UpsertSecretAliasResponseMessageSchema
+>;
+export type DeleteSecretAliasResponseMessage = z.infer<
+  typeof DeleteSecretAliasResponseMessageSchema
+>;
+export type SecureTerminalExecResponseMessage = z.infer<
+  typeof SecureTerminalExecResponseMessageSchema
+>;
 export type SetAgentModeResponseMessage = z.infer<typeof SetAgentModeResponseMessageSchema>;
 export type SetAgentModelResponseMessage = z.infer<typeof SetAgentModelResponseMessageSchema>;
 export type SetAgentThinkingResponseMessage = z.infer<typeof SetAgentThinkingResponseMessageSchema>;
@@ -3259,6 +3431,16 @@ export type DictationStreamStartMessage = z.infer<typeof DictationStreamStartMes
 export type DictationStreamChunkMessage = z.infer<typeof DictationStreamChunkMessageSchema>;
 export type DictationStreamFinishMessage = z.infer<typeof DictationStreamFinishMessageSchema>;
 export type DictationStreamCancelMessage = z.infer<typeof DictationStreamCancelMessageSchema>;
+export type ListSecretAliasesRequestMessage = z.infer<typeof ListSecretAliasesRequestMessageSchema>;
+export type UpsertSecretAliasRequestMessage = z.infer<typeof UpsertSecretAliasRequestMessageSchema>;
+export type DeleteSecretAliasRequestMessage = z.infer<typeof DeleteSecretAliasRequestMessageSchema>;
+export type SecureTerminalExecRequest = z.infer<typeof SecureTerminalExecRequestSchema>;
+export type ApproveSecureTerminalExecRequestMessage = z.infer<
+  typeof ApproveSecureTerminalExecRequestMessageSchema
+>;
+export type RejectSecureTerminalExecRequestMessage = z.infer<
+  typeof RejectSecureTerminalExecRequestMessageSchema
+>;
 export type CreateAgentRequestMessage = z.infer<typeof CreateAgentRequestMessageSchema>;
 export type ListProviderModelsRequestMessage = z.infer<
   typeof ListProviderModelsRequestMessageSchema

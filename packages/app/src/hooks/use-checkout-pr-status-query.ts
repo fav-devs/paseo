@@ -3,7 +3,6 @@ import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-
 import type { CheckoutPrStatusResponse } from "@server/shared/messages";
 
 const CHECKOUT_PR_STATUS_STALE_TIME = 20_000;
-const WORKSPACE_PR_HINT_REFETCH_INTERVAL = 60_000;
 
 function checkoutPrStatusQueryKey(serverId: string, cwd: string) {
   return ["checkoutPrStatus", serverId, cwd] as const;
@@ -78,7 +77,8 @@ export function useCheckoutPrStatusQuery({
     },
     enabled: !!client && isConnected && !!cwd && enabled,
     staleTime: CHECKOUT_PR_STATUS_STALE_TIME,
-    refetchInterval: 15_000,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
   });
 
   return {
@@ -111,7 +111,8 @@ export function useWorkspacePrHint({
     },
     enabled: !!client && isConnected && !!cwd && enabled,
     staleTime: CHECKOUT_PR_STATUS_STALE_TIME,
-    refetchInterval: WORKSPACE_PR_HINT_REFETCH_INTERVAL,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
     select: selectWorkspacePrHint,
   });
 

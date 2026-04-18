@@ -18,6 +18,7 @@ import { normalizeWorkspaceId } from "./workspace-registry-model.js";
 
 const WORKSPACE_GIT_WATCH_DEBOUNCE_MS = 500;
 const BACKGROUND_GIT_FETCH_INTERVAL_MS = 180_000;
+const BACKGROUND_GIT_FETCH_MAX_CONCURRENCY = 2;
 const WORKING_TREE_WATCH_FALLBACK_REFRESH_MS = 5_000;
 
 export type WorkspaceGitRuntimeSnapshot = {
@@ -110,6 +111,7 @@ interface RepoGitTarget {
   workspaceKeys: Set<string>;
   intervalId: NodeJS.Timeout | null;
   fetchInFlight: boolean;
+  fetchQueued: boolean;
 }
 
 interface WorkingTreeWatchTarget {
@@ -133,6 +135,8 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   private readonly workspaceTargetSetups = new Map<string, Promise<WorkspaceGitTarget>>();
   private readonly workingTreeWatchTargets = new Map<string, WorkingTreeWatchTarget>();
   private readonly workingTreeWatchSetups = new Map<string, Promise<WorkingTreeWatchTarget>>();
+  private readonly queuedRepoFetches: RepoGitTarget[] = [];
+  private activeRepoFetchCount = 0;
 
   constructor(options: WorkspaceGitServiceOptions) {
     this.logger = options.logger.child({ module: "workspace-git-service" });
@@ -449,12 +453,13 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       cwd: workspaceTarget.cwd,
       workspaceKeys: new Set([workspaceTarget.cwd]),
       intervalId: setInterval(() => {
-        void this.runRepoFetch(repoTarget);
+        this.enqueueRepoFetch(repoTarget);
       }, BACKGROUND_GIT_FETCH_INTERVAL_MS),
       fetchInFlight: false,
+      fetchQueued: false,
     };
     this.repoTargets.set(repoGitRoot, repoTarget);
-    void this.runRepoFetch(repoTarget);
+    this.enqueueRepoFetch(repoTarget);
   }
 
   private scheduleWorkspaceRefresh(targetOrCwd: WorkspaceGitTarget | string): void {
@@ -707,6 +712,41 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     }
   }
 
+  private enqueueRepoFetch(target: RepoGitTarget): void {
+    if (target.fetchInFlight || target.fetchQueued) {
+      return;
+    }
+    target.fetchQueued = true;
+    this.queuedRepoFetches.push(target);
+    this.drainRepoFetchQueue();
+  }
+
+  private drainRepoFetchQueue(): void {
+    while (
+      this.activeRepoFetchCount < BACKGROUND_GIT_FETCH_MAX_CONCURRENCY &&
+      this.queuedRepoFetches.length > 0
+    ) {
+      const next = this.queuedRepoFetches.shift();
+      if (!next) {
+        break;
+      }
+      if (!this.repoTargets.has(next.repoGitRoot)) {
+        next.fetchQueued = false;
+        continue;
+      }
+      if (next.fetchInFlight) {
+        next.fetchQueued = false;
+        continue;
+      }
+      next.fetchQueued = false;
+      this.activeRepoFetchCount += 1;
+      void this.runRepoFetch(next).finally(() => {
+        this.activeRepoFetchCount -= 1;
+        this.drainRepoFetchQueue();
+      });
+    }
+  }
+
   private removeWorkspaceListener(cwd: string, listener: WorkspaceGitListener): void {
     const target = this.workspaceTargets.get(cwd);
     if (!target) {
@@ -782,6 +822,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       clearInterval(target.intervalId);
       target.intervalId = null;
     }
+    target.fetchQueued = false;
     target.workspaceKeys.clear();
   }
 }

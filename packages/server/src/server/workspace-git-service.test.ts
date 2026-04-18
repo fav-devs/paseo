@@ -365,6 +365,61 @@ describe("WorkspaceGitServiceImpl", () => {
     service.dispose();
   });
 
+  test("background git fetches are concurrency-limited across repos", async () => {
+    const inFlightFetches = new Set<string>();
+    let peakConcurrentFetches = 0;
+    const deferredByRepo = new Map<
+      string,
+      { resolve: () => void; reject: (reason?: unknown) => void }
+    >();
+    const runGitFetch = vi.fn((cwd: string) => {
+      inFlightFetches.add(cwd);
+      peakConcurrentFetches = Math.max(peakConcurrentFetches, inFlightFetches.size);
+      const deferred = createDeferred<void>();
+      deferredByRepo.set(cwd, deferred);
+      return deferred.promise.finally(() => {
+        inFlightFetches.delete(cwd);
+      });
+    });
+    const hasOriginRemote = vi.fn(async () => true);
+    const resolveAbsoluteGitDir = vi.fn(async (cwd: string) => path.join(cwd, ".git"));
+
+    const service = createService({
+      resolveAbsoluteGitDir,
+      hasOriginRemote,
+      runGitFetch,
+    });
+
+    const subscriptions = await Promise.all([
+      service.subscribe({ cwd: "/tmp/repo-a" }, vi.fn()),
+      service.subscribe({ cwd: "/tmp/repo-b" }, vi.fn()),
+      service.subscribe({ cwd: "/tmp/repo-c" }, vi.fn()),
+    ]);
+    await flushPromises();
+
+    expect(peakConcurrentFetches).toBeLessThanOrEqual(2);
+    expect(runGitFetch).toHaveBeenCalledTimes(2);
+    expect(runGitFetch).toHaveBeenNthCalledWith(1, "/tmp/repo-a");
+    expect(runGitFetch).toHaveBeenNthCalledWith(2, "/tmp/repo-b");
+
+    deferredByRepo.get("/tmp/repo-a")?.resolve();
+    await vi.waitFor(() => {
+      expect(runGitFetch).toHaveBeenCalledTimes(3);
+      expect(runGitFetch).toHaveBeenNthCalledWith(3, "/tmp/repo-c");
+    });
+
+    deferredByRepo.get("/tmp/repo-b")?.resolve();
+    deferredByRepo.get("/tmp/repo-c")?.resolve();
+    await flushPromises();
+
+    expect(peakConcurrentFetches).toBeLessThanOrEqual(2);
+
+    for (const subscription of subscriptions) {
+      subscription.unsubscribe();
+    }
+    service.dispose();
+  });
+
   test("explicit refresh recomputes github state and notifies listeners", async () => {
     const getPullRequestStatus = vi
       .fn<() => Promise<PullRequestStatusResult>>()

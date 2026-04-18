@@ -27,6 +27,12 @@ import {
   type CloseItemsRequest,
   type KillTerminalRequest,
   type CaptureTerminalRequest,
+  type ListSecretAliasesRequestMessage,
+  type UpsertSecretAliasRequestMessage,
+  type DeleteSecretAliasRequestMessage,
+  type SecureTerminalExecRequest,
+  type ApproveSecureTerminalExecRequestMessage,
+  type RejectSecureTerminalExecRequestMessage,
   type ListPortForwardsRequest,
   type SubscribePortForwardsRequest,
   type UnsubscribePortForwardsRequest,
@@ -81,6 +87,9 @@ import { experimental_createMCPClient } from "ai";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { VoiceCallerContext, VoiceSpeakHandler } from "./voice-types.js";
 import type { DaemonConfigStore } from "./daemon-config-store.js";
+import type { SecureTerminalExecCoordinator } from "./secure-terminal-exec-coordinator.js";
+import { evaluateSecureExecPolicy, resolveSecretsPolicy } from "./secure-terminal-exec-policy.js";
+import { runSecureTerminalExec } from "./secure-terminal-exec-runner.js";
 import type { WorkspaceGitRuntimeSnapshot, WorkspaceGitService } from "./workspace-git-service.js";
 
 import { buildProviderRegistry } from "./agent/provider-registry.js";
@@ -186,6 +195,7 @@ import { persistAttachments } from "../utils/context-attachments.js";
 import { searchHomeDirectories, searchWorkspaceEntries } from "../utils/directory-suggestions.js";
 import { READ_ONLY_GIT_ENV, toCheckoutError } from "./checkout-git-utils.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
+import { SecretVault } from "./secret-vault.js";
 import type { LocalSpeechModelId } from "./speech/providers/local/models.js";
 import { toResolver, type Resolvable } from "./speech/provider-resolver.js";
 import type { SpeechReadinessSnapshot, SpeechReadinessState } from "./speech/speech-runtime.js";
@@ -241,6 +251,12 @@ function clientSupportsFlexibleEditorIds(appVersion: string | null): boolean {
 }
 
 const MAX_TERMINAL_STREAM_SLOTS = 256;
+const MAX_CONCURRENT_TERMINAL_CREATIONS = 2;
+const MAX_QUEUED_TERMINAL_CREATIONS = 64;
+const FETCH_AGENTS_CACHE_MS = 2_000;
+const FETCH_WORKSPACES_CACHE_MS = 2_000;
+const CHECKOUT_PR_STATUS_CACHE_MS = 10_000;
+const MAX_CONCURRENT_CHECKOUT_PR_STATUS_LOOKUPS = 3;
 
 function deriveInitialAgentTitle(prompt: string): string | null {
   const firstContentLine = prompt
@@ -478,6 +494,7 @@ export type SessionOptions = {
   };
   agentProviderRuntimeSettings?: AgentProviderRuntimeSettingsMap;
   providerOverrides?: Record<string, ProviderOverride>;
+  secureTerminalExecCoordinator?: SecureTerminalExecCoordinator | null;
 };
 
 export type SessionLifecycleIntent =
@@ -607,6 +624,7 @@ export class Session {
   private readonly checkoutDiffManager: CheckoutDiffManager;
   private readonly workspaceGitService: WorkspaceGitService;
   private readonly daemonConfigStore: DaemonConfigStore;
+  private readonly secretVault: SecretVault;
   private readonly mcpBaseUrl: string | null;
   private readonly downloadTokenStore: DownloadTokenStore;
   private readonly pushTokenStore: PushTokenStore;
@@ -634,6 +652,47 @@ export class Session {
   private readonly activeTerminalStreams = new Map<number, ActiveTerminalStream>();
   private readonly terminalIdToSlot = new Map<string, number>();
   private nextTerminalSlot = 0;
+  private activeTerminalCreations = 0;
+  private readonly queuedTerminalCreations: CreateTerminalRequest[] = [];
+  private readonly fetchAgentsInflight = new Map<
+    string,
+    Promise<{ entries: FetchAgentsResponseEntry[]; pageInfo: FetchAgentsResponsePageInfo }>
+  >();
+  private readonly fetchAgentsCache = new Map<
+    string,
+    {
+      expiresAt: number;
+      payload: { entries: FetchAgentsResponseEntry[]; pageInfo: FetchAgentsResponsePageInfo };
+    }
+  >();
+  private readonly fetchWorkspacesInflight = new Map<
+    string,
+    Promise<{ entries: FetchWorkspacesResponseEntry[]; pageInfo: FetchWorkspacesResponsePageInfo }>
+  >();
+  private readonly fetchWorkspacesCache = new Map<
+    string,
+    {
+      expiresAt: number;
+      payload: {
+        entries: FetchWorkspacesResponseEntry[];
+        pageInfo: FetchWorkspacesResponsePageInfo;
+      };
+    }
+  >();
+  private readonly checkoutPrStatusInflight = new Map<
+    string,
+    Promise<WorkspaceGitRuntimeSnapshot>
+  >();
+  private readonly checkoutPrStatusCache = new Map<
+    string,
+    { expiresAt: number; snapshot: WorkspaceGitRuntimeSnapshot }
+  >();
+  private activeCheckoutPrStatusLookups = 0;
+  private readonly queuedCheckoutPrStatusLookups: Array<{
+    cwd: string;
+    resolve: (snapshot: WorkspaceGitRuntimeSnapshot) => void;
+    reject: (error: unknown) => void;
+  }> = [];
   private inflightRequests = 0;
   private peakInflightRequests = 0;
   private readonly checkoutDiffSubscriptions = new Map<string, () => void>();
@@ -651,6 +710,7 @@ export class Session {
   private readonly getSpeechReadiness?: () => SpeechReadinessSnapshot;
   private readonly agentProviderRuntimeSettings: AgentProviderRuntimeSettingsMap | undefined;
   private readonly providerOverrides: Record<string, ProviderOverride> | undefined;
+  private readonly secureTerminalExecCoordinator: SecureTerminalExecCoordinator | null;
   private voiceModeAgentId: string | null = null;
   private voiceModeBaseConfig: VoiceModeBaseConfig | null = null;
 
@@ -687,6 +747,7 @@ export class Session {
       dictation,
       agentProviderRuntimeSettings,
       providerOverrides,
+      secureTerminalExecCoordinator,
     } = options;
     this.clientId = clientId;
     this.clientType = clientType;
@@ -708,6 +769,7 @@ export class Session {
     this.checkoutDiffManager = checkoutDiffManager;
     this.workspaceGitService = workspaceGitService;
     this.daemonConfigStore = daemonConfigStore;
+    this.secretVault = new SecretVault(this.paseoHome);
     this.mcpBaseUrl = mcpBaseUrl ?? null;
     this.terminalManager = terminalManager;
     this.portForwardManager = portForwardManager;
@@ -750,6 +812,7 @@ export class Session {
     this.getSpeechReadiness = dictation?.getSpeechReadiness;
     this.agentProviderRuntimeSettings = agentProviderRuntimeSettings;
     this.providerOverrides = providerOverrides;
+    this.secureTerminalExecCoordinator = secureTerminalExecCoordinator ?? null;
     this.abortController = new AbortController();
     this.sessionLogger = logger.child({
       module: "session",
@@ -1545,6 +1608,30 @@ export class Session {
                 config: this.daemonConfigStore.patch(msg.config),
               },
             });
+            break;
+
+          case "list_secret_aliases_request":
+            this.handleListSecretAliasesRequest(msg);
+            break;
+
+          case "upsert_secret_alias_request":
+            this.handleUpsertSecretAliasRequest(msg);
+            break;
+
+          case "delete_secret_alias_request":
+            this.handleDeleteSecretAliasRequest(msg);
+            break;
+
+          case "secure_terminal_exec_request":
+            await this.handleSecureTerminalExecRequest(msg);
+            break;
+
+          case "approve_secure_terminal_exec_request":
+            this.handleApproveSecureTerminalExecRequest(msg);
+            break;
+
+          case "reject_secure_terminal_exec_request":
+            this.handleRejectSecureTerminalExecRequest(msg);
             break;
 
           case "dictation_stream_start":
@@ -4743,7 +4830,7 @@ export class Session {
     const { cwd, requestId } = msg;
 
     try {
-      const snapshot = await this.workspaceGitService.getSnapshot(cwd);
+      const snapshot = await this.getCheckoutPrStatusSnapshot(cwd);
       this.emit({
         type: "checkout_pr_status_response",
         payload: {
@@ -5575,19 +5662,22 @@ export class Session {
         )
       : null;
 
-    for (const workspace of activeRecords) {
-      if (workspaceIds && !workspaceIds.has(workspace.workspaceId)) {
-        continue;
-      }
-      const projectRecord = activeProjects.get(workspace.projectId) ?? null;
-      descriptorsByWorkspaceId.set(
-        workspace.workspaceId,
-        await this.buildWorkspaceDescriptor({
+    const targetWorkspaces = activeRecords.filter(
+      (workspace) => !workspaceIds || workspaceIds.has(workspace.workspaceId),
+    );
+    const descriptorPairs = await Promise.all(
+      targetWorkspaces.map(async (workspace) => {
+        const projectRecord = activeProjects.get(workspace.projectId) ?? null;
+        const descriptor = await this.buildWorkspaceDescriptor({
           workspace,
           projectRecord,
           includeGitData: options.includeGitData,
-        }),
-      );
+        });
+        return [workspace.workspaceId, descriptor] as const;
+      }),
+    );
+    for (const [workspaceId, descriptor] of descriptorPairs) {
+      descriptorsByWorkspaceId.set(workspaceId, descriptor);
     }
 
     for (const agent of agents) {
@@ -6116,12 +6206,7 @@ export class Session {
         };
       }
 
-      const payload = await this.listFetchAgentsEntries(request);
-
-      // TODO: Remove once all app store clients are on >=0.1.45.
-      payload.entries = payload.entries.filter((entry) =>
-        this.isProviderVisibleToClient(entry.agent.provider),
-      );
+      const payload = await this.getFetchAgentsPayload(request);
 
       const snapshotUpdatedAtByAgentId = new Map<string, number>();
       for (const entry of payload.entries) {
@@ -6193,7 +6278,7 @@ export class Session {
         };
       }
 
-      const payload = await this.listFetchWorkspacesEntries(request);
+      const payload = await this.getFetchWorkspacesPayload(request);
       this.sessionLogger.debug(
         {
           requestId: request.requestId,
@@ -6242,6 +6327,188 @@ export class Session {
           code,
         },
       });
+    }
+  }
+
+  private buildFetchAgentsRequestKey(
+    request: Extract<SessionInboundMessage, { type: "fetch_agents_request" }>,
+  ): string {
+    return JSON.stringify({
+      filter: request.filter ?? null,
+      sort: request.sort ?? null,
+      page: request.page ?? null,
+      subscribe: Boolean(request.subscribe),
+    });
+  }
+
+  private buildFetchWorkspacesRequestKey(
+    request: Extract<SessionInboundMessage, { type: "fetch_workspaces_request" }>,
+  ): string {
+    return JSON.stringify({
+      filter: request.filter ?? null,
+      sort: request.sort ?? null,
+      page: request.page ?? null,
+      subscribe: Boolean(request.subscribe),
+    });
+  }
+
+  private async getFetchAgentsPayload(
+    request: Extract<SessionInboundMessage, { type: "fetch_agents_request" }>,
+  ): Promise<{ entries: FetchAgentsResponseEntry[]; pageInfo: FetchAgentsResponsePageInfo }> {
+    const requestKey = this.buildFetchAgentsRequestKey(request);
+    const now = Date.now();
+    const cached = this.fetchAgentsCache.get(requestKey);
+    if (cached && cached.expiresAt > now) {
+      return {
+        entries: cached.payload.entries.map((entry) => ({ ...entry, agent: { ...entry.agent } })),
+        pageInfo: { ...cached.payload.pageInfo },
+      };
+    }
+
+    const existing = this.fetchAgentsInflight.get(requestKey);
+    if (existing) {
+      const payload = await existing;
+      return {
+        entries: payload.entries.map((entry) => ({ ...entry, agent: { ...entry.agent } })),
+        pageInfo: { ...payload.pageInfo },
+      };
+    }
+
+    const loadPromise = this.listFetchAgentsEntries(request)
+      .then((payload) => {
+        // TODO: Remove once all app store clients are on >=0.1.45.
+        payload.entries = payload.entries.filter((entry) =>
+          this.isProviderVisibleToClient(entry.agent.provider),
+        );
+        const normalized = {
+          entries: payload.entries.map((entry) => ({ ...entry, agent: { ...entry.agent } })),
+          pageInfo: { ...payload.pageInfo },
+        };
+        this.fetchAgentsCache.set(requestKey, {
+          expiresAt: Date.now() + FETCH_AGENTS_CACHE_MS,
+          payload: normalized,
+        });
+        return normalized;
+      })
+      .finally(() => {
+        this.fetchAgentsInflight.delete(requestKey);
+      });
+
+    this.fetchAgentsInflight.set(requestKey, loadPromise);
+    const payload = await loadPromise;
+    return {
+      entries: payload.entries.map((entry) => ({ ...entry, agent: { ...entry.agent } })),
+      pageInfo: { ...payload.pageInfo },
+    };
+  }
+
+  private async getFetchWorkspacesPayload(
+    request: Extract<SessionInboundMessage, { type: "fetch_workspaces_request" }>,
+  ): Promise<{
+    entries: FetchWorkspacesResponseEntry[];
+    pageInfo: FetchWorkspacesResponsePageInfo;
+  }> {
+    const requestKey = this.buildFetchWorkspacesRequestKey(request);
+    const now = Date.now();
+    const cached = this.fetchWorkspacesCache.get(requestKey);
+    if (cached && cached.expiresAt > now) {
+      return {
+        entries: cached.payload.entries.map((entry) => ({ ...entry })),
+        pageInfo: { ...cached.payload.pageInfo },
+      };
+    }
+
+    const existing = this.fetchWorkspacesInflight.get(requestKey);
+    if (existing) {
+      const payload = await existing;
+      return {
+        entries: payload.entries.map((entry) => ({ ...entry })),
+        pageInfo: { ...payload.pageInfo },
+      };
+    }
+
+    const loadPromise = this.listFetchWorkspacesEntries(request)
+      .then((payload) => {
+        const normalized = {
+          entries: payload.entries.map((entry) => ({ ...entry })),
+          pageInfo: { ...payload.pageInfo },
+        };
+        this.fetchWorkspacesCache.set(requestKey, {
+          expiresAt: Date.now() + FETCH_WORKSPACES_CACHE_MS,
+          payload: normalized,
+        });
+        return normalized;
+      })
+      .finally(() => {
+        this.fetchWorkspacesInflight.delete(requestKey);
+      });
+
+    this.fetchWorkspacesInflight.set(requestKey, loadPromise);
+    const payload = await loadPromise;
+    return {
+      entries: payload.entries.map((entry) => ({ ...entry })),
+      pageInfo: { ...payload.pageInfo },
+    };
+  }
+
+  private async getCheckoutPrStatusSnapshot(cwd: string): Promise<WorkspaceGitRuntimeSnapshot> {
+    const cached = this.checkoutPrStatusCache.get(cwd);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) {
+      return cached.snapshot;
+    }
+
+    const existing = this.checkoutPrStatusInflight.get(cwd);
+    if (existing) {
+      return existing;
+    }
+
+    const snapshotPromise = this.enqueueCheckoutPrStatusLookup(cwd)
+      .then((snapshot) => {
+        this.checkoutPrStatusCache.set(cwd, {
+          expiresAt: Date.now() + CHECKOUT_PR_STATUS_CACHE_MS,
+          snapshot,
+        });
+        return snapshot;
+      })
+      .finally(() => {
+        this.checkoutPrStatusInflight.delete(cwd);
+      });
+
+    this.checkoutPrStatusInflight.set(cwd, snapshotPromise);
+    return snapshotPromise;
+  }
+
+  private enqueueCheckoutPrStatusLookup(cwd: string): Promise<WorkspaceGitRuntimeSnapshot> {
+    return new Promise<WorkspaceGitRuntimeSnapshot>((resolve, reject) => {
+      this.queuedCheckoutPrStatusLookups.push({ cwd, resolve, reject });
+      this.processCheckoutPrStatusQueue();
+    });
+  }
+
+  private processCheckoutPrStatusQueue(): void {
+    while (
+      this.activeCheckoutPrStatusLookups < MAX_CONCURRENT_CHECKOUT_PR_STATUS_LOOKUPS &&
+      this.queuedCheckoutPrStatusLookups.length > 0
+    ) {
+      const task = this.queuedCheckoutPrStatusLookups.shift();
+      if (!task) {
+        return;
+      }
+
+      this.activeCheckoutPrStatusLookups += 1;
+      void this.workspaceGitService
+        .getSnapshot(task.cwd)
+        .then((snapshot) => {
+          task.resolve(snapshot);
+        })
+        .catch((error) => {
+          task.reject(error);
+        })
+        .finally(() => {
+          this.activeCheckoutPrStatusLookups -= 1;
+          this.processCheckoutPrStatusQueue();
+        });
     }
   }
 
@@ -8258,6 +8525,67 @@ export class Session {
       return;
     }
 
+    if (
+      this.activeTerminalCreations >= MAX_CONCURRENT_TERMINAL_CREATIONS &&
+      this.queuedTerminalCreations.length >= MAX_QUEUED_TERMINAL_CREATIONS
+    ) {
+      this.sessionLogger.warn(
+        {
+          cwd: msg.cwd,
+          queuedTerminalCreations: this.queuedTerminalCreations.length,
+          activeTerminalCreations: this.activeTerminalCreations,
+        },
+        "Terminal create queue limit reached",
+      );
+      this.emit({
+        type: "create_terminal_response",
+        payload: {
+          terminal: null,
+          error: "Terminal creation queue is full",
+          requestId: msg.requestId,
+        },
+      });
+      return;
+    }
+
+    this.queuedTerminalCreations.push(msg);
+    void this.processQueuedTerminalCreations();
+  }
+
+  private async processQueuedTerminalCreations(): Promise<void> {
+    if (!this.terminalManager) {
+      this.queuedTerminalCreations.length = 0;
+      return;
+    }
+    while (
+      this.activeTerminalCreations < MAX_CONCURRENT_TERMINAL_CREATIONS &&
+      this.queuedTerminalCreations.length > 0
+    ) {
+      const request = this.queuedTerminalCreations.shift();
+      if (!request) {
+        return;
+      }
+      this.activeTerminalCreations += 1;
+      void this.createTerminalFromRequest(request).finally(() => {
+        this.activeTerminalCreations -= 1;
+        void this.processQueuedTerminalCreations();
+      });
+    }
+  }
+
+  private async createTerminalFromRequest(msg: CreateTerminalRequest): Promise<void> {
+    if (!this.terminalManager) {
+      this.emit({
+        type: "create_terminal_response",
+        payload: {
+          terminal: null,
+          error: "Terminal manager not available",
+          requestId: msg.requestId,
+        },
+      });
+      return;
+    }
+
     try {
       const session = await this.terminalManager.createTerminal({
         cwd: msg.cwd,
@@ -8283,6 +8611,166 @@ export class Session {
         },
       });
     }
+  }
+
+  private handleListSecretAliasesRequest(msg: ListSecretAliasesRequestMessage): void {
+    const aliases = this.secretVault.listAliases(msg.cwd);
+    this.emit({
+      type: "list_secret_aliases_response",
+      payload: {
+        requestId: msg.requestId,
+        aliases,
+      },
+    });
+  }
+
+  private handleUpsertSecretAliasRequest(msg: UpsertSecretAliasRequestMessage): void {
+    try {
+      this.secretVault.upsert({
+        alias: msg.alias,
+        value: msg.value,
+        scope: msg.scope,
+        projectRoot: msg.projectRoot,
+      });
+      this.emit({
+        type: "upsert_secret_alias_response",
+        payload: {
+          requestId: msg.requestId,
+          success: true,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "upsert_secret_alias_response",
+        payload: {
+          requestId: msg.requestId,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  private handleDeleteSecretAliasRequest(msg: DeleteSecretAliasRequestMessage): void {
+    const removed = this.secretVault.remove({
+      alias: msg.alias,
+      scope: msg.scope,
+      projectRoot: msg.projectRoot,
+    });
+    this.emit({
+      type: "delete_secret_alias_response",
+      payload: {
+        requestId: msg.requestId,
+        success: removed,
+        error: removed ? null : "Alias not found",
+      },
+    });
+  }
+
+  private async handleSecureTerminalExecRequest(msg: SecureTerminalExecRequest): Promise<void> {
+    if (!this.terminalManager) {
+      this.emit({
+        type: "secure_terminal_exec_response",
+        payload: {
+          requestId: msg.requestId,
+          terminalId: null,
+          lines: [],
+          totalLines: 0,
+          error: "Terminal manager not available",
+        },
+      });
+      return;
+    }
+
+    try {
+      const policy = resolveSecretsPolicy(this.daemonConfigStore.get());
+      const { needsApproval } = evaluateSecureExecPolicy(policy, {
+        cwd: msg.cwd,
+        command: msg.command,
+        secretAliases: msg.secretAliases,
+      });
+
+      if (needsApproval) {
+        if (!this.secureTerminalExecCoordinator) {
+          throw new Error(
+            "Secure terminal exec requires approval for one or more secret aliases, but the daemon approval coordinator is not active",
+          );
+        }
+        const approvalId = this.secureTerminalExecCoordinator.createApprovalId();
+        await this.secureTerminalExecCoordinator.waitForApproval({
+          approvalId,
+          cwd: msg.cwd,
+          command: msg.command,
+          secretAliases: msg.secretAliases,
+          source: "session",
+          agentId: null,
+          timeoutMs: policy.approvalTimeoutMs,
+        });
+      }
+
+      const result = await runSecureTerminalExec({
+        terminalManager: this.terminalManager,
+        secretVault: this.secretVault,
+        cwd: msg.cwd,
+        command: msg.command,
+        secretAliases: msg.secretAliases,
+        captureLines: msg.captureLines,
+        waitMs: msg.waitMs,
+      });
+
+      this.emit({
+        type: "secure_terminal_exec_response",
+        payload: {
+          requestId: msg.requestId,
+          terminalId: result.terminalId,
+          lines: result.lines,
+          totalLines: result.totalLines,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "secure_terminal_exec_response",
+        payload: {
+          requestId: msg.requestId,
+          terminalId: null,
+          lines: [],
+          totalLines: 0,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  private handleApproveSecureTerminalExecRequest(
+    msg: ApproveSecureTerminalExecRequestMessage,
+  ): void {
+    const ok = this.secureTerminalExecCoordinator?.approve(msg.approvalId) ?? false;
+    this.emit({
+      type: "approve_secure_terminal_exec_response",
+      payload: {
+        requestId: msg.requestId,
+        success: ok,
+        error: ok ? null : "Unknown approval id or already resolved",
+      },
+    });
+  }
+
+  private handleRejectSecureTerminalExecRequest(msg: RejectSecureTerminalExecRequestMessage): void {
+    const ok =
+      this.secureTerminalExecCoordinator?.reject(
+        msg.approvalId,
+        msg.reason?.trim() || "Secure terminal exec rejected",
+      ) ?? false;
+    this.emit({
+      type: "reject_secure_terminal_exec_response",
+      payload: {
+        requestId: msg.requestId,
+        success: ok,
+        error: ok ? null : "Unknown approval id or already resolved",
+      },
+    });
   }
 
   private async handleSubscribeTerminalRequest(msg: SubscribeTerminalRequest): Promise<void> {

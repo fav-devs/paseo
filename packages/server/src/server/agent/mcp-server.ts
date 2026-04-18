@@ -30,6 +30,12 @@ import { captureTerminalLines } from "../../terminal/terminal.js";
 import { createAgentWorktree, runAsyncWorktreeBootstrap } from "../worktree-bootstrap.js";
 import type { ScheduleService } from "../schedule/service.js";
 import { ScheduleSummarySchema, StoredScheduleSchema } from "../schedule/types.js";
+import { SecretVault } from "../secret-vault.js";
+import type { DaemonConfigStore } from "../daemon-config-store.js";
+import type { SecureTerminalExecCoordinator } from "../secure-terminal-exec-coordinator.js";
+import { evaluateSecureExecPolicy, resolveSecretsPolicy } from "../secure-terminal-exec-policy.js";
+import { runSecureTerminalExec } from "../secure-terminal-exec-runner.js";
+import type { MutableDaemonConfig } from "../../shared/messages.js";
 import type { ProviderDefinition } from "./provider-registry.js";
 import { deletePaseoWorktree, listPaseoWorktrees } from "../../utils/worktree.js";
 import {
@@ -69,6 +75,8 @@ export interface AgentMcpServerOptions {
   enableVoiceTools?: boolean;
   voiceOnly?: boolean;
   logger: Logger;
+  daemonConfigStore?: DaemonConfigStore | null;
+  secureTerminalExecCoordinator?: SecureTerminalExecCoordinator | null;
 }
 
 const CLAUDE_TO_CODEX_MODE: Record<string, string> = {
@@ -190,10 +198,13 @@ export async function createAgentMcpServer(options: AgentMcpServerOptions): Prom
     resolveSpeakHandler,
     resolveCallerContext,
     logger,
+    daemonConfigStore,
+    secureTerminalExecCoordinator,
   } = options;
   const childLogger = logger.child({ module: "agent", component: "mcp-server" });
   const waitTracker = new WaitForAgentTracker(logger);
   const callerContext = callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
+  const secretVault = new SecretVault(options.paseoHome ?? process.env.PASEO_HOME ?? process.cwd());
 
   const server = new McpServer({
     name: "agent-mcp",
@@ -1220,6 +1231,114 @@ export async function createAgentMcpServer(options: AgentMcpServerOptions): Prom
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),
+      };
+    },
+  );
+
+  server.registerTool(
+    "list_secret_aliases",
+    {
+      title: "List secret aliases",
+      description:
+        "List configured secret aliases without revealing secret values. When cwd is provided, project-scoped aliases are included when they apply to that working directory.",
+      inputSchema: {
+        cwd: z
+          .string()
+          .optional()
+          .describe("Optional working directory used to include matching project-scoped aliases."),
+      },
+      outputSchema: {
+        aliases: z.array(
+          z.object({
+            alias: z.string(),
+            updatedAt: z.string(),
+            scope: z.enum(["global", "project"]),
+            projectRoot: z.string().nullable(),
+          }),
+        ),
+      },
+    },
+    async ({ cwd }) => {
+      const aliases = secretVault.listAliases(cwd);
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ aliases }),
+      };
+    },
+  );
+
+  server.registerTool(
+    "secure_terminal_exec",
+    {
+      title: "Secure terminal exec",
+      description:
+        "Execute a terminal command with secret env aliases injected server-side without exposing secret values.",
+      inputSchema: {
+        cwd: z
+          .string()
+          .optional()
+          .describe("Optional working directory. Defaults to caller agent cwd."),
+        command: z.string().min(1),
+        secretAliases: z.array(z.string().min(1)).default([]),
+        captureLines: z.number().int().positive().max(500).optional(),
+        waitMs: z.number().int().nonnegative().max(60_000).optional(),
+      },
+      outputSchema: {
+        terminalId: z.string(),
+        lines: z.array(z.string()),
+        totalLines: z.number().int().nonnegative(),
+      },
+    },
+    async ({ cwd, command, secretAliases, captureLines, waitMs }) => {
+      if (!terminalManager) {
+        throw new Error("Terminal manager is not configured");
+      }
+      const resolvedCwd = resolveScopedCwd(cwd, { required: true });
+      const configSnapshot: MutableDaemonConfig = daemonConfigStore?.get() ?? {
+        mcp: { injectIntoAgents: true },
+      };
+      const policy = resolveSecretsPolicy(configSnapshot);
+      const { needsApproval } = evaluateSecureExecPolicy(policy, {
+        cwd: resolvedCwd,
+        command,
+        secretAliases,
+      });
+
+      if (needsApproval) {
+        if (!secureTerminalExecCoordinator) {
+          throw new Error(
+            "Secure terminal exec requires approval for one or more secret aliases, but the daemon approval coordinator is unavailable",
+          );
+        }
+        const approvalId = secureTerminalExecCoordinator.createApprovalId();
+        await secureTerminalExecCoordinator.waitForApproval({
+          approvalId,
+          cwd: resolvedCwd,
+          command,
+          secretAliases,
+          source: "mcp",
+          agentId: callerAgentId ?? null,
+          timeoutMs: policy.approvalTimeoutMs,
+        });
+      }
+
+      const result = await runSecureTerminalExec({
+        terminalManager,
+        secretVault,
+        cwd: resolvedCwd,
+        command,
+        secretAliases,
+        captureLines,
+        waitMs,
+      });
+
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          terminalId: result.terminalId,
+          lines: result.lines,
+          totalLines: result.totalLines,
+        }),
       };
     },
   );
