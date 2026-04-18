@@ -363,7 +363,8 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
         draftKey,
         draft: {
           text: appendTextTokenToComposer({ value: "", token: reference }),
-          images: [],
+          attachments: [],
+          cwd: resolvedWorkspaceId,
         },
       });
 
