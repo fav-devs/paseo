@@ -5684,19 +5684,24 @@ export class Session {
       activeRecords.map((workspace) => [workspace.cwd, workspace.workspaceId] as const),
     );
 
-    for (const workspace of activeRecords) {
-      if (workspaceIds && !workspaceIds.has(workspace.workspaceId)) {
-        continue;
-      }
-      const projectRecord = activeProjects.get(workspace.projectId) ?? null;
-      descriptorsByWorkspaceId.set(
-        workspace.workspaceId,
-        await this.buildWorkspaceDescriptor({
+    const workspacesToBuild = options.workspaceIds
+      ? activeRecords.filter((w) => workspaceIds!.has(w.workspaceId))
+      : activeRecords;
+
+    const descriptorEntries = await Promise.all(
+      workspacesToBuild.map(async (workspace) => {
+        const projectRecord = activeProjects.get(workspace.projectId) ?? null;
+        const descriptor = await this.buildWorkspaceDescriptor({
           workspace,
           projectRecord,
           includeGitData: options.includeGitData,
-        }),
-      );
+        });
+        return [workspace.workspaceId, descriptor] as const;
+      }),
+    );
+
+    for (const [id, descriptor] of descriptorEntries) {
+      descriptorsByWorkspaceId.set(id, descriptor);
     }
 
     for (const agent of agents) {

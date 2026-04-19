@@ -96,21 +96,19 @@ async function resolveEditorTargets(
   const platform = dependencies.platform ?? process.platform;
   const findExecutableFn = dependencies.findExecutable ?? findExecutable;
 
-  const results: EditorTargetDescriptorPayload[] = [];
-  for (const target of EDITOR_TARGETS) {
-    if (!isTargetSupportedOnPlatform(target, platform)) {
-      continue;
-    }
-    const executable = await findExecutableFn(target.command);
-    if (!executable) {
-      continue;
-    }
-    results.push({
-      id: target.id,
-      label: target.label,
-    });
-  }
-  return results;
+  const supportedTargets = EDITOR_TARGETS.filter((target) =>
+    isTargetSupportedOnPlatform(target, platform),
+  );
+
+  const results = await Promise.all(
+    supportedTargets.map(async (target) => {
+      const executable = await findExecutableFn(target.command);
+      if (!executable) return null;
+      return { id: target.id, label: target.label } satisfies EditorTargetDescriptorPayload;
+    }),
+  );
+
+  return results.filter((r): r is NonNullable<(typeof results)[number]> => r !== null);
 }
 
 type Launch = {

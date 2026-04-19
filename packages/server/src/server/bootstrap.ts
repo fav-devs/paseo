@@ -118,6 +118,7 @@ import { SecureTerminalExecCoordinator } from "./secure-terminal-exec-coordinato
 import { createConnectionOfferV2, encodeOfferToFragmentUrl } from "./connection-offer.js";
 import { loadOrCreateDaemonKeyPair } from "./daemon-keypair.js";
 import { startRelayTransport, type RelayTransportController } from "./relay-transport.js";
+import { listAvailableEditorTargets } from "./editor-targets.js";
 import { getOrCreateServerId } from "./server-id.js";
 import { resolveDaemonVersion } from "./daemon-version.js";
 import type { AgentClient, AgentProvider } from "./agent/agent-sdk-types.js";
@@ -463,6 +464,9 @@ export async function createPaseoDaemon(
       paseoHome: config.paseoHome,
       workspaceGitService,
     });
+    // Warm the editor targets cache in the background so the first client request
+    // doesn't have to wait 30-180s for the initial editor discovery.
+    void listAvailableEditorTargets();
     const loopService = new LoopService({
       paseoHome: config.paseoHome,
       logger,
