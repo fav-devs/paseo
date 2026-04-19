@@ -1104,7 +1104,24 @@ async function getUntrackedDiffText(
   };
 }
 
+// In-flight deduplication for checkout status: concurrent requests for the same cwd
+// share one set of git subprocess calls instead of each spawning their own.
+const checkoutStatusInFlight = new Map<string, Promise<CheckoutStatusResult>>();
+
 export async function getCheckoutStatus(
+  cwd: string,
+  context?: CheckoutContext,
+): Promise<CheckoutStatusResult> {
+  const existing = checkoutStatusInFlight.get(cwd);
+  if (existing) return existing;
+  const promise = resolveCheckoutStatus(cwd, context).finally(() => {
+    checkoutStatusInFlight.delete(cwd);
+  });
+  checkoutStatusInFlight.set(cwd, promise);
+  return promise;
+}
+
+async function resolveCheckoutStatus(
   cwd: string,
   context?: CheckoutContext,
 ): Promise<CheckoutStatusResult> {
@@ -1571,12 +1588,40 @@ export interface CheckoutHistoryEntry {
   refs: string[];
 }
 
+// Short TTL cache + in-flight dedup for history graph. git log is stable between rapid
+// requests and doesn't change unless a commit happens (watcher-triggered invalidation
+// isn't worth the complexity; 5s TTL is enough to absorb reconnect bursts).
+const checkoutHistoryCache = new TTLCache<string, CheckoutHistoryEntry[]>({ ttl: 5_000 });
+const checkoutHistoryInFlight = new Map<string, Promise<CheckoutHistoryEntry[]>>();
+
 export async function getCheckoutHistoryGraph(
   cwd: string,
   options: { limit?: number } = {},
 ): Promise<CheckoutHistoryEntry[]> {
-  await requireGitRepo(cwd);
   const limit = Math.max(1, Math.min(options.limit ?? 30, 200));
+  const cacheKey = `${cwd}:${limit}`;
+
+  const cached = checkoutHistoryCache.get(cacheKey);
+  if (cached) return cached;
+
+  const existing = checkoutHistoryInFlight.get(cacheKey);
+  if (existing) return existing;
+
+  const promise = resolveCheckoutHistoryGraph(cwd, limit).then((result) => {
+    checkoutHistoryCache.set(cacheKey, result);
+    return result;
+  }).finally(() => {
+    checkoutHistoryInFlight.delete(cacheKey);
+  });
+  checkoutHistoryInFlight.set(cacheKey, promise);
+  return promise;
+}
+
+async function resolveCheckoutHistoryGraph(
+  cwd: string,
+  limit: number,
+): Promise<CheckoutHistoryEntry[]> {
+  await requireGitRepo(cwd);
   const fieldDelimiter = "\u001f";
 
   try {

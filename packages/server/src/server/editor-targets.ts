@@ -66,8 +66,32 @@ function resolveEditorTargetDefinition(editorId: EditorTargetId): EditorTargetDe
   return target;
 }
 
+// Cache the editor list for the daemon's lifetime — installed editors don't change at runtime.
+// Only applies when using default deps (i.e. real production path, not tests with overrides).
+let defaultEditorTargetsCache: EditorTargetDescriptorPayload[] | null = null;
+let defaultEditorTargetsInFlight: Promise<EditorTargetDescriptorPayload[]> | null = null;
+
 export async function listAvailableEditorTargets(
   dependencies: ListAvailableEditorTargetsDependencies = {},
+): Promise<EditorTargetDescriptorPayload[]> {
+  const usingDefaults = !dependencies.platform && !dependencies.findExecutable;
+
+  if (usingDefaults) {
+    if (defaultEditorTargetsCache) return defaultEditorTargetsCache;
+    if (defaultEditorTargetsInFlight) return defaultEditorTargetsInFlight;
+    defaultEditorTargetsInFlight = resolveEditorTargets({}).then((result) => {
+      defaultEditorTargetsCache = result;
+      defaultEditorTargetsInFlight = null;
+      return result;
+    });
+    return defaultEditorTargetsInFlight;
+  }
+
+  return resolveEditorTargets(dependencies);
+}
+
+async function resolveEditorTargets(
+  dependencies: ListAvailableEditorTargetsDependencies,
 ): Promise<EditorTargetDescriptorPayload[]> {
   const platform = dependencies.platform ?? process.platform;
   const findExecutableFn = dependencies.findExecutable ?? findExecutable;
