@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { useSessionStore } from "@/stores/session-store";
 import { getIsElectron } from "@/constants/platform";
 import { invokeDesktopCommand } from "@/desktop/electron/invoke";
+import { useHostRuntimeSnapshot } from "@/runtime/host-runtime";
 
 type ListPortForwardsPayload = ListPortForwardsResponse["payload"];
 type PortForwardEntry = ListPortForwardsPayload["portForwards"][number];
@@ -329,6 +330,11 @@ export function PortForwardsPane({
   const queryClient = useQueryClient();
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
   const isElectron = getIsElectron();
+  const runtimeSnapshot = useHostRuntimeSnapshot(serverId);
+  const activeConnectionType = runtimeSnapshot?.activeConnection?.type ?? null;
+  // Tunneled forwarding requires a local socket/pipe transport (set via open_local_daemon_transport).
+  // Relay and direct TCP connections don't have a local transport path, so fall back to LocalForm.
+  const useTunneledForm = isElectron && (activeConnectionType === "directSocket" || activeConnectionType === "directPipe");
 
   const queryKey = useMemo(
     () => ["port-forwards", serverId, workspaceId] as const,
@@ -373,7 +379,7 @@ export function PortForwardsPane({
 
   const closeMutation = useMutation({
     mutationFn: async (entry: PortForwardEntry) => {
-      if (entry.tunneled && isElectron) {
+      if (entry.tunneled && useTunneledForm) {
         await invokeDesktopCommand("close_tunneled_port_forward", { portForwardId: entry.id });
         return { success: true, portForwardId: entry.id };
       }
@@ -433,10 +439,10 @@ export function PortForwardsPane({
         <View style={styles.sectionHeader}>
           <Network size={14} color={theme.colors.foregroundMuted} />
           <Text style={[styles.sectionTitle, { color: theme.colors.foreground }]}>
-            {isElectron ? "Forward port" : "New port forward"}
+            {useTunneledForm ? "Forward port" : "New port forward"}
           </Text>
         </View>
-        {isElectron ? (
+        {useTunneledForm ? (
           <>
             <Text style={[styles.helperText, { color: theme.colors.foregroundMuted }]}>
               Enter a port running on the daemon machine. It will be available at the same port
