@@ -785,22 +785,36 @@ export class HostRuntimeController {
       };
 
       for (const connection of connectionsToProbe) {
+        // For the currently active + online connection, reuse the existing client
+        // instead of opening a fresh WebSocket just to ping and immediately close it.
+        // This prevents a new relay data socket being created and destroyed every
+        // PROBE_STEADY_MS seconds, which was causing constant reconnect bursts.
+        const isActiveOnlineConnection =
+          isOnline && connection.id === activeConnectionId && this.snapshot.client;
         void (async () => {
           let connectedClient: DaemonClient | null = null;
           let handedOffClient = false;
           try {
-            const { client } = await this.deps.connectToDaemon({
-              host: this.host,
-              connection,
-            });
-            connectedClient = client;
+            let client: DaemonClient;
+            if (isActiveOnlineConnection) {
+              client = this.snapshot.client!;
+            } else {
+              const result = await this.deps.connectToDaemon({
+                host: this.host,
+                connection,
+              });
+              connectedClient = result.client;
+              client = result.client;
+            }
 
             if (!this.isCurrentProbeRequest(requestVersion)) {
               return;
             }
 
-            const activated = await maybeActivateFirstAvailable(connection.id, client);
-            handedOffClient = activated;
+            if (!isActiveOnlineConnection) {
+              const activated = await maybeActivateFirstAvailable(connection.id, client);
+              handedOffClient = activated;
+            }
 
             const { rttMs } = await client.ping({ timeoutMs: 5000 });
             if (!this.isCurrentProbeRequest(requestVersion)) {
