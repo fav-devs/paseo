@@ -1,5 +1,4 @@
 import { Command, Option } from "commander";
-import { createRequire } from "node:module";
 import { createAgentCommand } from "./commands/agent/index.js";
 import { createDaemonCommand } from "./commands/daemon/index.js";
 import { createChatCommand } from "./commands/chat/index.js";
@@ -30,22 +29,15 @@ import {
   addJsonAndDaemonHostOptions,
   addJsonOption,
 } from "./utils/command-options.js";
-
-const require = createRequire(import.meta.url);
-
-type CliPackageJson = {
-  version?: unknown;
-};
-
-function resolveCliVersion(): string {
-  const packageJson = require("../package.json") as CliPackageJson;
-  if (typeof packageJson.version === "string" && packageJson.version.trim().length > 0) {
-    return packageJson.version.trim();
-  }
-  throw new Error("Unable to resolve @getpaseo/cli version from package.json.");
-}
+import { resolveCliVersion } from "./version.js";
 
 const VERSION = resolveCliVersion();
+
+function resolveHostnamesOption(hostnames: unknown, allowedHosts: unknown): string | undefined {
+  if (typeof hostnames === "string") return hostnames;
+  if (typeof allowedHosts === "string") return allowedHosts;
+  return undefined;
+}
 
 export function createCli(): Command {
   const program = new Command();
@@ -134,12 +126,7 @@ export function createCli(): Command {
         return runDaemonRestartCommand(
           {
             ...options,
-            hostnames:
-              typeof options.hostnames === "string"
-                ? options.hostnames
-                : typeof options.allowedHosts === "string"
-                  ? options.allowedHosts
-                  : undefined,
+            hostnames: resolveHostnamesOption(options.hostnames, options.allowedHosts),
           },
           command,
         );

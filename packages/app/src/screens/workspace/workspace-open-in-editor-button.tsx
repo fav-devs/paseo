@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useMemo } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Pressable,
+  Text,
+  View,
+  type PressableStateCallbackType,
+} from "react-native";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Check, ChevronDown } from "lucide-react-native";
-import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { EditorTargetDescriptorPayload, EditorTargetId } from "@server/shared/messages";
 import { EditorAppIcon } from "@/components/icons/editor-app-icons";
 import {
@@ -16,14 +22,55 @@ import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-
 import { resolvePreferredEditorId, usePreferredEditor } from "@/hooks/use-preferred-editor";
 import { isAbsolutePath } from "@/utils/path";
 import { isWeb } from "@/constants/platform";
+import type { Theme } from "@/styles/theme";
 
 interface WorkspaceOpenInEditorButtonProps {
   serverId: string;
   cwd: string;
+  hideLabels?: boolean;
 }
 
-export function WorkspaceOpenInEditorButton({ serverId, cwd }: WorkspaceOpenInEditorButtonProps) {
-  const { theme } = useUnistyles();
+interface EditorMenuItemProps {
+  editor: EditorTargetDescriptorPayload;
+  isPreferred: boolean;
+  onOpen: (editorId: EditorTargetId) => void;
+}
+
+const ThemedActivityIndicator = withUnistyles(ActivityIndicator);
+const ThemedEditorAppIcon = withUnistyles(EditorAppIcon);
+const ThemedChevronDown = withUnistyles(ChevronDown);
+const ThemedCheckIcon = withUnistyles(Check);
+
+const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
+const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+
+function EditorMenuItem({ editor, isPreferred, onOpen }: EditorMenuItemProps) {
+  const handleSelect = useCallback(() => onOpen(editor.id), [onOpen, editor.id]);
+  const leading = useMemo(
+    () => <ThemedEditorAppIcon editorId={editor.id} size={16} uniProps={mutedColorMapping} />,
+    [editor.id],
+  );
+  const trailing = useMemo(
+    () => (isPreferred ? <ThemedCheckIcon size={16} uniProps={mutedColorMapping} /> : undefined),
+    [isPreferred],
+  );
+  return (
+    <DropdownMenuItem
+      testID={`workspace-open-in-editor-item-${editor.id}`}
+      leading={leading}
+      trailing={trailing}
+      onSelect={handleSelect}
+    >
+      {editor.label}
+    </DropdownMenuItem>
+  );
+}
+
+export function WorkspaceOpenInEditorButton({
+  serverId,
+  cwd,
+  hideLabels,
+}: WorkspaceOpenInEditorButtonProps) {
   const toast = useToast();
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
@@ -50,7 +97,8 @@ export function WorkspaceOpenInEditorButton({ serverId, cwd }: WorkspaceOpenInEd
     },
   });
 
-  const availableEditors = availableEditorsQuery.data ?? [];
+  const availableEditorsRaw = availableEditorsQuery.data;
+  const availableEditors = useMemo(() => availableEditorsRaw ?? [], [availableEditorsRaw]);
   const availableEditorIds = useMemo(
     () => availableEditors.map((editor: EditorTargetDescriptorPayload) => editor.id),
     [availableEditors],
@@ -95,6 +143,28 @@ export function WorkspaceOpenInEditorButton({ serverId, cwd }: WorkspaceOpenInEd
     [openMutation, updatePreferredEditor],
   );
 
+  const primaryPressableStyle = useCallback(
+    ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
+      styles.splitButtonPrimary,
+      (Boolean(hovered) || pressed) && styles.splitButtonPrimaryHovered,
+      openMutation.isPending && styles.splitButtonPrimaryDisabled,
+    ],
+    [openMutation.isPending],
+  );
+
+  const caretTriggerStyle = useCallback(
+    ({ hovered, pressed, open }: { hovered: boolean; pressed: boolean; open: boolean }) => [
+      styles.splitButtonCaret,
+      (hovered || pressed || open) && styles.splitButtonCaretHovered,
+    ],
+    [],
+  );
+
+  const primaryId = primaryOption?.id;
+  const handlePrimaryPress = useCallback(() => {
+    if (primaryId) handleOpenEditor(primaryId);
+  }, [primaryId, handleOpenEditor]);
+
   if (!shouldLoadEditors || !primaryOption || availableEditors.length === 0) {
     return null;
   }
@@ -104,30 +174,26 @@ export function WorkspaceOpenInEditorButton({ serverId, cwd }: WorkspaceOpenInEd
       <View style={styles.splitButton}>
         <Pressable
           testID="workspace-open-in-editor-primary"
-          style={({ hovered, pressed }) => [
-            styles.splitButtonPrimary,
-            (hovered || pressed) && styles.splitButtonPrimaryHovered,
-            openMutation.isPending && styles.splitButtonPrimaryDisabled,
-          ]}
-          onPress={() => handleOpenEditor(primaryOption.id)}
+          style={primaryPressableStyle}
+          onPress={handlePrimaryPress}
           disabled={openMutation.isPending}
           accessibilityRole="button"
           accessibilityLabel={`Open workspace in ${primaryOption.label}`}
         >
           {openMutation.isPending ? (
-            <ActivityIndicator
+            <ThemedActivityIndicator
               size="small"
-              color={theme.colors.foreground}
+              uniProps={foregroundColorMapping}
               style={styles.splitButtonSpinnerOnly}
             />
           ) : (
             <View style={styles.splitButtonContent}>
-              <EditorAppIcon
+              <ThemedEditorAppIcon
                 editorId={primaryOption.id}
                 size={16}
-                color={theme.colors.foregroundMuted}
+                uniProps={mutedColorMapping}
               />
-              <Text style={styles.splitButtonText}>Open</Text>
+              {!hideLabels && <Text style={styles.splitButtonText}>Open</Text>}
             </View>
           )}
         </Pressable>
@@ -135,14 +201,11 @@ export function WorkspaceOpenInEditorButton({ serverId, cwd }: WorkspaceOpenInEd
           <DropdownMenu>
             <DropdownMenuTrigger
               testID="workspace-open-in-editor-caret"
-              style={({ hovered, pressed, open }) => [
-                styles.splitButtonCaret,
-                (hovered || pressed || open) && styles.splitButtonCaretHovered,
-              ]}
+              style={caretTriggerStyle}
               accessibilityRole="button"
               accessibilityLabel="Choose editor"
             >
-              <ChevronDown size={16} color={theme.colors.foregroundMuted} />
+              <ThemedChevronDown size={16} uniProps={mutedColorMapping} />
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"
@@ -151,25 +214,12 @@ export function WorkspaceOpenInEditorButton({ serverId, cwd }: WorkspaceOpenInEd
               testID="workspace-open-in-editor-menu"
             >
               {availableEditors.map((editor: EditorTargetDescriptorPayload) => (
-                <DropdownMenuItem
+                <EditorMenuItem
                   key={editor.id}
-                  testID={`workspace-open-in-editor-item-${editor.id}`}
-                  leading={
-                    <EditorAppIcon
-                      editorId={editor.id}
-                      size={16}
-                      color={theme.colors.foregroundMuted}
-                    />
-                  }
-                  trailing={
-                    editor.id === effectivePreferredEditorId ? (
-                      <Check size={16} color={theme.colors.foregroundMuted} />
-                    ) : undefined
-                  }
-                  onSelect={() => handleOpenEditor(editor.id)}
-                >
-                  {editor.label}
-                </DropdownMenuItem>
+                  editor={editor}
+                  isPreferred={editor.id === effectivePreferredEditorId}
+                  onOpen={handleOpenEditor}
+                />
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
@@ -196,7 +246,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   splitButtonPrimary: {
     paddingLeft: theme.spacing[3],
-    paddingRight: 10,
+    paddingRight: theme.spacing[3],
+    paddingVertical: theme.spacing[1],
+    justifyContent: "center",
+    position: "relative",
+  },
+  splitButtonPrimaryIconOnly: {
+    paddingLeft: theme.spacing[2],
+    paddingRight: theme.spacing[2],
     paddingVertical: theme.spacing[1],
     justifyContent: "center",
     position: "relative",

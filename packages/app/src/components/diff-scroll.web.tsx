@@ -25,13 +25,18 @@ export function DiffScroll({
   contentContainerStyle,
 }: DiffScrollProps) {
   const webScrollbarStyle = useWebScrollbarStyle();
+  const combinedStyle = useMemo(() => [style, webScrollbarStyle], [style, webScrollbarStyle]);
+  const handleLayout = useCallback(
+    (e: LayoutChangeEvent) => onScrollViewWidthChange(e.nativeEvent.layout.width),
+    [onScrollViewWidthChange],
+  );
 
   return (
     <ScrollView
       horizontal
       nestedScrollEnabled
       showsHorizontalScrollIndicator
-      style={[style, webScrollbarStyle]}
+      style={combinedStyle}
       contentContainerStyle={contentContainerStyle}
       onScroll={onScroll}
       onLayout={(e: LayoutChangeEvent) => onScrollViewWidthChange(e.nativeEvent.layout.width)}

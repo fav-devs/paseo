@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import type { CheckoutPrStatusResponse } from "@server/shared/messages";
 
@@ -15,6 +16,7 @@ interface UseCheckoutPrStatusQueryOptions {
 }
 
 export type CheckoutPrStatusPayload = CheckoutPrStatusResponse["payload"];
+
 export interface PrHint {
   url: string;
   number: number;
@@ -50,15 +52,15 @@ function selectWorkspacePrHint(payload: CheckoutPrStatusPayload): PrHint | null 
     return null;
   }
 
+  let state: "merged" | "open" | "closed";
+  if (status.isMerged || status.state === "merged") state = "merged";
+  else if (status.state === "open") state = "open";
+  else state = "closed";
+
   return {
     url: status.url,
     number,
-    state:
-      status.isMerged || status.state === "merged"
-        ? "merged"
-        : status.state === "open"
-          ? "open"
-          : "closed",
+    state,
     checks: status.checks,
     checksStatus: status.checksStatus as PrHint["checksStatus"],
     reviewDecision: status.reviewDecision as PrHint["reviewDecision"],
@@ -70,8 +72,23 @@ export function useCheckoutPrStatusQuery({
   cwd,
   enabled = true,
 }: UseCheckoutPrStatusQueryOptions) {
+  const queryClient = useQueryClient();
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
+
+  useEffect(() => {
+    if (!client || !isConnected || !cwd) {
+      return;
+    }
+
+    return client.on("checkout_status_update", (message) => {
+      const prStatus = message.payload.prStatus;
+      if (!prStatus || prStatus.cwd !== cwd) {
+        return;
+      }
+      queryClient.setQueryData(checkoutPrStatusQueryKey(serverId, cwd), prStatus);
+    });
+  }, [client, isConnected, cwd, queryClient, serverId]);
 
   const query = useQuery({
     queryKey: checkoutPrStatusQueryKey(serverId, cwd),
@@ -95,7 +112,6 @@ export function useCheckoutPrStatusQuery({
     isFetching: query.isFetching,
     isError: query.isError,
     error: query.error,
-    refresh: query.refetch,
   };
 }
 
@@ -104,8 +120,23 @@ export function useWorkspacePrHint({
   cwd,
   enabled = true,
 }: UseCheckoutPrStatusQueryOptions): PrHint | null {
+  const queryClient = useQueryClient();
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
+
+  useEffect(() => {
+    if (!client || !isConnected || !cwd) {
+      return;
+    }
+
+    return client.on("checkout_status_update", (message) => {
+      const prStatus = message.payload.prStatus;
+      if (!prStatus || prStatus.cwd !== cwd) {
+        return;
+      }
+      queryClient.setQueryData(checkoutPrStatusQueryKey(serverId, cwd), prStatus);
+    });
+  }, [client, isConnected, cwd, queryClient, serverId]);
 
   const query = useQuery<CheckoutPrStatusPayload, Error, PrHint | null>({
     queryKey: checkoutPrStatusQueryKey(serverId, cwd),

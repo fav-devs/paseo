@@ -3,26 +3,29 @@ import { View, Text, Pressable } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import Animated from "react-native-reanimated";
 import {
-  BottomSheetModal,
   BottomSheetScrollView,
   BottomSheetBackdrop,
   BottomSheetBackgroundProps,
 } from "@gorhom/bottom-sheet";
 import { X } from "lucide-react-native";
 import type { ToolCallDetail } from "@server/server/agent/agent-sdk-types";
+import {
+  IsolatedBottomSheetModal,
+  type IsolatedBottomSheetModalRef,
+} from "@/components/ui/isolated-bottom-sheet-modal";
 import { resolveToolCallIcon } from "@/utils/tool-call-icon";
 import { ToolCallDetailsContent } from "./tool-call-details";
 
 // ----- Types -----
 
-export type ToolCallSheetData = {
+export interface ToolCallSheetData {
   toolName: string;
   displayName: string;
   summary?: string;
   detail?: ToolCallDetail;
   errorText?: string;
   showLoadingSkeleton?: boolean;
-};
+}
 
 interface ToolCallSheetContextValue {
   openToolCall: (data: ToolCallSheetData) => void;
@@ -60,18 +63,25 @@ interface ToolCallSheetProviderProps {
 
 export function ToolCallSheetProvider({ children }: ToolCallSheetProviderProps) {
   const { theme } = useUnistyles();
-  const bottomSheetRef = useRef<BottomSheetModal>(null);
+  const bottomSheetRef = useRef<IsolatedBottomSheetModalRef>(null);
+  const hasPresentedRef = useRef(false);
   const [sheetData, setSheetData] = React.useState<ToolCallSheetData | null>(null);
 
   const snapPoints = useMemo(() => ["60%", "95%"], []);
 
   const openToolCall = useCallback((data: ToolCallSheetData) => {
     setSheetData(data);
+    if (hasPresentedRef.current) {
+      requestAnimationFrame(() => bottomSheetRef.current?.snapToIndex(0));
+      return;
+    }
+
+    hasPresentedRef.current = true;
     bottomSheetRef.current?.present();
   }, []);
 
   const closeToolCall = useCallback(() => {
-    bottomSheetRef.current?.dismiss();
+    bottomSheetRef.current?.close();
   }, []);
 
   const handleSheetChange = useCallback((index: number) => {
@@ -92,23 +102,27 @@ export function ToolCallSheetProvider({ children }: ToolCallSheetProviderProps) 
     [openToolCall, closeToolCall],
   );
 
+  const handleIndicatorStyle = useMemo(
+    () => ({ backgroundColor: theme.colors.palette.zinc[600] }),
+    [theme.colors.palette.zinc],
+  );
+
   return (
     <ToolCallSheetContext.Provider value={contextValue}>
       {children}
-      <BottomSheetModal
+      <IsolatedBottomSheetModal
         ref={bottomSheetRef}
         snapPoints={snapPoints}
         index={0}
-        stackBehavior="replace"
         enableDynamicSizing={false}
         onChange={handleSheetChange}
         backdropComponent={renderBackdrop}
         enablePanDownToClose
         backgroundComponent={CustomSheetBackground}
-        handleIndicatorStyle={{ backgroundColor: theme.colors.palette.zinc[600] }}
+        handleIndicatorStyle={handleIndicatorStyle}
       >
         {sheetData && <ToolCallSheetContent data={sheetData} onClose={closeToolCall} />}
-      </BottomSheetModal>
+      </IsolatedBottomSheetModal>
     </ToolCallSheetContext.Provider>
   );
 }

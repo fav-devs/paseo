@@ -20,6 +20,92 @@ describe("workspace message schemas", () => {
     expect(parsed.type).toBe("fetch_workspaces_request");
   });
 
+  test("parses active-scoped fetch_agents_request as an optional extension", () => {
+    const legacy = SessionInboundMessageSchema.parse({
+      type: "fetch_agents_request",
+      requestId: "req-agents-legacy",
+      page: { limit: 50 },
+    });
+    const activeScoped = SessionInboundMessageSchema.parse({
+      type: "fetch_agents_request",
+      requestId: "req-agents-active",
+      scope: "active",
+      page: { limit: 50 },
+      subscribe: {},
+    });
+
+    expect(legacy.type).toBe("fetch_agents_request");
+    expect(activeScoped.type).toBe("fetch_agents_request");
+    if (activeScoped.type !== "fetch_agents_request") {
+      throw new Error("Expected fetch_agents_request");
+    }
+    expect(activeScoped.scope).toBe("active");
+  });
+
+  test("parses agent_update without project placement", () => {
+    const result = SessionOutboundMessageSchema.safeParse({
+      type: "agent_update",
+      payload: {
+        kind: "upsert",
+        agent: {
+          id: "agent-1",
+          provider: "codex",
+          cwd: "/tmp/repo",
+          model: null,
+          features: [],
+          thinkingOptionId: null,
+          effectiveThinkingOptionId: null,
+          createdAt: "2026-04-04T00:00:00.000Z",
+          updatedAt: "2026-04-04T00:00:00.000Z",
+          lastUserMessageAt: null,
+          status: "running",
+          capabilities: {
+            supportsStreaming: true,
+            supportsSessionPersistence: true,
+            supportsDynamicModes: true,
+            supportsMcpServers: true,
+            supportsReasoningStream: true,
+            supportsToolInvocations: true,
+          },
+          currentModeId: null,
+          availableModes: [],
+          pendingPermissions: [],
+          persistence: null,
+          title: null,
+          labels: {},
+          requiresAttention: false,
+          attentionReason: null,
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  test("parses paginated fetch_agent_history_request and response", () => {
+    const request = SessionInboundMessageSchema.parse({
+      type: "fetch_agent_history_request",
+      requestId: "req-history",
+      page: { limit: 25, cursor: "cursor-1" },
+      sort: [{ key: "updated_at", direction: "desc" }],
+    });
+    const response = SessionOutboundMessageSchema.parse({
+      type: "fetch_agent_history_response",
+      payload: {
+        requestId: "req-history",
+        entries: [],
+        pageInfo: {
+          nextCursor: "cursor-2",
+          prevCursor: "cursor-1",
+          hasMore: true,
+        },
+      },
+    });
+
+    expect(request.type).toBe("fetch_agent_history_request");
+    expect(response.type).toBe("fetch_agent_history_response");
+  });
+
   test("parses open_project_request", () => {
     const parsed = SessionInboundMessageSchema.parse({
       type: "open_project_request",
@@ -163,8 +249,36 @@ describe("workspace message schemas", () => {
         lifecycle: "running",
         health: "healthy",
         exitCode: null,
+        terminalId: null,
       },
     ]);
+  });
+
+  test("parses legacy workspace descriptors without workspaceDirectory", () => {
+    const parsed = SessionOutboundMessageSchema.parse({
+      type: "workspace_update",
+      payload: {
+        kind: "upsert",
+        workspace: {
+          id: "legacy-workspace",
+          projectId: "legacy-project",
+          projectDisplayName: "repo",
+          projectRootPath: "/repo",
+          projectKind: "git",
+          workspaceKind: "local_checkout",
+          name: "repo",
+          status: "done",
+          activityAt: null,
+          scripts: [],
+        },
+      },
+    });
+
+    expect(parsed.type).toBe("workspace_update");
+    if (parsed.type !== "workspace_update" || parsed.payload.kind !== "upsert") {
+      throw new Error("Expected workspace_update upsert payload");
+    }
+    expect(parsed.payload.workspace.workspaceDirectory).toBe("/repo");
   });
 
   test("parses legacy workspace descriptor enum values", () => {

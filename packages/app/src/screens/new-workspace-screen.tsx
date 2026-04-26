@@ -1,6 +1,9 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
+import type { PressableStateCallbackType } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Animated from "react-native-reanimated";
 import { createNameId } from "mnemonic-id";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, GitBranch, GitPullRequest } from "lucide-react-native";
@@ -12,24 +15,21 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { SidebarMenuToggle } from "@/components/headers/menu-header";
 import { ScreenHeader } from "@/components/headers/screen-header";
-import {
-  HEADER_INNER_HEIGHT,
-  HEADER_INNER_HEIGHT_MOBILE,
-  HEADER_TOP_PADDING_MOBILE,
-  MAX_CONTENT_WIDTH,
-} from "@/constants/layout";
+import { HEADER_INNER_HEIGHT, MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { useToast } from "@/contexts/toast-context";
 import { useAgentInputDraft } from "@/hooks/use-agent-input-draft";
+import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { normalizeWorkspaceDescriptor, useSessionStore } from "@/stores/session-store";
-import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
-import { encodeImages } from "@/utils/encode-images";
+import { buildDraftStoreKey, generateDraftId } from "@/stores/draft-keys";
+import { useDraftStore } from "@/stores/draft-store";
+import { useWorkspaceDraftSubmissionStore } from "@/stores/workspace-draft-submission-store";
 import { toErrorMessage } from "@/utils/error-messages";
-import { requireWorkspaceExecutionAuthority } from "@/utils/workspace-execution";
 import { navigateToPreparedWorkspaceTab } from "@/utils/workspace-navigation";
 import type { ComposerAttachment } from "@/attachments/types";
 import type { ImageAttachment, MessagePayload } from "@/components/message-input";
 import type { AgentAttachment, GitHubSearchItem } from "@server/shared/messages";
+import type { AgentProvider } from "@server/server/agent/agent-sdk-types";
 import { pickerItemToCheckoutRequest, type PickerItem } from "./new-workspace-picker-item";
 
 interface NewWorkspaceScreenProps {
@@ -41,8 +41,6 @@ interface NewWorkspaceScreenProps {
 interface PickerOptionData {
   options: ComboboxOptionType[];
   itemById: Map<string, PickerItem>;
-  firstBranchId: string | null;
-  firstPrId: string | null;
 }
 
 interface PickerSelection {
@@ -52,6 +50,129 @@ interface PickerSelection {
 
 const BRANCH_OPTION_PREFIX = "branch:";
 const PR_OPTION_PREFIX = "github-pr:";
+
+function RefPickerBadgeContent({
+  selectedItem,
+  triggerLabel,
+  iconColor,
+  iconSize,
+}: {
+  selectedItem: PickerItem | null;
+  triggerLabel: string;
+  iconColor: string;
+  iconSize: number;
+}) {
+  return (
+    <>
+      <View style={styles.badgeIconBox}>
+        {selectedItem?.kind === "github-pr" ? (
+          <GitPullRequest size={iconSize} color={iconColor} />
+        ) : (
+          <GitBranch size={iconSize} color={iconColor} />
+        )}
+      </View>
+      <Text style={styles.badgeText} numberOfLines={1}>
+        {triggerLabel}
+      </Text>
+      <ChevronDown size={iconSize} color={iconColor} />
+    </>
+  );
+}
+
+function RefPickerTrigger({
+  pickerAnchorRef,
+  onPress,
+  disabled,
+  badgePressableStyle,
+  selectedItem,
+  triggerLabel,
+  iconColor,
+  iconSize,
+}: {
+  pickerAnchorRef: React.RefObject<View | null>;
+  onPress: () => void;
+  disabled: boolean;
+  badgePressableStyle: React.ComponentProps<typeof Pressable>["style"];
+  selectedItem: PickerItem | null;
+  triggerLabel: string;
+  iconColor: string;
+  iconSize: number;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild triggerRefProp="ref">
+        <Pressable
+          ref={pickerAnchorRef}
+          testID="new-workspace-ref-picker-trigger"
+          onPress={onPress}
+          disabled={disabled}
+          style={badgePressableStyle}
+          accessibilityRole="button"
+          accessibilityLabel="Starting ref"
+        >
+          <RefPickerBadgeContent
+            selectedItem={selectedItem}
+            triggerLabel={triggerLabel}
+            iconColor={iconColor}
+            iconSize={iconSize}
+          />
+        </Pressable>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="center" offset={8}>
+        <Text style={styles.tooltipText}>Choose where to start from</Text>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function PickerOptionItem({
+  testID,
+  label,
+  description,
+  selected,
+  active,
+  disabled,
+  onPress,
+  isBranch,
+  iconColor,
+  iconSize,
+}: {
+  testID: string;
+  label: string;
+  description: string | undefined;
+  selected: boolean;
+  active: boolean;
+  disabled: boolean;
+  onPress: () => void;
+  isBranch: boolean;
+  iconColor: string;
+  iconSize: number;
+}) {
+  const leadingSlot = useMemo(
+    () => (
+      <View style={styles.rowIconBox}>
+        {isBranch ? (
+          <GitBranch size={iconSize} color={iconColor} />
+        ) : (
+          <GitPullRequest size={iconSize} color={iconColor} />
+        )}
+      </View>
+    ),
+    [isBranch, iconSize, iconColor],
+  );
+  return (
+    <ComboboxItem
+      testID={testID}
+      label={label}
+      description={description}
+      selected={selected}
+      active={active}
+      disabled={disabled}
+      onPress={onPress}
+      leadingSlot={leadingSlot}
+    />
+  );
+}
 
 function branchOptionId(name: string): string {
   return `${BRANCH_OPTION_PREFIX}${name}`;
@@ -103,15 +224,199 @@ function syncPickerPrAttachment(input: {
   return { attachments: nextAttachments, attachedPrNumber };
 }
 
+function computePickerOptionData(
+  branchDetails: ReadonlyArray<{ name: string; committerDate: number }>,
+  prItems: ReadonlyArray<GitHubSearchItem>,
+): PickerOptionData {
+  const idMap = new Map<string, PickerItem>();
+
+  interface TimedOption {
+    option: ComboboxOptionType;
+    timestamp: number;
+  }
+  const timedOptions: TimedOption[] = [];
+
+  for (const branch of branchDetails) {
+    const id = branchOptionId(branch.name);
+    const option = { id, label: branch.name };
+    idMap.set(id, { kind: "branch", name: branch.name });
+    timedOptions.push({ option, timestamp: branch.committerDate });
+  }
+
+  for (const pr of prItems) {
+    if (!pr.headRefName) continue;
+    const id = prOptionId(pr.number);
+    const option = { id, label: formatPrLabel(pr) };
+    idMap.set(id, { kind: "github-pr", item: pr });
+    const updatedAtMs = pr.updatedAt ? Date.parse(pr.updatedAt) : 0;
+    const timestamp = Number.isNaN(updatedAtMs) ? 0 : Math.floor(updatedAtMs / 1000);
+    timedOptions.push({ option, timestamp });
+  }
+
+  timedOptions.sort((a, b) => b.timestamp - a.timestamp);
+  return { options: timedOptions.map((t) => t.option), itemById: idMap };
+}
+
+interface SubmitDraftInput {
+  serverId: string;
+  draftKey: string;
+  workspaceId: string;
+  workspaceDirectory: string;
+  text: string;
+  attachments: ComposerAttachment[];
+  provider: AgentProvider;
+  composerState: NonNullable<ReturnType<typeof useAgentInputDraft>["composerState"]>;
+}
+
+async function createAndMergeWorkspace(input: {
+  client: NonNullable<ReturnType<typeof useHostRuntimeClient>>;
+  createInput: Parameters<
+    NonNullable<ReturnType<typeof useHostRuntimeClient>>["createPaseoWorktree"]
+  >[0];
+  mergeWorkspaces: (
+    serverId: string,
+    workspaces: ReturnType<typeof normalizeWorkspaceDescriptor>[],
+  ) => void;
+  serverId: string;
+}): Promise<ReturnType<typeof normalizeWorkspaceDescriptor>> {
+  const payload = await input.client.createPaseoWorktree(input.createInput);
+  if (payload.error || !payload.workspace) {
+    throw new Error(payload.error ?? "Failed to create worktree");
+  }
+  const normalizedWorkspace = normalizeWorkspaceDescriptor(payload.workspace);
+  input.mergeWorkspaces(input.serverId, [normalizedWorkspace]);
+  return normalizedWorkspace;
+}
+
+interface CreateChatAgentInput {
+  payload: MessagePayload;
+  composerState: ReturnType<typeof useAgentInputDraft>["composerState"];
+  ensureWorkspace: (input: {
+    cwd: string;
+    attachments: AgentAttachment[];
+  }) => Promise<ReturnType<typeof normalizeWorkspaceDescriptor>>;
+  serverId: string;
+  draftKey: string;
+}
+
+async function runCreateChatAgent(input: CreateChatAgentInput): Promise<void> {
+  const { payload, composerState, ensureWorkspace, serverId, draftKey } = input;
+  const { text, attachments, cwd } = payload;
+  if (!composerState) {
+    throw new Error("Composer state is required");
+  }
+  const provider = composerState.selectedProvider;
+  if (!provider) {
+    throw new Error("Select a model");
+  }
+  const { attachments: reviewAttachments } = splitComposerAttachmentsForSubmit(attachments);
+  const ensuredWorkspace = await ensureWorkspace({ cwd, attachments: reviewAttachments });
+  submitWorkspaceDraft({
+    serverId,
+    draftKey,
+    workspaceId: ensuredWorkspace.id,
+    workspaceDirectory: ensuredWorkspace.workspaceDirectory,
+    text,
+    attachments,
+    provider,
+    composerState,
+  });
+}
+
+function buildComposerConfig(input: {
+  serverId: string;
+  isConnected: boolean;
+  workspaceDirectory: string | null;
+  sourceDirectory: string;
+}): Parameters<typeof useAgentInputDraft>[0]["composer"] {
+  const { serverId, isConnected, workspaceDirectory, sourceDirectory } = input;
+  return {
+    initialServerId: serverId || null,
+    initialValues: workspaceDirectory ? { workingDir: workspaceDirectory } : undefined,
+    isVisible: true,
+    onlineServerIds: isConnected && serverId ? [serverId] : [],
+    lockedWorkingDir: workspaceDirectory || sourceDirectory || undefined,
+  };
+}
+
+function computeWorkspaceTitle(
+  workspace: ReturnType<typeof normalizeWorkspaceDescriptor> | null,
+  displayName: string,
+  sourceDirectory: string,
+): string {
+  return (
+    workspace?.name ||
+    workspace?.projectDisplayName ||
+    displayName ||
+    sourceDirectory.split(/[\\/]/).findLast(Boolean) ||
+    sourceDirectory
+  );
+}
+
+function submitWorkspaceDraft(input: SubmitDraftInput): void {
+  const {
+    serverId,
+    draftKey,
+    workspaceId,
+    workspaceDirectory,
+    text,
+    attachments,
+    provider,
+    composerState,
+  } = input;
+  const draftId = generateDraftId();
+  useDraftStore.getState().saveDraftInput({
+    draftKey: buildDraftStoreKey({
+      serverId,
+      agentId: draftId,
+      draftId,
+    }),
+    draft: {
+      text,
+      attachments,
+      cwd: workspaceDirectory,
+    },
+  });
+  useWorkspaceDraftSubmissionStore.getState().setPending({
+    serverId,
+    workspaceId,
+    draftId,
+    text,
+    attachments,
+    cwd: workspaceDirectory,
+    provider,
+    ...(composerState.modeOptions.length > 0 && composerState.selectedMode !== ""
+      ? { modeId: composerState.selectedMode }
+      : {}),
+    ...(composerState.effectiveModelId ? { model: composerState.effectiveModelId } : {}),
+    ...(composerState.effectiveThinkingOptionId
+      ? { thinkingOptionId: composerState.effectiveThinkingOptionId }
+      : {}),
+    ...(composerState.featureValues ? { featureValues: composerState.featureValues } : {}),
+    allowEmptyText: true,
+  });
+  navigateToPreparedWorkspaceTab({
+    serverId,
+    workspaceId,
+    target: { kind: "draft", draftId },
+    navigationMethod: "replace",
+  });
+  useDraftStore.getState().clearDraftInput({ draftKey, lifecycle: "sent" });
+}
+
 export function NewWorkspaceScreen({
   serverId,
   sourceDirectory,
   displayName: displayNameProp,
 }: NewWorkspaceScreenProps) {
   const { theme } = useUnistyles();
+  const insets = useSafeAreaInsets();
+  const isCompact = useIsCompactFormFactor();
+  const { style: keyboardAnimatedStyle } = useKeyboardShiftStyle({
+    mode: "translate",
+  });
   const toast = useToast();
   const mergeWorkspaces = useSessionStore((state) => state.mergeWorkspaces);
-  const setAgents = useSessionStore((state) => state.setAgents);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [createdWorkspace, setCreatedWorkspace] = useState<ReturnType<
     typeof normalizeWorkspaceDescriptor
@@ -119,7 +424,15 @@ export function NewWorkspaceScreen({
   const [pendingAction, setPendingAction] = useState<"chat" | null>(null);
   const [pickerSelection, setPickerSelection] = useState<PickerSelection | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerSearchQuery, setPickerSearchQuery] = useState("");
+  const [debouncedPickerSearchQuery, setDebouncedPickerSearchQuery] = useState("");
   const pickerAnchorRef = useRef<View>(null);
+
+  useEffect(() => {
+    const trimmed = pickerSearchQuery.trim();
+    const timer = setTimeout(() => setDebouncedPickerSearchQuery(trimmed), 180);
+    return () => clearTimeout(timer);
+  }, [pickerSearchQuery]);
 
   const displayName = displayNameProp?.trim() ?? "";
   const workspace = createdWorkspace;
@@ -127,18 +440,16 @@ export function NewWorkspaceScreen({
   const isPending = pendingAction !== null;
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
+  const draftKey = `new-workspace:${serverId}:${sourceDirectory}`;
   const chatDraft = useAgentInputDraft({
-    draftKey: `new-workspace:${serverId}:${sourceDirectory}`,
+    draftKey,
     initialCwd: sourceDirectory,
-    composer: {
-      initialServerId: serverId || null,
-      initialValues: workspace?.workspaceDirectory
-        ? { workingDir: workspace.workspaceDirectory }
-        : undefined,
-      isVisible: true,
-      onlineServerIds: isConnected && serverId ? [serverId] : [],
-      lockedWorkingDir: workspace?.workspaceDirectory || sourceDirectory || undefined,
-    },
+    composer: buildComposerConfig({
+      serverId,
+      isConnected,
+      workspaceDirectory: workspace?.workspaceDirectory ?? null,
+      sourceDirectory,
+    }),
   });
   const composerState = chatDraft.composerState;
 
@@ -149,43 +460,59 @@ export function NewWorkspaceScreen({
     return client;
   }, [client, isConnected]);
 
+  const clientReady = isConnected && Boolean(client);
+  const pickerQueryEnabled = pickerOpen && clientReady;
+
   const checkoutStatusQuery = useQuery({
     queryKey: ["checkout-status", serverId, sourceDirectory],
     queryFn: async () => {
       const connectedClient = withConnectedClient();
       return connectedClient.getCheckoutStatus(sourceDirectory);
     },
-    enabled: isConnected && !!client,
+    enabled: clientReady,
+    staleTime: Infinity,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
   });
 
   const currentBranch = checkoutStatusQuery.data?.currentBranch ?? null;
 
   const branchSuggestionsQuery = useQuery({
-    queryKey: ["branch-suggestions", serverId, sourceDirectory],
+    queryKey: ["branch-suggestions", serverId, sourceDirectory, debouncedPickerSearchQuery],
     queryFn: async () => {
       const connectedClient = withConnectedClient();
-      return connectedClient.getBranchSuggestions({ cwd: sourceDirectory, limit: 20 });
+      return connectedClient.getBranchSuggestions({
+        cwd: sourceDirectory,
+        query: debouncedPickerSearchQuery || undefined,
+        limit: 20,
+      });
     },
-    enabled: isConnected && !!client,
+    enabled: pickerQueryEnabled,
     staleTime: 15_000,
   });
 
   const githubPrSearchQuery = useQuery({
-    queryKey: ["new-workspace-github-prs", serverId, sourceDirectory],
+    queryKey: ["new-workspace-github-prs", serverId, sourceDirectory, debouncedPickerSearchQuery],
     queryFn: async () => {
       const connectedClient = withConnectedClient();
       return connectedClient.searchGitHub({
         cwd: sourceDirectory,
-        query: "",
+        query: debouncedPickerSearchQuery,
         limit: 20,
         kinds: ["github-pr"],
       });
     },
-    enabled: isConnected && !!client,
-    staleTime: 60_000,
+    enabled: pickerQueryEnabled,
+    staleTime: 30_000,
   });
 
-  const branchNames: string[] = branchSuggestionsQuery.data?.branches ?? [];
+  const branchDetails = useMemo(() => {
+    const details = branchSuggestionsQuery.data?.branchDetails;
+    if (details && details.length > 0) return details;
+    const names = branchSuggestionsQuery.data?.branches ?? [];
+    return names.map((name) => ({ name, committerDate: 0 }));
+  }, [branchSuggestionsQuery.data?.branchDetails, branchSuggestionsQuery.data?.branches]);
   const githubFeaturesEnabled = githubPrSearchQuery.data?.githubFeaturesEnabled !== false;
   const prItems: GitHubSearchItem[] = useMemo(() => {
     if (!githubFeaturesEnabled) return [];
@@ -193,37 +520,10 @@ export function NewWorkspaceScreen({
     return items.filter((item): item is GitHubSearchItem => item.kind === "pr");
   }, [githubFeaturesEnabled, githubPrSearchQuery.data?.items]);
 
-  const { options, itemById, firstBranchId, firstPrId }: PickerOptionData = useMemo(() => {
-    const collectedOptions: ComboboxOptionType[] = [];
-    const idMap = new Map<string, PickerItem>();
-    let firstBranch: string | null = null;
-    let firstPr: string | null = null;
-
-    for (const name of branchNames) {
-      const id = branchOptionId(name);
-      collectedOptions.push({ id, label: name });
-      idMap.set(id, { kind: "branch", name });
-      if (firstBranch === null) firstBranch = id;
-    }
-
-    for (const pr of prItems) {
-      if (!pr.headRefName) continue;
-      const id = prOptionId(pr.number);
-      collectedOptions.push({ id, label: formatPrLabel(pr) });
-      idMap.set(id, {
-        kind: "github-pr",
-        item: pr,
-      });
-      if (firstPr === null) firstPr = id;
-    }
-
-    return {
-      options: collectedOptions,
-      itemById: idMap,
-      firstBranchId: firstBranch,
-      firstPrId: firstPr,
-    };
-  }, [branchNames, prItems]);
+  const { options, itemById }: PickerOptionData = useMemo(
+    () => computePickerOptionData(branchDetails, prItems),
+    [branchDetails, prItems],
+  );
 
   const triggerLabel = useMemo(() => {
     if (selectedItem) return pickerItemTriggerLabel(selectedItem);
@@ -264,6 +564,27 @@ export function NewWorkspaceScreen({
     setPickerOpen(true);
   }, []);
 
+  const handleClearDraft = useCallback(() => {
+    // No-op: screen navigates away on success, text should stay for retry on error
+  }, []);
+
+  const badgePressableStyle = useCallback(
+    ({ pressed, hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
+      styles.badge,
+      Boolean(hovered) && !isPending && styles.badgeHovered,
+      pressed && !isPending && styles.badgePressed,
+      isPending && styles.badgeDisabled,
+    ],
+    [isPending],
+  );
+
+  const handlePickerOpenChange = useCallback((nextOpen: boolean) => {
+    setPickerOpen(nextOpen);
+    if (!nextOpen) {
+      setPickerSearchQuery("");
+    }
+  }, []);
+
   const buildCreateWorktreeInput = useCallback(
     (input: { cwd: string; attachments: AgentAttachment[] }) => {
       const checkoutRequest = pickerItemToCheckoutRequest(selectedItem);
@@ -272,7 +593,7 @@ export function NewWorkspaceScreen({
         cwd: input.cwd,
         worktreeSlug: createNameId(),
         ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
-        ...(checkoutRequest ?? {}),
+        ...checkoutRequest,
       };
     },
     [selectedItem],
@@ -283,16 +604,12 @@ export function NewWorkspaceScreen({
       if (createdWorkspace) {
         return createdWorkspace;
       }
-
-      const connectedClient = withConnectedClient();
-      const payload = await connectedClient.createPaseoWorktree(buildCreateWorktreeInput(input));
-
-      if (payload.error || !payload.workspace) {
-        throw new Error(payload.error ?? "Failed to create worktree");
-      }
-
-      const normalizedWorkspace = normalizeWorkspaceDescriptor(payload.workspace);
-      mergeWorkspaces(serverId, [normalizedWorkspace]);
+      const normalizedWorkspace = await createAndMergeWorkspace({
+        client: withConnectedClient(),
+        createInput: buildCreateWorktreeInput(input),
+        mergeWorkspaces,
+        serverId,
+      });
       setCreatedWorkspace(normalizedWorkspace);
       return normalizedWorkspace;
     },
@@ -300,67 +617,28 @@ export function NewWorkspaceScreen({
   );
 
   const handleCreateChatAgent = useCallback(
-    async ({ text, attachments, cwd }: MessagePayload) => {
+    async (payload: MessagePayload) => {
       try {
         setPendingAction("chat");
         setErrorMessage(null);
-        const { images, attachments: reviewAttachments } =
-          splitComposerAttachmentsForSubmit(attachments);
-        const workspace = await ensureWorkspace({ cwd, attachments: reviewAttachments });
-        const connectedClient = withConnectedClient();
-        if (!composerState) {
-          throw new Error("Composer state is required");
-        }
-
-        const initialPrompt = text.trim();
-        const encodedImages = await encodeImages(images);
-        const workspaceDirectory = requireWorkspaceExecutionAuthority({
-          workspace,
-        }).workspaceDirectory;
-        const agent = await connectedClient.createAgent({
-          provider: composerState.selectedProvider,
-          cwd: workspaceDirectory,
-          workspaceId: workspace.id,
-          ...(composerState.modeOptions.length > 0 && composerState.selectedMode !== ""
-            ? { modeId: composerState.selectedMode }
-            : {}),
-          ...(composerState.effectiveModelId ? { model: composerState.effectiveModelId } : {}),
-          ...(composerState.effectiveThinkingOptionId
-            ? { thinkingOptionId: composerState.effectiveThinkingOptionId }
-            : {}),
-          ...(initialPrompt ? { initialPrompt } : {}),
-          ...(encodedImages && encodedImages.length > 0 ? { images: encodedImages } : {}),
-          ...(reviewAttachments.length > 0 ? { attachments: reviewAttachments } : {}),
-        });
-
-        setAgents(serverId, (previous) => {
-          const next = new Map(previous);
-          next.set(agent.id, normalizeAgentSnapshot(agent, serverId));
-          return next;
-        });
-        navigateToPreparedWorkspaceTab({
+        await runCreateChatAgent({
+          payload,
+          composerState,
+          ensureWorkspace,
           serverId,
-          workspaceId: workspace.id,
-          target: { kind: "agent", agentId: agent.id },
-          navigationMethod: "replace",
+          draftKey,
         });
       } catch (error) {
         const message = toErrorMessage(error);
+        setPendingAction(null);
         setErrorMessage(message);
         toast.error(message);
-      } finally {
-        setPendingAction(null);
       }
     },
-    [composerState, ensureWorkspace, serverId, setAgents, toast, withConnectedClient],
+    [composerState, draftKey, ensureWorkspace, serverId, toast],
   );
 
-  const workspaceTitle =
-    workspace?.name ||
-    workspace?.projectDisplayName ||
-    displayName ||
-    sourceDirectory.split(/[\\/]/).filter(Boolean).pop() ||
-    sourceDirectory;
+  const workspaceTitle = computeWorkspaceTitle(workspace, displayName, sourceDirectory);
 
   const addImagesRef = useRef<((images: ImageAttachment[]) => void) | null>(null);
   const handleAddImagesCallback = useCallback((addImages: (images: ImageAttachment[]) => void) => {
@@ -383,22 +661,6 @@ export function NewWorkspaceScreen({
       if (!item) return <View key={option.id} />;
 
       const isBranch = item.kind === "branch";
-      const isFirstInSection =
-        (isBranch && option.id === firstBranchId) || (!isBranch && option.id === firstPrId);
-
-      const header = isFirstInSection ? (
-        <Text style={styles.sectionHeader}>{isBranch ? "Branches" : "Pull requests"}</Text>
-      ) : null;
-
-      const leadingSlot = (
-        <View style={styles.rowIconBox}>
-          {isBranch ? (
-            <GitBranch size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
-          ) : (
-            <GitPullRequest size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
-          )}
-        </View>
-      );
 
       const testID = isBranch
         ? `new-workspace-ref-picker-branch-${item.name}`
@@ -408,30 +670,52 @@ export function NewWorkspaceScreen({
         !isBranch && item.item.baseRefName ? `into ${item.item.baseRefName}` : undefined;
 
       return (
-        <>
-          {header}
-          <ComboboxItem
-            testID={testID}
-            label={pickerItemLabel(item)}
-            description={description}
-            selected={selected}
-            active={active}
-            disabled={isPending}
-            onPress={onPress}
-            leadingSlot={leadingSlot}
-          />
-        </>
+        <PickerOptionItem
+          testID={testID}
+          label={pickerItemLabel(item)}
+          description={description}
+          selected={selected}
+          active={active}
+          disabled={isPending}
+          onPress={onPress}
+          isBranch={isBranch}
+          iconColor={theme.colors.foregroundMuted}
+          iconSize={theme.iconSize.sm}
+        />
       );
     },
-    [
-      firstBranchId,
-      firstPrId,
-      isPending,
-      itemById,
-      theme.colors.foregroundMuted,
-      theme.iconSize.sm,
-    ],
+    [isPending, itemById, theme.colors.foregroundMuted, theme.iconSize.sm],
   );
+
+  const contentStyle = useMemo(
+    () => [
+      styles.content,
+      isCompact ? styles.contentCompact : styles.contentCentered,
+      isCompact ? { paddingBottom: insets.bottom } : null,
+    ],
+    [isCompact, insets.bottom],
+  );
+
+  const optionsRowStyle = useMemo(
+    () => [styles.optionsRow, keyboardAnimatedStyle],
+    [keyboardAnimatedStyle],
+  );
+
+  const statusControlsWithDisabled = useMemo(
+    () =>
+      composerState
+        ? {
+            ...composerState.statusControls,
+            disabled: isPending,
+          }
+        : undefined,
+    [composerState, isPending],
+  );
+
+  const pickerEmptyText =
+    branchSuggestionsQuery.isFetching || githubPrSearchQuery.isFetching
+      ? "Searching..."
+      : "No matching refs.";
 
   return (
     <View style={styles.container}>
@@ -452,7 +736,7 @@ export function NewWorkspaceScreen({
         leftStyle={styles.headerLeft}
         borderless
       />
-      <View style={styles.content}>
+      <View style={contentStyle}>
         <TitlebarDragRegion />
         <View style={styles.centered}>
           <Composer
@@ -471,59 +755,24 @@ export function NewWorkspaceScreen({
             attachments={chatDraft.attachments}
             onChangeAttachments={chatDraft.setAttachments}
             cwd={chatDraft.cwd}
-            clearDraft={() => {
-              // No-op: screen navigates away on success, text should stay for retry on error
-            }}
+            clearDraft={handleClearDraft}
             autoFocus
             commandDraftConfig={composerState?.commandDraftConfig}
-            statusControls={
-              composerState
-                ? {
-                    ...composerState.statusControls,
-                    disabled: isPending,
-                  }
-                : undefined
-            }
+            statusControls={statusControlsWithDisabled}
             onAddImages={handleAddImagesCallback}
           />
-          <View style={styles.optionsRow}>
+          <Animated.View testID="new-workspace-ref-picker-row" style={optionsRowStyle}>
             <View>
-              <Tooltip>
-                <TooltipTrigger asChild triggerRefProp="ref">
-                  <Pressable
-                    ref={pickerAnchorRef}
-                    testID="new-workspace-ref-picker-trigger"
-                    onPress={openPicker}
-                    disabled={isPending}
-                    style={({ pressed, hovered }) => [
-                      styles.badge,
-                      hovered && !isPending && styles.badgeHovered,
-                      pressed && !isPending && styles.badgePressed,
-                      isPending && styles.badgeDisabled,
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Starting ref"
-                  >
-                    <View style={styles.badgeIconBox}>
-                      {selectedItem?.kind === "github-pr" ? (
-                        <GitPullRequest
-                          size={theme.iconSize.sm}
-                          color={theme.colors.foregroundMuted}
-                        />
-                      ) : (
-                        <GitBranch size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
-                      )}
-                    </View>
-                    <Text style={styles.badgeText} numberOfLines={1}>
-                      {triggerLabel}
-                    </Text>
-                    <ChevronDown size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
-                  </Pressable>
-                </TooltipTrigger>
-                <TooltipContent side="top" align="center" offset={8}>
-                  <Text style={styles.tooltipText}>Choose where to start from</Text>
-                </TooltipContent>
-              </Tooltip>
+              <RefPickerTrigger
+                pickerAnchorRef={pickerAnchorRef}
+                onPress={openPicker}
+                disabled={isPending}
+                badgePressableStyle={badgePressableStyle}
+                selectedItem={selectedItem}
+                triggerLabel={triggerLabel}
+                iconColor={theme.colors.foregroundMuted}
+                iconSize={theme.iconSize.sm}
+              />
               <Combobox
                 options={options}
                 value={selectedOptionId}
@@ -532,14 +781,15 @@ export function NewWorkspaceScreen({
                 searchPlaceholder="Search branches and PRs"
                 title="Start from"
                 open={pickerOpen}
-                onOpenChange={setPickerOpen}
+                onOpenChange={handlePickerOpenChange}
+                onSearchQueryChange={setPickerSearchQuery}
                 desktopPlacement="bottom-start"
                 anchorRef={pickerAnchorRef}
-                emptyText="No matching refs."
+                emptyText={pickerEmptyText}
                 renderOption={renderPickerOption}
               />
             </View>
-          </View>
+          </Animated.View>
           {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
         </View>
       </View>
@@ -556,12 +806,14 @@ const styles = StyleSheet.create((theme) => ({
   content: {
     position: "relative",
     flex: 1,
-    justifyContent: "center",
     alignItems: "center",
-    paddingBottom: {
-      xs: HEADER_INNER_HEIGHT_MOBILE + HEADER_TOP_PADDING_MOBILE + theme.spacing[6],
-      md: HEADER_INNER_HEIGHT + theme.spacing[6],
-    },
+  },
+  contentCentered: {
+    justifyContent: "center",
+    paddingBottom: HEADER_INNER_HEIGHT + theme.spacing[6],
+  },
+  contentCompact: {
+    justifyContent: "flex-end",
   },
   centered: {
     width: "100%",
@@ -643,14 +895,5 @@ const styles = StyleSheet.create((theme) => ({
     height: theme.iconSize.md,
     alignItems: "center",
     justifyContent: "center",
-  },
-  sectionHeader: {
-    paddingHorizontal: theme.spacing[3],
-    paddingTop: theme.spacing[2],
-    paddingBottom: theme.spacing[1],
-    fontSize: theme.fontSize.xs,
-    color: theme.colors.foregroundMuted,
-    textTransform: "uppercase",
-    letterSpacing: 0,
   },
 }));

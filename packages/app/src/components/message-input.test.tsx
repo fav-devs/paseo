@@ -1,9 +1,19 @@
-import React from "react";
+import React, { createRef } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { JSDOM } from "jsdom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MessageInput, type AttachmentMenuItem } from "./message-input";
+import { MessageInput, type AttachmentMenuItem, type MessageInputRef } from "./message-input";
+
+const EMPTY_ATTACHMENTS: React.ComponentProps<typeof MessageInput>["attachments"] = [];
+const EMPTY_ATTACHMENT_MENU_ITEMS: AttachmentMenuItem[] = [];
+const FAKE_CONNECTED_CLIENT = { isConnected: true } as never;
+
+const { startDictationMock, cancelDictationMock, confirmDictationMock } = vi.hoisted(() => ({
+  startDictationMock: vi.fn(),
+  cancelDictationMock: vi.fn(),
+  confirmDictationMock: vi.fn(),
+}));
 
 const { theme } = vi.hoisted(() => ({
   theme: {
@@ -37,7 +47,7 @@ vi.mock("react-native-unistyles", () => ({
   StyleSheet: {
     create: (factory: unknown) => (typeof factory === "function" ? factory(theme) : factory),
   },
-  useUnistyles: () => ({ theme }),
+  withUnistyles: <T,>(component: T) => component,
 }));
 
 vi.mock("@/constants/platform", () => ({
@@ -85,9 +95,9 @@ vi.mock("@/hooks/use-dictation", () => ({
     duration: 0,
     error: null,
     status: "idle",
-    startDictation: vi.fn(),
-    cancelDictation: vi.fn(),
-    confirmDictation: vi.fn(),
+    startDictation: startDictationMock,
+    cancelDictation: cancelDictationMock,
+    confirmDictation: confirmDictationMock,
     retryFailedDictation: vi.fn(),
     discardFailedDictation: vi.fn(),
   }),
@@ -132,7 +142,7 @@ vi.mock("@/components/ui/shortcut", () => ({
 }));
 
 vi.mock("@/components/ui/tooltip", () => ({
-  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Tooltip: ({ children }: { children: React.ReactNode }) => children,
   TooltipTrigger: ({
     asChild,
     children,
@@ -140,19 +150,19 @@ vi.mock("@/components/ui/tooltip", () => ({
   }: {
     asChild?: boolean;
     children: React.ReactNode | ((state: { hovered: boolean }) => React.ReactNode);
-  } & Record<string, any>) =>
+  } & Record<string, unknown>) =>
     asChild ? (
-      <>{children}</>
+      children
     ) : (
-      <button type="button" aria-label={props.accessibilityLabel}>
+      <button type="button" aria-label={props.accessibilityLabel as string | undefined}>
         {typeof children === "function" ? children({ hovered: false }) : children}
       </button>
     ),
-  TooltipContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  TooltipContent: ({ children }: { children: React.ReactNode }) => children,
 }));
 
 vi.mock("@/components/ui/dropdown-menu", () => ({
-  DropdownMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  DropdownMenu: ({ children }: { children: React.ReactNode }) => children,
   DropdownMenuTrigger: ({
     children,
     testID,
@@ -214,6 +224,9 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  startDictationMock.mockReset();
+  cancelDictationMock.mockReset();
+  confirmDictationMock.mockReset();
 });
 
 afterEach(() => {
@@ -242,10 +255,10 @@ function renderMessageInput(
         value={value}
         onChangeText={vi.fn()}
         onSubmit={vi.fn()}
-        attachments={[]}
+        attachments={EMPTY_ATTACHMENTS}
         cwd="/repo"
         attachmentMenuItems={menuItems}
-        client={{ isConnected: true } as never}
+        client={FAKE_CONNECTED_CLIENT}
         isAgentRunning={false}
         submitIcon={submitIcon}
         onQueue={vi.fn()}
@@ -323,5 +336,59 @@ describe("MessageInput attachments", () => {
 
     expect(document.querySelectorAll('[data-icon="ArrowUp"]')).toHaveLength(0);
     expect(document.querySelectorAll('[data-icon="CornerDownLeft"]')).toHaveLength(1);
+  });
+});
+
+describe("MessageInput dictation shortcuts", () => {
+  it("does not poison the dictation toggle when readiness is temporarily false", () => {
+    const inputRef = createRef<MessageInputRef>();
+
+    act(() => {
+      root?.render(
+        <MessageInput
+          ref={inputRef}
+          value=""
+          onChangeText={vi.fn()}
+          onSubmit={vi.fn()}
+          attachments={EMPTY_ATTACHMENTS}
+          cwd="/repo"
+          attachmentMenuItems={EMPTY_ATTACHMENT_MENU_ITEMS}
+          client={FAKE_CONNECTED_CLIENT}
+          isAgentRunning={false}
+          isReadyForDictation={false}
+          onQueue={vi.fn()}
+        />,
+      );
+    });
+
+    act(() => {
+      inputRef.current?.runKeyboardAction("dictation-toggle");
+    });
+    expect(startDictationMock).not.toHaveBeenCalled();
+    expect(confirmDictationMock).not.toHaveBeenCalled();
+
+    act(() => {
+      root?.render(
+        <MessageInput
+          ref={inputRef}
+          value=""
+          onChangeText={vi.fn()}
+          onSubmit={vi.fn()}
+          attachments={EMPTY_ATTACHMENTS}
+          cwd="/repo"
+          attachmentMenuItems={EMPTY_ATTACHMENT_MENU_ITEMS}
+          client={FAKE_CONNECTED_CLIENT}
+          isAgentRunning={false}
+          isReadyForDictation
+          onQueue={vi.fn()}
+        />,
+      );
+    });
+    act(() => {
+      inputRef.current?.runKeyboardAction("dictation-toggle");
+    });
+
+    expect(startDictationMock).toHaveBeenCalledTimes(1);
+    expect(confirmDictationMock).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter, type Href } from "expo-router";
 import { HostRouteBootstrapBoundary } from "@/components/host-route-bootstrap-boundary";
 import { useSessionStore } from "@/stores/session-store";
+import { useResolveWorkspaceIdByCwd } from "@/stores/session-store-hooks";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { buildHostRootRoute } from "@/utils/host-routes";
 import { resolveWorkspaceIdByExecutionDirectory } from "@/utils/workspace-execution";
@@ -32,21 +33,10 @@ function HostAgentReadyRouteContent() {
     }
     return state.sessions[serverId]?.agents?.get(agentId)?.cwd ?? null;
   });
-  const sessionWorkspaces = useSessionStore((state) =>
-    serverId ? state.sessions[serverId]?.workspaces : undefined,
-  );
   const hasHydratedWorkspaces = useSessionStore((state) =>
     serverId ? (state.sessions[serverId]?.hasHydratedWorkspaces ?? false) : false,
   );
-  const resolvedWorkspaceId = useSessionStore((state) => {
-    if (!serverId || !agentId) {
-      return null;
-    }
-    return resolveWorkspaceIdByExecutionDirectory({
-      workspaces: state.sessions[serverId]?.workspaces?.values(),
-      workspaceDirectory: state.sessions[serverId]?.agents?.get(agentId)?.cwd,
-    });
-  });
+  const resolvedWorkspaceId = useResolveWorkspaceIdByCwd(serverId, agentCwd);
 
   useEffect(() => {
     if (redirectedRef.current) {
@@ -54,7 +44,7 @@ function HostAgentReadyRouteContent() {
     }
     if (!serverId || !agentId) {
       redirectedRef.current = true;
-      router.replace("/" as any);
+      router.replace("/" as Href);
       return;
     }
 
@@ -65,7 +55,7 @@ function HostAgentReadyRouteContent() {
           serverId,
           workspaceId: resolvedWorkspaceId,
           target: { kind: "agent", agentId },
-        }) as any,
+        }) as Href,
       );
     }
   }, [agentId, resolvedWorkspaceId, router, serverId]);
@@ -102,8 +92,9 @@ function HostAgentReadyRouteContent() {
           return;
         }
         const cwd = result?.agent?.cwd?.trim();
+        const workspaces = useSessionStore.getState().sessions[serverId]?.workspaces;
         const workspaceId = resolveWorkspaceIdByExecutionDirectory({
-          workspaces: sessionWorkspaces?.values(),
+          workspaces: workspaces?.values(),
           workspaceDirectory: cwd,
         });
         if (!workspaceId && !hasHydratedWorkspaces) {
@@ -116,11 +107,12 @@ function HostAgentReadyRouteContent() {
               serverId,
               workspaceId,
               target: { kind: "agent", agentId },
-            }) as any,
+            }) as Href,
           );
           return;
         }
         router.replace(buildHostRootRoute(serverId));
+        return;
       })
       .catch(() => {
         if (cancelled || redirectedRef.current) {
@@ -133,7 +125,7 @@ function HostAgentReadyRouteContent() {
     return () => {
       cancelled = true;
     };
-  }, [agentId, client, hasHydratedWorkspaces, isConnected, router, serverId, sessionWorkspaces]);
+  }, [agentId, client, hasHydratedWorkspaces, isConnected, router, serverId]);
 
   return null;
 }

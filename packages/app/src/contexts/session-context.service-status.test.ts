@@ -33,6 +33,7 @@ const runningScript: WorkspaceScriptPayload = {
   lifecycle: "running",
   health: "healthy",
   exitCode: null,
+  terminalId: null,
 };
 
 describe("patchWorkspaceScripts", () => {

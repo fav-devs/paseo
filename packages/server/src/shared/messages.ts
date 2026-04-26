@@ -47,6 +47,28 @@ import {
   LoopLogsResponseSchema,
   LoopStopResponseSchema,
 } from "../server/loop/rpc-schemas.js";
+import {
+  PaseoConfigRawSchema,
+  PaseoLifecycleCommandRawSchema,
+  PaseoScriptEntryRawSchema,
+  PaseoWorktreeConfigRawSchema,
+  PaseoConfigRevisionSchema,
+  ProjectConfigRpcErrorSchema,
+  type PaseoConfigRaw,
+  type PaseoConfigRevision,
+  type PaseoScriptEntryRaw,
+  type ProjectConfigRpcError,
+} from "../utils/paseo-config-schema.js";
+export {
+  PaseoConfigRawSchema,
+  PaseoLifecycleCommandRawSchema,
+  PaseoScriptEntryRawSchema,
+  PaseoWorktreeConfigRawSchema,
+  type PaseoConfigRaw,
+  type PaseoConfigRevision,
+  type PaseoScriptEntryRaw,
+  type ProjectConfigRpcError,
+};
 // ---------------------------------------------------------------------------
 // Mutable daemon config schemas (shared between server store and client)
 // ---------------------------------------------------------------------------
@@ -105,7 +127,6 @@ import type {
   AgentPermissionRequest,
   AgentPermissionResponse,
   AgentPersistenceHandle,
-  ProviderSnapshotEntry,
   ProviderStatus,
   AgentRuntimeInfo,
   AgentTimelineItem,
@@ -176,9 +197,10 @@ const AgentModelDefinitionSchema: z.ZodType<AgentModelDefinition> = z.object({
   defaultThinkingOptionId: z.string().optional(),
 });
 
-const ProviderSnapshotEntrySchema: z.ZodType<ProviderSnapshotEntry> = z.object({
+export const ProviderSnapshotEntrySchema = z.object({
   provider: AgentProviderSchema,
   status: ProviderStatusSchema,
+  enabled: z.boolean().optional().default(true),
   error: z.string().optional(),
   models: z.array(AgentModelDefinitionSchema).optional(),
   modes: z.array(AgentModeSchema).optional(),
@@ -287,7 +309,11 @@ export const AgentPermissionResponseSchema: z.ZodType<AgentPermissionResponse> =
   }),
 ]);
 
-export const AgentPermissionRequestPayloadSchema: z.ZodType<AgentPermissionRequest> = z.object({
+export const AgentPermissionRequestPayloadSchema: z.ZodType<
+  AgentPermissionRequest,
+  z.ZodTypeDef,
+  unknown
+> = z.object({
   id: z.string(),
   provider: AgentProviderSchema,
   name: z.string(),
@@ -322,7 +348,7 @@ const WorktreeSetupCommandSnapshotSchema = z.object({
   index: z.number().int().positive(),
   command: z.string(),
   cwd: z.string(),
-  log: z.string(),
+  log: z.string().optional().default(""),
   status: z.enum(["running", "completed", "failed"]),
   exitCode: z.number().nullable(),
   durationMs: z.number().nonnegative().optional(),
@@ -337,95 +363,96 @@ const WorktreeSetupDetailPayloadSchema = z.object({
   truncated: z.boolean().optional(),
 });
 
-const ToolCallDetailPayloadSchema: z.ZodType<ToolCallDetail> = z.discriminatedUnion("type", [
-  WorktreeSetupDetailPayloadSchema,
-  z.object({
-    type: z.literal("shell"),
-    command: z.string(),
-    cwd: z.string().optional(),
-    output: z.string().optional(),
-    exitCode: z.number().nullable().optional(),
-  }),
-  z.object({
-    type: z.literal("read"),
-    filePath: z.string(),
-    content: z.string().optional(),
-    offset: z.number().optional(),
-    limit: z.number().optional(),
-  }),
-  z.object({
-    type: z.literal("edit"),
-    filePath: z.string(),
-    oldString: z.string().optional(),
-    newString: z.string().optional(),
-    unifiedDiff: z.string().optional(),
-  }),
-  z.object({
-    type: z.literal("write"),
-    filePath: z.string(),
-    content: z.string().optional(),
-  }),
-  z.object({
-    type: z.literal("search"),
-    query: z.string(),
-    toolName: z.enum(["search", "grep", "glob", "web_search"]).optional(),
-    content: z.string().optional(),
-    filePaths: z.array(z.string()).optional(),
-    webResults: z
-      .array(
+const ToolCallDetailPayloadSchema: z.ZodType<ToolCallDetail, z.ZodTypeDef, unknown> =
+  z.discriminatedUnion("type", [
+    WorktreeSetupDetailPayloadSchema,
+    z.object({
+      type: z.literal("shell"),
+      command: z.string(),
+      cwd: z.string().optional(),
+      output: z.string().optional(),
+      exitCode: z.number().nullable().optional(),
+    }),
+    z.object({
+      type: z.literal("read"),
+      filePath: z.string(),
+      content: z.string().optional(),
+      offset: z.number().optional(),
+      limit: z.number().optional(),
+    }),
+    z.object({
+      type: z.literal("edit"),
+      filePath: z.string(),
+      oldString: z.string().optional(),
+      newString: z.string().optional(),
+      unifiedDiff: z.string().optional(),
+    }),
+    z.object({
+      type: z.literal("write"),
+      filePath: z.string(),
+      content: z.string().optional(),
+    }),
+    z.object({
+      type: z.literal("search"),
+      query: z.string(),
+      toolName: z.enum(["search", "grep", "glob", "web_search"]).optional(),
+      content: z.string().optional(),
+      filePaths: z.array(z.string()).optional(),
+      webResults: z
+        .array(
+          z.object({
+            title: z.string(),
+            url: z.string(),
+          }),
+        )
+        .optional(),
+      annotations: z.array(z.string()).optional(),
+      numFiles: z.number().optional(),
+      numMatches: z.number().optional(),
+      durationMs: z.number().optional(),
+      durationSeconds: z.number().optional(),
+      truncated: z.boolean().optional(),
+      mode: z.enum(["content", "files_with_matches", "count"]).optional(),
+    }),
+    z.object({
+      type: z.literal("fetch"),
+      url: z.string(),
+      prompt: z.string().optional(),
+      result: z.string().optional(),
+      code: z.number().optional(),
+      codeText: z.string().optional(),
+      bytes: z.number().optional(),
+      durationMs: z.number().optional(),
+    }),
+    z.object({
+      type: z.literal("sub_agent"),
+      subAgentType: z.string().optional(),
+      description: z.string().optional(),
+      log: z.string(),
+      actions: z.array(
         z.object({
-          title: z.string(),
-          url: z.string(),
+          index: z.number().int().positive(),
+          toolName: z.string(),
+          summary: z.string().optional(),
         }),
-      )
-      .optional(),
-    annotations: z.array(z.string()).optional(),
-    numFiles: z.number().optional(),
-    numMatches: z.number().optional(),
-    durationMs: z.number().optional(),
-    durationSeconds: z.number().optional(),
-    truncated: z.boolean().optional(),
-    mode: z.enum(["content", "files_with_matches", "count"]).optional(),
-  }),
-  z.object({
-    type: z.literal("fetch"),
-    url: z.string(),
-    prompt: z.string().optional(),
-    result: z.string().optional(),
-    code: z.number().optional(),
-    codeText: z.string().optional(),
-    bytes: z.number().optional(),
-    durationMs: z.number().optional(),
-  }),
-  z.object({
-    type: z.literal("sub_agent"),
-    subAgentType: z.string().optional(),
-    description: z.string().optional(),
-    log: z.string(),
-    actions: z.array(
-      z.object({
-        index: z.number().int().positive(),
-        toolName: z.string(),
-        summary: z.string().optional(),
-      }),
-    ),
-  }),
-  z.object({
-    type: z.literal("plain_text"),
-    label: z.string().optional(),
-    text: z.string().optional(),
-    icon: z.enum(TOOL_CALL_ICON_NAMES).optional(),
-  }),
-  z.object({
-    type: z.literal("plan"),
-    text: z.string(),
-  }),
-  z.object({
-    type: z.literal("unknown"),
-    input: UnknownValueSchema,
-    output: UnknownValueSchema,
-  }),
-]);
+      ),
+    }),
+    z.object({
+      type: z.literal("plain_text"),
+      label: z.string().optional(),
+      text: z.string().optional(),
+      icon: z.enum(TOOL_CALL_ICON_NAMES).optional(),
+    }),
+    z.object({
+      type: z.literal("plan"),
+      text: z.string(),
+    }),
+    z.object({
+      type: z.literal("unknown"),
+      input: UnknownValueSchema,
+      output: UnknownValueSchema,
+    }),
+  ]);
 
 const ToolCallBasePayloadSchema = z
   .object({
@@ -433,7 +460,7 @@ const ToolCallBasePayloadSchema = z
     callId: z.string(),
     name: z.string(),
     detail: ToolCallDetailPayloadSchema,
-    metadata: z.record(z.unknown()).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();
 
@@ -575,7 +602,7 @@ const AgentPersistenceHandleSchema: z.ZodType<AgentPersistenceHandle | null> = z
     provider: AgentProviderSchema,
     sessionId: z.string(),
     nativeHandle: z.string().optional(),
-    metadata: z.record(z.unknown()).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
   })
   .nullable();
 
@@ -585,7 +612,7 @@ const AgentRuntimeInfoSchema: z.ZodType<AgentRuntimeInfo> = z.object({
   model: z.string().nullable().optional(),
   thinkingOptionId: z.string().nullable().optional(),
   modeId: z.string().nullable().optional(),
-  extra: z.record(z.unknown()).optional(),
+  extra: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const AgentSnapshotPayloadSchema = z.object({
@@ -610,14 +637,38 @@ export const AgentSnapshotPayloadSchema = z.object({
   lastQuota: AgentQuotaSchema.optional(),
   lastError: z.string().optional(),
   title: z.string().nullable(),
-  labels: z.record(z.string()).default({}),
+  labels: z.record(z.string(), z.string()).default({}),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: z.string().nullable().optional(),
   archivedAt: z.string().nullable().optional(),
+  providerUnavailable: z.boolean().optional(),
 });
 
 export type AgentSnapshotPayload = z.infer<typeof AgentSnapshotPayloadSchema>;
+
+export const AgentListItemPayloadSchema = z.object({
+  id: z.string(),
+  shortId: z.string(),
+  title: z.string().nullable(),
+  provider: AgentProviderSchema,
+  model: z.string().nullable(),
+  thinkingOptionId: z.string().nullable().optional(),
+  effectiveThinkingOptionId: z.string().nullable().optional(),
+  status: AgentStatusSchema,
+  cwd: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  lastUserMessageAt: z.string().nullable(),
+  archivedAt: z.string().nullable().optional(),
+  requiresAttention: z.boolean().optional(),
+  attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
+  attentionTimestamp: z.string().nullable().optional(),
+  labels: z.record(z.string(), z.string()).default({}),
+  providerUnavailable: z.boolean().optional(),
+});
+
+export type AgentListItemPayload = z.infer<typeof AgentListItemPayloadSchema>;
 
 export type AgentStreamEventPayload = z.infer<typeof AgentStreamEventPayloadSchema>;
 
@@ -746,6 +797,7 @@ export const SendAgentMessageSchema = z.object({
 export const FetchAgentsRequestMessageSchema = z.object({
   type: z.literal("fetch_agents_request"),
   requestId: z.string(),
+  scope: z.enum(["active"]).optional(),
   filter: AgentDirectoryFilterSchema.optional(),
   sort: z
     .array(
@@ -803,6 +855,26 @@ export const FetchWorkspacesRequestMessageSchema = z.object({
   subscribe: z
     .object({
       subscriptionId: z.string().optional(),
+    })
+    .optional(),
+});
+
+export const FetchAgentHistoryRequestMessageSchema = z.object({
+  type: z.literal("fetch_agent_history_request"),
+  requestId: z.string(),
+  filter: AgentDirectoryFilterSchema.optional(),
+  sort: z
+    .array(
+      z.object({
+        key: z.enum(["status_priority", "created_at", "updated_at", "title"]),
+        direction: z.enum(["asc", "desc"]),
+      }),
+    )
+    .optional(),
+  page: z
+    .object({
+      limit: z.number().int().positive().max(200),
+      cursor: z.string().min(1).optional(),
     })
     .optional(),
 });
@@ -1264,6 +1336,15 @@ export const CheckoutPrStatusRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const PullRequestTimelineRequestSchema = z.object({
+  type: z.literal("pull_request_timeline_request"),
+  cwd: z.string(),
+  prNumber: z.number(),
+  repoOwner: z.string(),
+  repoName: z.string(),
+  requestId: z.string(),
+});
+
 export const ValidateBranchRequestSchema = z.object({
   type: z.literal("validate_branch_request"),
   cwd: z.string(),
@@ -1320,6 +1401,7 @@ export const GitHubSearchItemSchema = z.object({
   labels: z.array(z.string()),
   baseRefName: z.string().nullable().optional(),
   headRefName: z.string().nullable().optional(),
+  updatedAt: z.string().optional(),
 });
 
 export const GitHubSearchKindSchema = z.enum(["github-issue", "github-pr"]);
@@ -1741,6 +1823,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   AbortRequestMessageSchema,
   AudioPlayedMessageSchema,
   FetchAgentsRequestMessageSchema,
+  FetchAgentHistoryRequestMessageSchema,
   FetchWorkspacesRequestMessageSchema,
   FetchAgentRequestMessageSchema,
   DeleteAgentRequestMessageSchema,
@@ -1792,6 +1875,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   CheckoutPushRequestSchema,
   CheckoutPrCreateRequestSchema,
   CheckoutPrStatusRequestSchema,
+  PullRequestTimelineRequestSchema,
   CheckoutSwitchBranchRequestSchema,
   StashSaveRequestSchema,
   StashPopRequestSchema,
@@ -2164,7 +2248,7 @@ export const ProjectCheckoutLiteGitNonPaseoPayloadSchema = z
     remoteUrl: z.string().nullable(),
     worktreeRoot: z.string().optional(),
     isPaseoOwnedWorktree: z.literal(false),
-    mainRepoRoot: z.null(),
+    mainRepoRoot: z.string().nullable().optional().default(null),
   })
   .transform((value) => ({
     ...value,
@@ -2210,6 +2294,7 @@ export const WorkspaceScriptPayloadSchema = z.object({
   lifecycle: WorkspaceScriptLifecycleSchema,
   health: WorkspaceScriptHealthSchema.nullable(),
   exitCode: z.number().nullable().optional().default(null),
+  terminalId: z.string().nullable().optional().default(null),
 });
 
 const WorkspaceGitRuntimePayloadSchema = z
@@ -2305,7 +2390,7 @@ export const AgentUpdateMessageSchema = z.object({
     z.object({
       kind: z.literal("upsert"),
       agent: AgentSnapshotPayloadSchema,
-      project: ProjectPlacementPayloadSchema,
+      project: ProjectPlacementPayloadSchema.nullable().optional(),
     }),
     z.object({
       kind: z.literal("remove"),
@@ -2342,22 +2427,33 @@ export const AgentListMessageSchema = z.object({
   }),
 });
 
+const AgentDirectoryResponseEntrySchema = z.object({
+  agent: AgentSnapshotPayloadSchema,
+  project: ProjectPlacementPayloadSchema,
+});
+
+const AgentDirectoryPageInfoSchema = z.object({
+  nextCursor: z.string().nullable(),
+  prevCursor: z.string().nullable(),
+  hasMore: z.boolean(),
+});
+
 export const FetchAgentsResponseMessageSchema = z.object({
   type: z.literal("fetch_agents_response"),
   payload: z.object({
     requestId: z.string(),
     subscriptionId: z.string().nullable().optional(),
-    entries: z.array(
-      z.object({
-        agent: AgentSnapshotPayloadSchema,
-        project: ProjectPlacementPayloadSchema,
-      }),
-    ),
-    pageInfo: z.object({
-      nextCursor: z.string().nullable(),
-      prevCursor: z.string().nullable(),
-      hasMore: z.boolean(),
-    }),
+    entries: z.array(AgentDirectoryResponseEntrySchema),
+    pageInfo: AgentDirectoryPageInfoSchema,
+  }),
+});
+
+export const FetchAgentHistoryResponseMessageSchema = z.object({
+  type: z.literal("fetch_agent_history_response"),
+  payload: z.object({
+    requestId: z.string(),
+    entries: z.array(AgentDirectoryResponseEntrySchema),
+    pageInfo: AgentDirectoryPageInfoSchema,
   }),
 });
 
@@ -2746,6 +2842,7 @@ const CheckoutStatusGitNonPaseoSchema = CheckoutStatusCommonSchema.extend({
   isGit: z.literal(true),
   isPaseoOwnedWorktree: z.literal(false),
   repoRoot: z.string(),
+  mainRepoRoot: z.string().nullable().optional().default(null),
   currentBranch: z.string().nullable(),
   isDirty: z.boolean(),
   baseRef: z.string().nullable(),
@@ -2778,6 +2875,56 @@ export const CheckoutStatusResponseSchema = z.object({
     CheckoutStatusGitNonPaseoSchema,
     CheckoutStatusGitPaseoSchema,
   ]),
+});
+
+export const CheckoutPrStatusSchema = z.object({
+  number: z.number().optional(),
+  url: z.string(),
+  title: z.string(),
+  state: z.string(),
+  baseRefName: z.string(),
+  headRefName: z.string(),
+  isMerged: z.boolean(),
+  isDraft: z.boolean().optional().default(false),
+  checks: z
+    .array(
+      z.object({
+        name: z.string(),
+        status: z.string(),
+        url: z.string().nullable(),
+        workflow: z.string().optional(),
+        duration: z.string().optional(),
+      }),
+    )
+    .optional()
+    .default([]),
+  checksStatus: z.string().optional(),
+  reviewDecision: z.string().nullable().optional(),
+  repoOwner: z.string().optional(),
+  repoName: z.string().optional(),
+});
+
+const CheckoutPrStatusPayloadSchema = z.object({
+  cwd: z.string(),
+  status: CheckoutPrStatusSchema.nullable(),
+  githubFeaturesEnabled: z.boolean(),
+  error: CheckoutErrorSchema.nullable(),
+  requestId: z.string(),
+});
+
+const CheckoutStatusUpdateMetadataSchema = z.object({
+  prStatus: CheckoutPrStatusPayloadSchema.optional(),
+});
+
+export const CheckoutStatusUpdateSchema = z.object({
+  type: z.literal("checkout_status_update"),
+  payload: z
+    .union([
+      CheckoutStatusNotGitSchema,
+      CheckoutStatusGitNonPaseoSchema,
+      CheckoutStatusGitPaseoSchema,
+    ])
+    .and(CheckoutStatusUpdateMetadataSchema),
 });
 
 const CheckoutDiffSubscriptionPayloadSchema = z.object({
@@ -2880,35 +3027,90 @@ export const CheckoutPrCreateResponseSchema = z.object({
   }),
 });
 
-const CheckoutPrStatusSchema = z.object({
-  url: z.string(),
-  title: z.string(),
-  state: z.string(),
-  baseRefName: z.string(),
-  headRefName: z.string(),
-  isMerged: z.boolean(),
-  checks: z
-    .array(
-      z.object({
-        name: z.string(),
-        status: z.string(),
-        url: z.string().nullable(),
-      }),
-    )
-    .optional(),
-  checksStatus: z.string().optional(),
-  reviewDecision: z.string().nullable().optional(),
-});
-
 export const CheckoutPrStatusResponseSchema = z.object({
   type: z.literal("checkout_pr_status_response"),
-  payload: z.object({
-    cwd: z.string(),
-    status: CheckoutPrStatusSchema.nullable(),
-    githubFeaturesEnabled: z.boolean(),
-    error: CheckoutErrorSchema.nullable(),
-    requestId: z.string(),
+  payload: CheckoutPrStatusPayloadSchema,
+});
+
+const PullRequestTimelineKnownErrorSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("not_found"),
+    message: z.string().optional().default(""),
   }),
+  z.object({
+    kind: z.literal("forbidden"),
+    message: z.string().optional().default(""),
+  }),
+  z.object({
+    kind: z.literal("unknown"),
+    message: z.string().optional().default(""),
+  }),
+]);
+
+const PullRequestTimelineErrorSchema = z.preprocess((value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { kind: "unknown", message: "" };
+  }
+  const error = value as Record<string, unknown>;
+  if (error.kind === "not_found" || error.kind === "forbidden" || error.kind === "unknown") {
+    return error;
+  }
+  return { ...error, kind: "unknown" };
+}, PullRequestTimelineKnownErrorSchema);
+
+const PullRequestTimelineReviewItemSchema = z.object({
+  id: z.string().optional().default(""),
+  kind: z.literal("review"),
+  author: z.string().optional().default("unknown"),
+  body: z.string().optional().default(""),
+  createdAt: z.number().optional().default(0),
+  url: z.string().optional().default(""),
+  reviewState: z
+    .enum(["approved", "changes_requested", "commented"])
+    .optional()
+    .default("commented"),
+});
+
+const PullRequestTimelineCommentItemSchema = z.object({
+  id: z.string().optional().default(""),
+  kind: z.literal("comment"),
+  author: z.string().optional().default("unknown"),
+  body: z.string().optional().default(""),
+  createdAt: z.number().optional().default(0),
+  url: z.string().optional().default(""),
+});
+
+export const PullRequestTimelineItemSchema = z.preprocess(
+  (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return value;
+    }
+    const item = value as Record<string, unknown>;
+    if (item.kind === "review" || item.kind === "comment") {
+      return item;
+    }
+    return { ...item, kind: "comment" };
+  },
+  z.discriminatedUnion("kind", [
+    PullRequestTimelineReviewItemSchema,
+    PullRequestTimelineCommentItemSchema,
+  ]),
+);
+
+export const PullRequestTimelineResponseSchema = z.object({
+  type: z.literal("pull_request_timeline_response"),
+  payload: z
+    .object({
+      cwd: z.string().optional().default(""),
+      prNumber: z.number().nullable().optional().default(null),
+      items: z.array(PullRequestTimelineItemSchema).optional().default([]),
+      truncated: z.boolean().optional().default(false),
+      error: PullRequestTimelineErrorSchema.nullable().optional().default(null),
+      requestId: z.string().optional().default(""),
+      githubFeaturesEnabled: z.boolean().optional().default(true),
+    })
+    .optional()
+    .default({}),
 });
 
 export const CheckoutSwitchBranchResponseSchema = z.object({
@@ -2917,6 +3119,7 @@ export const CheckoutSwitchBranchResponseSchema = z.object({
     cwd: z.string(),
     success: z.boolean(),
     branch: z.string(),
+    source: z.enum(["local", "remote"]).optional(),
     error: CheckoutErrorSchema.nullable(),
     requestId: z.string(),
   }),
@@ -2974,6 +3177,16 @@ export const BranchSuggestionsResponseSchema = z.object({
   type: z.literal("branch_suggestions_response"),
   payload: z.object({
     branches: z.array(z.string()),
+    branchDetails: z
+      .array(
+        z.object({
+          name: z.string(),
+          committerDate: z.number(),
+          hasLocal: z.boolean().optional(),
+          hasRemote: z.boolean().optional(),
+        }),
+      )
+      .optional(),
     error: z.string().nullable(),
     requestId: z.string(),
   }),
@@ -3414,6 +3627,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentStreamMessageSchema,
   AgentStatusMessageSchema,
   FetchAgentsResponseMessageSchema,
+  FetchAgentHistoryResponseMessageSchema,
   FetchWorkspacesResponseMessageSchema,
   OpenProjectResponseMessageSchema,
   StartWorkspaceScriptResponseMessageSchema,
@@ -3458,6 +3672,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   CheckoutPushResponseSchema,
   CheckoutPrCreateResponseSchema,
   CheckoutPrStatusResponseSchema,
+  PullRequestTimelineResponseSchema,
   CheckoutSwitchBranchResponseSchema,
   StashSaveResponseSchema,
   StashPopResponseSchema,
@@ -3556,6 +3771,9 @@ export type LegacyEditorTargetId = z.infer<typeof LegacyEditorTargetIdSchema>;
 export type EditorTargetId = LiteralUnion<KnownEditorTargetId, string>;
 export type EditorTargetDescriptorPayload = z.infer<typeof EditorTargetDescriptorPayloadSchema>;
 export type FetchAgentsResponseMessage = z.infer<typeof FetchAgentsResponseMessageSchema>;
+export type FetchAgentHistoryResponseMessage = z.infer<
+  typeof FetchAgentHistoryResponseMessageSchema
+>;
 export type FetchWorkspacesResponseMessage = z.infer<typeof FetchWorkspacesResponseMessageSchema>;
 export type ScriptStatusUpdateMessage = z.infer<typeof ScriptStatusUpdateMessageSchema>;
 export type OpenProjectResponseMessage = z.infer<typeof OpenProjectResponseMessageSchema>;
@@ -3644,6 +3862,7 @@ export type ActivityLogPayload = z.infer<typeof ActivityLogPayloadSchema>;
 // Type exports for inbound message types
 export type VoiceAudioChunkMessage = z.infer<typeof VoiceAudioChunkMessageSchema>;
 export type FetchAgentsRequestMessage = z.infer<typeof FetchAgentsRequestMessageSchema>;
+export type FetchAgentHistoryRequestMessage = z.infer<typeof FetchAgentHistoryRequestMessageSchema>;
 export type FetchWorkspacesRequestMessage = z.infer<typeof FetchWorkspacesRequestMessageSchema>;
 export type FetchAgentRequestMessage = z.infer<typeof FetchAgentRequestMessageSchema>;
 export type SendAgentMessageRequest = z.infer<typeof SendAgentMessageRequestSchema>;
@@ -3733,6 +3952,9 @@ export type CheckoutPrCreateRequest = z.infer<typeof CheckoutPrCreateRequestSche
 export type CheckoutPrCreateResponse = z.infer<typeof CheckoutPrCreateResponseSchema>;
 export type CheckoutPrStatusRequest = z.infer<typeof CheckoutPrStatusRequestSchema>;
 export type CheckoutPrStatusResponse = z.infer<typeof CheckoutPrStatusResponseSchema>;
+export type PullRequestTimelineRequest = z.infer<typeof PullRequestTimelineRequestSchema>;
+export type PullRequestTimelineItem = z.infer<typeof PullRequestTimelineItemSchema>;
+export type PullRequestTimelineResponse = z.infer<typeof PullRequestTimelineResponseSchema>;
 export type CheckoutSwitchBranchRequest = z.infer<typeof CheckoutSwitchBranchRequestSchema>;
 export type CheckoutSwitchBranchResponse = z.infer<typeof CheckoutSwitchBranchResponseSchema>;
 export type StashSaveRequest = z.infer<typeof StashSaveRequestSchema>;

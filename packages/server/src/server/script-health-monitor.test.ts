@@ -7,13 +7,14 @@ import { scheduler } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { findFreePort, ScriptRouteStore } from "./script-proxy.js";
 import { ScriptHealthMonitor, type ScriptHealthEntry } from "./script-health-monitor.js";
-import { spawnWorktreeScripts } from "./worktree-bootstrap.js";
+import { spawnWorkspaceScript } from "./worktree-bootstrap.js";
 import { WorkspaceScriptRuntimeStore } from "./workspace-script-runtime-store.js";
+import type { TerminalManager } from "./terminal/terminal-manager.js";
 
-type TcpServerHandle = {
+interface TcpServerHandle {
   port: number;
   server: net.Server;
-};
+}
 
 function createWorkspaceRepo(options?: {
   branchName?: string;
@@ -57,6 +58,7 @@ function createStubTerminalManager(
         send: () => {},
         subscribe: () => () => {},
         onExit: () => () => {},
+        onCommandFinished: () => () => {},
         getState: () => ({
           rows: 1,
           cols: 1,
@@ -69,6 +71,7 @@ function createStubTerminalManager(
         getSize: () => ({ rows: 1, cols: 1 }),
         getTitle: () => undefined,
         getExitInfo: () => null,
+        killAndWait: async () => {},
       };
     },
     registerCwdEnv() {},
@@ -76,6 +79,7 @@ function createStubTerminalManager(
       return undefined;
     },
     killTerminal() {},
+    async killTerminalAndWait() {},
     listDirectories() {
       return [];
     },
@@ -136,9 +140,7 @@ describe("ScriptHealthMonitor", () => {
   afterEach(async () => {
     vi.useRealTimers();
 
-    for (const server of servers) {
-      await closeServer(server);
-    }
+    await Promise.all(Array.from(servers, (server) => closeServer(server)));
     servers.clear();
   });
 
@@ -430,15 +432,23 @@ describe("ScriptHealthMonitor", () => {
       [];
 
     try {
-      await spawnWorktreeScripts({
-        repoRoot: workspace.repoDir,
-        workspaceId: workspace.repoDir,
-        branchName: null,
-        daemonPort: null,
-        routeStore,
-        runtimeStore,
-        terminalManager: createStubTerminalManager(createTerminalCalls) as any,
-      });
+      await Promise.all(
+        ["typecheck", "api"].map((scriptName) =>
+          spawnWorkspaceScript({
+            repoRoot: workspace.repoDir,
+            workspaceId: workspace.repoDir,
+            projectSlug: "repo",
+            branchName: null,
+            scriptName,
+            daemonPort: null,
+            routeStore,
+            runtimeStore,
+            terminalManager: createStubTerminalManager(
+              createTerminalCalls,
+            ) as unknown as TerminalManager,
+          }),
+        ),
+      );
 
       expect(createTerminalCalls).toHaveLength(2);
       expect(routeStore.listRoutes()).toEqual([

@@ -4,7 +4,7 @@ import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatTokenCountShort } from "@/utils/format-tokens";
 
-type ContextWindowMeterProps = {
+interface ContextWindowMeterProps {
   maxTokens: number;
   usedTokens: number;
   /** Optional label for the tooltip title (e.g. Claude). */

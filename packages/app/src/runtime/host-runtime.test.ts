@@ -12,6 +12,7 @@ import {
   HostRuntimeController,
   HostRuntimeStore,
   type HostRuntimeControllerDeps,
+  type HostRuntimeSnapshot,
 } from "./host-runtime";
 
 class FakeDaemonClient {
@@ -212,17 +213,21 @@ function makeDeps(
       return client as unknown as DaemonClient;
     },
     connectToDaemon: async ({ host, connection }) => {
-      const value = latencyByConnectionId[connection.id];
-      if (value instanceof Error) {
-        throw value;
-      }
-      if (typeof value !== "number") {
-        throw new Error(`missing latency for ${connection.id}`);
-      }
+      const readLatency = (): number => {
+        const value = latencyByConnectionId[connection.id];
+        if (value instanceof Error) {
+          throw value;
+        }
+        if (typeof value !== "number") {
+          throw new Error(`missing latency for ${connection.id}`);
+        }
+        return value;
+      };
+      readLatency();
       const client = new FakeDaemonClient();
       client.connectCalls = 1;
       client.setConnectionState({ status: "connected" });
-      client.ping = async () => ({ rttMs: value });
+      client.ping = async () => ({ rttMs: readLatency() });
       createdClients.push(client);
       return {
         client: client as unknown as DaemonClient,
@@ -262,6 +267,93 @@ function clearProbeBackoff(controller: HostRuntimeController): void {
       connectionLastProbedAt: Map<string, number>;
     }
   ).connectionLastProbedAt.clear();
+}
+
+type HostRuntimeSnapshotPatch = Partial<Omit<HostRuntimeSnapshot, "serverId" | "clientGeneration">>;
+
+function updateControllerSnapshot(
+  controller: HostRuntimeController,
+  patch: HostRuntimeSnapshotPatch,
+): void {
+  (
+    controller as unknown as {
+      updateSnapshot: (patch: HostRuntimeSnapshotPatch) => void;
+    }
+  ).updateSnapshot(patch);
+}
+
+function makeSingleConnectionHost(serverId: string): HostProfile {
+  return makeHost({
+    serverId,
+    connections: [
+      {
+        id: `direct:${serverId}:6767`,
+        type: "directTcp",
+        endpoint: `${serverId}:6767`,
+      },
+    ],
+    preferredConnectionId: `direct:${serverId}:6767`,
+  });
+}
+
+function createOfflineOnlyStore(): HostRuntimeStore {
+  return new HostRuntimeStore({
+    deps: {
+      createClient: () => {
+        throw new Error("startup host tests drive snapshots directly");
+      },
+      connectToDaemon: async () => {
+        throw new Error("offline");
+      },
+      getClientId: async () => "cid_test_runtime",
+    },
+  });
+}
+
+function setStoreHosts(store: HostRuntimeStore, hosts: HostProfile[]): void {
+  (
+    store as unknown as {
+      setHostsAndSync: (hosts: HostProfile[]) => void;
+    }
+  ).setHostsAndSync(hosts);
+}
+
+function markStoreHostOnline(
+  store: HostRuntimeStore,
+  serverId: string,
+  lastOnlineAt: string,
+): void {
+  const controller = (
+    store as unknown as {
+      controllers: Map<string, HostRuntimeController>;
+    }
+  ).controllers.get(serverId);
+  if (!controller) {
+    throw new Error(`Missing controller for ${serverId}`);
+  }
+  (
+    store as unknown as {
+      lastConnectionStatusByServer: Map<string, HostRuntimeSnapshot["connectionStatus"]>;
+    }
+  ).lastConnectionStatusByServer.set(serverId, "online");
+  updateControllerSnapshot(controller, {
+    connectionStatus: "online",
+    hasEverLoadedAgentDirectory: true,
+    lastOnlineAt,
+  });
+  (
+    store as unknown as {
+      emit: (serverId: string) => void;
+    }
+  ).emit(serverId);
+}
+
+function makeProbeMap(
+  entries: Array<
+    [string, HostRuntimeSnapshot["probeByConnectionId"] extends Map<string, infer T> ? T : never]
+  >,
+): HostRuntimeSnapshot["probeByConnectionId"] {
+  return new Map(entries);
 }
 
 describe("HostRuntimeController", () => {
@@ -374,7 +466,7 @@ describe("HostRuntimeController", () => {
         createClient: () => {
           throw new Error("should adopt the probe client");
         },
-        connectToDaemon: async ({ host, connection }) => {
+        connectToDaemon: async ({ host: hostProfile, connection }) => {
           const client = makeConnectedProbeClient(connection.id === "direct:lan:6767" ? 12 : 30);
           if (connection.id === "relay:relay.paseo.sh:443") {
             client.ping = async () => ({ rttMs: await slowPing.promise });
@@ -382,8 +474,8 @@ describe("HostRuntimeController", () => {
           clients.push(client);
           return {
             client: client as unknown as DaemonClient,
-            serverId: host.serverId,
-            hostname: host.label ?? null,
+            serverId: hostProfile.serverId,
+            hostname: hostProfile.label ?? null,
           };
         },
         getClientId: async () => "cid_test_runtime",
@@ -411,7 +503,95 @@ describe("HostRuntimeController", () => {
     await probeCycle;
   });
 
-  it("fails over when active connection becomes unavailable", async () => {
+  it("probes the active online connection through the existing client", async () => {
+    const host = makeHost({ preferredConnectionId: "direct:lan:6767" });
+    const probeAttempts: string[] = [];
+    const latencies: Record<string, number | Error> = {
+      "direct:lan:6767": 12,
+      "relay:relay.paseo.sh:443": 65,
+    };
+    const controller = new HostRuntimeController({
+      host,
+      deps: {
+        createClient: () => {
+          throw new Error("should adopt probe clients");
+        },
+        connectToDaemon: async ({ host: hostProfile, connection }) => {
+          probeAttempts.push(connection.id);
+          const value = latencies[connection.id];
+          if (value instanceof Error) {
+            throw value;
+          }
+          if (typeof value !== "number") {
+            throw new Error(`missing latency for ${connection.id}`);
+          }
+          return {
+            client: makeConnectedProbeClient(value) as unknown as DaemonClient,
+            serverId: hostProfile.serverId,
+            hostname: hostProfile.label ?? null,
+          };
+        },
+        getClientId: async () => "cid_test_runtime",
+      },
+    });
+
+    await controller.start({ autoProbe: false });
+    expect(controller.getSnapshot().activeConnectionId).toBe("direct:lan:6767");
+
+    probeAttempts.length = 0;
+    const activeClient = controller.getSnapshot().client as unknown as FakeDaemonClient;
+    activeClient.ping = async () => ({ rttMs: 9 });
+    clearProbeBackoff(controller);
+    await controller.runProbeCycleNow();
+
+    expect(probeAttempts).toEqual(["relay:relay.paseo.sh:443"]);
+    expect(controller.getSnapshot().activeConnectionId).toBe("direct:lan:6767");
+    expect(controller.getSnapshot().connectionStatus).toBe("online");
+    expect(controller.getSnapshot().probeByConnectionId.get("direct:lan:6767")).toEqual({
+      status: "available",
+      latencyMs: 9,
+    });
+  });
+
+  it("rejects probes that resolve to a different server id", async () => {
+    const host = makeHost({
+      serverId: "srv_old",
+      connections: [
+        {
+          id: "direct:localhost:6767",
+          type: "directTcp",
+          endpoint: "localhost:6767",
+        },
+      ],
+    });
+    const mismatchedClient = makeConnectedProbeClient(8);
+    const controller = new HostRuntimeController({
+      host,
+      deps: {
+        createClient: () => {
+          throw new Error("should not create active client");
+        },
+        connectToDaemon: async () => ({
+          client: mismatchedClient as unknown as DaemonClient,
+          serverId: "srv_current",
+          hostname: "current host",
+        }),
+        getClientId: async () => "cid_test_runtime",
+      },
+    });
+
+    await controller.start({ autoProbe: false });
+
+    expect(controller.getSnapshot().connectionStatus).toBe("connecting");
+    expect(controller.getSnapshot().activeConnectionId).toBeNull();
+    expect(controller.getSnapshot().probeByConnectionId.get("direct:localhost:6767")).toEqual({
+      status: "unavailable",
+      latencyMs: null,
+    });
+    expect(mismatchedClient.closeCalls).toBe(1);
+  });
+
+  it("fails over when the active client ping fails", async () => {
     const host = makeHost({ preferredConnectionId: "direct:lan:6767" });
     const clients: FakeDaemonClient[] = [];
     const latencies: Record<string, number | Error> = {
@@ -428,6 +608,9 @@ describe("HostRuntimeController", () => {
     const initialClient = controller.getSnapshot().client;
     expect(initialClient).toBeTruthy();
 
+    (initialClient as unknown as FakeDaemonClient).ping = async () => {
+      throw new Error("active ping failed");
+    };
     latencies["direct:lan:6767"] = new Error("direct unavailable");
     latencies["relay:relay.paseo.sh:443"] = 42;
     clearProbeBackoff(controller);
@@ -756,10 +939,10 @@ describe("HostRuntimeController", () => {
         createdClients.push(client);
         return client as unknown as DaemonClient;
       },
-      connectToDaemon: async ({ host }) => ({
+      connectToDaemon: async ({ host: hostProfile }) => ({
         client: makeConnectedProbeClient(10) as unknown as DaemonClient,
-        serverId: host.serverId,
-        hostname: host.label ?? null,
+        serverId: hostProfile.serverId,
+        hostname: hostProfile.label ?? null,
       }),
       getClientId: async () => "cid_test_runtime",
     };
@@ -816,7 +999,7 @@ describe("HostRuntimeController", () => {
     expect(createdClients[0]?.closeCalls).toBe(1);
   });
 
-  it("ignores stale probe results when overlapping probe cycles finish out of order", async () => {
+  it("coalesces overlapping probe cycles instead of invalidating the in-flight result", async () => {
     const host = makeHost({
       connections: [
         {
@@ -827,14 +1010,13 @@ describe("HostRuntimeController", () => {
       ],
     });
     const slowProbe = createDeferred<number>();
-    const fastProbe = createDeferred<number>();
     let probeCalls = 0;
 
     const controller = new HostRuntimeController({
       host,
       deps: {
         createClient: () => new FakeDaemonClient() as unknown as DaemonClient,
-        connectToDaemon: async ({ host }) => {
+        connectToDaemon: async ({ host: hostProfile }) => {
           probeCalls += 1;
           const client = new FakeDaemonClient();
           client.connectCalls = 1;
@@ -843,15 +1025,12 @@ describe("HostRuntimeController", () => {
             if (probeCalls === 1) {
               return { rttMs: await slowProbe.promise };
             }
-            if (probeCalls === 2) {
-              return { rttMs: await fastProbe.promise };
-            }
             throw new Error("unexpected probe call");
           };
           return {
             client: client as unknown as DaemonClient,
-            serverId: host.serverId,
-            hostname: host.label ?? null,
+            serverId: hostProfile.serverId,
+            hostname: hostProfile.label ?? null,
           };
         },
         getClientId: async () => "cid_test_runtime",
@@ -861,23 +1040,14 @@ describe("HostRuntimeController", () => {
     const first = controller.runProbeCycleNow();
     clearProbeBackoff(controller);
     const second = controller.runProbeCycleNow();
-
-    fastProbe.resolve(12);
-    await second;
-    const probeAfterSecond = controller.getSnapshot().probeByConnectionId.get("direct:lan:6767");
-    expect(probeAfterSecond).toEqual({
-      status: "available",
-      latencyMs: 12,
-    });
+    expect(probeCalls).toBe(1);
 
     slowProbe.resolve(900);
-    await first;
-    const probeAfterFirstSettles = controller
-      .getSnapshot()
-      .probeByConnectionId.get("direct:lan:6767");
-    expect(probeAfterFirstSettles).toEqual({
+    await Promise.all([first, second]);
+    const probeAfterCycle = controller.getSnapshot().probeByConnectionId.get("direct:lan:6767");
+    expect(probeAfterCycle).toEqual({
       status: "available",
-      latencyMs: 12,
+      latencyMs: 900,
     });
   });
 
@@ -901,12 +1071,12 @@ describe("HostRuntimeController", () => {
           createdClients.push(client);
           return client as unknown as DaemonClient;
         },
-        connectToDaemon: async ({ host }) => {
+        connectToDaemon: async ({ host: hostProfile }) => {
           const client = makeConnectedProbeClient(10);
           return {
             client: client as unknown as DaemonClient,
-            serverId: host.serverId,
-            hostname: host.label ?? null,
+            serverId: hostProfile.serverId,
+            hostname: hostProfile.label ?? null,
           };
         },
         getClientId: async () => "cid_test_runtime",
@@ -923,9 +1093,244 @@ describe("HostRuntimeController", () => {
     expect(controller.getSnapshot().clientGeneration).toBe(generationBeforeProbes);
     expect(createdClients).toHaveLength(0);
   });
+
+  it("does not notify or replace the snapshot for equal probe maps", () => {
+    const controller = new HostRuntimeController({ host: makeHost() });
+    const firstProbeMap = makeProbeMap([
+      ["direct:lan:6767", { status: "available", latencyMs: 12 }],
+    ]);
+    const equalProbeMap = makeProbeMap([
+      ["direct:lan:6767", { status: "available", latencyMs: 12 }],
+    ]);
+
+    updateControllerSnapshot(controller, { probeByConnectionId: firstProbeMap });
+    const snapshotAfterFirstProbe = controller.getSnapshot();
+    let notifyCount = 0;
+    const unsubscribe = controller.subscribe(() => {
+      notifyCount += 1;
+    });
+
+    updateControllerSnapshot(controller, { probeByConnectionId: equalProbeMap });
+
+    expect(notifyCount).toBe(0);
+    expect(controller.getSnapshot()).toBe(snapshotAfterFirstProbe);
+    expect(controller.getSnapshot().probeByConnectionId).toBe(firstProbeMap);
+    unsubscribe();
+  });
+
+  it("does not notify or replace the snapshot when connection status is already equal", () => {
+    const controller = new HostRuntimeController({ host: makeHost() });
+
+    updateControllerSnapshot(controller, { connectionStatus: "online" });
+    const snapshotAfterOnline = controller.getSnapshot();
+    let notifyCount = 0;
+    const unsubscribe = controller.subscribe(() => {
+      notifyCount += 1;
+    });
+
+    updateControllerSnapshot(controller, { connectionStatus: "online" });
+
+    expect(notifyCount).toBe(0);
+    expect(controller.getSnapshot()).toBe(snapshotAfterOnline);
+    unsubscribe();
+  });
+
+  it("does not notify or replace the snapshot when every patched field is equal", () => {
+    const controller = new HostRuntimeController({ host: makeHost() });
+    const firstProbeMap = makeProbeMap([
+      ["direct:lan:6767", { status: "available", latencyMs: 12 }],
+    ]);
+    const equalProbeMap = makeProbeMap([
+      ["direct:lan:6767", { status: "available", latencyMs: 12 }],
+    ]);
+
+    updateControllerSnapshot(controller, {
+      connectionStatus: "online",
+      probeByConnectionId: firstProbeMap,
+    });
+    const snapshotAfterSetup = controller.getSnapshot();
+    let notifyCount = 0;
+    const unsubscribe = controller.subscribe(() => {
+      notifyCount += 1;
+    });
+
+    updateControllerSnapshot(controller, {
+      connectionStatus: "online",
+      probeByConnectionId: equalProbeMap,
+    });
+
+    expect(notifyCount).toBe(0);
+    expect(controller.getSnapshot()).toBe(snapshotAfterSetup);
+    expect(controller.getSnapshot().probeByConnectionId).toBe(firstProbeMap);
+    unsubscribe();
+  });
+
+  it("notifies once for a changed field while preserving equal field identity", () => {
+    const controller = new HostRuntimeController({ host: makeHost() });
+    const firstProbeMap = makeProbeMap([
+      ["direct:lan:6767", { status: "available", latencyMs: 12 }],
+    ]);
+    const equalProbeMap = makeProbeMap([
+      ["direct:lan:6767", { status: "available", latencyMs: 12 }],
+    ]);
+
+    updateControllerSnapshot(controller, {
+      connectionStatus: "online",
+      probeByConnectionId: firstProbeMap,
+    });
+    const snapshotBeforeChange = controller.getSnapshot();
+    let notifyCount = 0;
+    const unsubscribe = controller.subscribe(() => {
+      notifyCount += 1;
+    });
+
+    updateControllerSnapshot(controller, {
+      connectionStatus: "offline",
+      probeByConnectionId: equalProbeMap,
+    });
+
+    expect(notifyCount).toBe(1);
+    expect(controller.getSnapshot()).not.toBe(snapshotBeforeChange);
+    expect(controller.getSnapshot().connectionStatus).toBe("offline");
+    expect(controller.getSnapshot().probeByConnectionId).toBe(firstProbeMap);
+    unsubscribe();
+  });
+
+  it("notifies once and replaces the probe map when probe contents change", () => {
+    const controller = new HostRuntimeController({ host: makeHost() });
+    const firstProbeMap = makeProbeMap([
+      ["direct:lan:6767", { status: "available", latencyMs: 12 }],
+    ]);
+    const changedProbeMap = makeProbeMap([
+      ["direct:lan:6767", { status: "available", latencyMs: 12 }],
+      ["relay:relay.paseo.sh:443", { status: "unavailable", latencyMs: null }],
+    ]);
+
+    updateControllerSnapshot(controller, { probeByConnectionId: firstProbeMap });
+    const snapshotBeforeChange = controller.getSnapshot();
+    let notifyCount = 0;
+    const unsubscribe = controller.subscribe(() => {
+      notifyCount += 1;
+    });
+
+    updateControllerSnapshot(controller, { probeByConnectionId: changedProbeMap });
+
+    expect(notifyCount).toBe(1);
+    expect(controller.getSnapshot()).not.toBe(snapshotBeforeChange);
+    expect(controller.getSnapshot().probeByConnectionId).toBe(changedProbeMap);
+    expect(controller.getSnapshot().probeByConnectionId).not.toBe(firstProbeMap);
+    unsubscribe();
+  });
 });
 
 describe("HostRuntimeStore", () => {
+  it("resolves startup host immediately when the preferred host is first online", async () => {
+    const store = createOfflineOnlyStore();
+    setStoreHosts(store, [
+      makeSingleConnectionHost("srv_preferred"),
+      makeSingleConnectionHost("srv_other"),
+    ]);
+
+    const startup = store.waitForAnyConnectionOnline({ preferredServerId: "srv_preferred" });
+    markStoreHostOnline(store, "srv_preferred", "2026-04-26T10:00:00.000Z");
+
+    await expect(startup.promise).resolves.toEqual({ serverId: "srv_preferred" });
+    startup.cancel();
+    setStoreHosts(store, []);
+  });
+
+  it("waits through grace for the preferred host after a different host comes online first", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = createOfflineOnlyStore();
+      setStoreHosts(store, [
+        makeSingleConnectionHost("srv_preferred"),
+        makeSingleConnectionHost("srv_other"),
+      ]);
+
+      const startup = store.waitForAnyConnectionOnline({ preferredServerId: "srv_preferred" });
+      markStoreHostOnline(store, "srv_other", "2026-04-26T10:00:00.000Z");
+      await vi.advanceTimersByTimeAsync(1_000);
+      markStoreHostOnline(store, "srv_preferred", "2026-04-26T10:00:01.000Z");
+
+      await expect(startup.promise).resolves.toEqual({ serverId: "srv_preferred" });
+      startup.cancel();
+      setStoreHosts(store, []);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to the first online host when preferred does not arrive during grace", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = createOfflineOnlyStore();
+      setStoreHosts(store, [
+        makeSingleConnectionHost("srv_preferred"),
+        makeSingleConnectionHost("srv_other"),
+      ]);
+
+      const startup = store.waitForAnyConnectionOnline({ preferredServerId: "srv_preferred" });
+      markStoreHostOnline(store, "srv_other", "2026-04-26T10:00:00.000Z");
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      await expect(startup.promise).resolves.toEqual({ serverId: "srv_other" });
+      startup.cancel();
+      setStoreHosts(store, []);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resolves the first online host immediately when no preferred host is set", async () => {
+    const store = createOfflineOnlyStore();
+    setStoreHosts(store, [makeSingleConnectionHost("srv_other")]);
+
+    const startup = store.waitForAnyConnectionOnline({ preferredServerId: null });
+    markStoreHostOnline(store, "srv_other", "2026-04-26T10:00:00.000Z");
+
+    await expect(startup.promise).resolves.toEqual({ serverId: "srv_other" });
+    startup.cancel();
+    setStoreHosts(store, []);
+  });
+
+  it("resolves null when startup has no hosts to wait for", async () => {
+    const store = createOfflineOnlyStore();
+
+    const startup = store.waitForAnyConnectionOnline({ preferredServerId: "srv_preferred" });
+
+    await expect(startup.promise).resolves.toBeNull();
+    startup.cancel();
+  });
+
+  it("resolves null using the connection online timeout when hosts exist but none come online", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = createOfflineOnlyStore();
+      setStoreHosts(store, [
+        makeSingleConnectionHost("srv_preferred"),
+        makeSingleConnectionHost("srv_other"),
+      ]);
+
+      let resolved = false;
+      const startup = store.waitForAnyConnectionOnline({ preferredServerId: "srv_preferred" });
+      startup.promise.then(() => {
+        resolved = true;
+        return undefined;
+      });
+
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(resolved).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(startup.promise).resolves.toBeNull();
+      startup.cancel();
+      setStoreHosts(store, []);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("bootstraps agent directory subscription when host transitions online", async () => {
     const host = makeHost({
       connections: [
@@ -941,10 +1346,10 @@ describe("HostRuntimeStore", () => {
     const store = new HostRuntimeStore({
       deps: {
         createClient: () => fakeClient as unknown as DaemonClient,
-        connectToDaemon: async ({ host }) => ({
+        connectToDaemon: async ({ host: hostProfile }) => ({
           client: fakeClient as unknown as DaemonClient,
-          serverId: host.serverId,
-          hostname: host.label ?? null,
+          serverId: hostProfile.serverId,
+          hostname: hostProfile.label ?? null,
         }),
         getClientId: async () => "cid_test_runtime",
       },
@@ -962,7 +1367,7 @@ describe("HostRuntimeStore", () => {
 
     expect(fakeClient.fetchAgentsCalls).toHaveLength(1);
     expect(fakeClient.fetchAgentsCalls[0]).toEqual({
-      filter: { includeArchived: true },
+      scope: "active",
       sort: [{ key: "updated_at", direction: "desc" }],
       subscribe: { subscriptionId: "app:srv_test" },
       page: { limit: 200 },
@@ -992,10 +1397,10 @@ describe("HostRuntimeStore", () => {
     const store = new HostRuntimeStore({
       deps: {
         createClient: () => fakeClient as unknown as DaemonClient,
-        connectToDaemon: async ({ host }) => ({
+        connectToDaemon: async ({ host: hostProfile }) => ({
           client: fakeClient as unknown as DaemonClient,
-          serverId: host.serverId,
-          hostname: host.label ?? null,
+          serverId: hostProfile.serverId,
+          hostname: hostProfile.label ?? null,
         }),
         getClientId: async () => "cid_test_runtime",
       },
@@ -1010,7 +1415,7 @@ describe("HostRuntimeStore", () => {
 
     expect(fakeClient.fetchAgentsCalls).toHaveLength(1);
     expect(fakeClient.fetchAgentsCalls[0]).toEqual({
-      filter: { includeArchived: true },
+      scope: "active",
       sort: [{ key: "updated_at", direction: "desc" }],
       subscribe: { subscriptionId: "app:srv_no_session" },
       page: { limit: 200 },
@@ -1019,7 +1424,7 @@ describe("HostRuntimeStore", () => {
     store.syncHosts([]);
   });
 
-  it("fetches all pages during bootstrap so older workspace agents are present", async () => {
+  it("fetches all pages during bootstrap within the active agent scope", async () => {
     const host = makeHost({
       serverId: "srv_paged",
       connections: [
@@ -1063,10 +1468,10 @@ describe("HostRuntimeStore", () => {
     const store = new HostRuntimeStore({
       deps: {
         createClient: () => fakeClient as unknown as DaemonClient,
-        connectToDaemon: async ({ host }) => ({
+        connectToDaemon: async ({ host: hostProfile }) => ({
           client: fakeClient as unknown as DaemonClient,
-          serverId: host.serverId,
-          hostname: host.label ?? null,
+          serverId: hostProfile.serverId,
+          hostname: hostProfile.label ?? null,
         }),
         getClientId: async () => "cid_test_runtime",
       },
@@ -1084,13 +1489,13 @@ describe("HostRuntimeStore", () => {
 
     expect(fakeClient.fetchAgentsCalls).toHaveLength(2);
     expect(fakeClient.fetchAgentsCalls[0]).toEqual({
-      filter: { includeArchived: true },
+      scope: "active",
       sort: [{ key: "updated_at", direction: "desc" }],
       subscribe: { subscriptionId: "app:srv_paged" },
       page: { limit: 200 },
     });
     expect(fakeClient.fetchAgentsCalls[1]).toEqual({
-      filter: { includeArchived: true },
+      scope: "active",
       sort: [{ key: "updated_at", direction: "desc" }],
       page: { limit: 200, cursor: "cursor-page-2" },
     });
@@ -1132,10 +1537,10 @@ describe("HostRuntimeStore", () => {
     const store = new HostRuntimeStore({
       deps: {
         createClient: () => fakeClient as unknown as DaemonClient,
-        connectToDaemon: async ({ host }) => ({
+        connectToDaemon: async ({ host: hostProfile }) => ({
           client: fakeClient as unknown as DaemonClient,
-          serverId: host.serverId,
-          hostname: host.label ?? null,
+          serverId: hostProfile.serverId,
+          hostname: hostProfile.label ?? null,
         }),
         getClientId: async () => "cid_test_runtime",
       },
@@ -1164,13 +1569,13 @@ describe("HostRuntimeStore", () => {
 
     expect(fakeClient.fetchAgentsCalls).toEqual([
       {
-        filter: { includeArchived: true },
+        scope: "active",
         sort: [{ key: "updated_at", direction: "desc" }],
         subscribe: { subscriptionId: "app:srv_resubscribe" },
         page: { limit: 200 },
       },
       {
-        filter: { includeArchived: true },
+        scope: "active",
         sort: [{ key: "updated_at", direction: "desc" }],
         subscribe: { subscriptionId: "app:srv_resubscribe" },
         page: { limit: 200 },
@@ -1181,7 +1586,7 @@ describe("HostRuntimeStore", () => {
     useSessionStore.getState().clearSession(host.serverId);
   });
 
-  it("rehydrates archived agents over stale active session state after reconnect bootstrap", async () => {
+  it("replaces stale active session state when active bootstrap omits an agent", async () => {
     const host = makeHost({
       serverId: "srv_archived_rehydrate",
       connections: [
@@ -1196,25 +1601,17 @@ describe("HostRuntimeStore", () => {
     fakeClient.setConnectionState({ status: "connected" });
     fakeClient.fetchAgentsResponses.push(
       makeFetchAgentsPayload({
-        entries: [
-          makeFetchAgentsEntry({
-            id: "agent-archived",
-            cwd: "/Users/moboudra/dev/paseo",
-            updatedAt: "2026-03-30T15:30:00.000Z",
-            archivedAt: "2026-03-30T15:31:00.000Z",
-            title: "Archived remotely",
-          }),
-        ],
+        entries: [],
         subscriptionId: "app:srv_archived_rehydrate",
       }),
     );
     const store = new HostRuntimeStore({
       deps: {
         createClient: () => fakeClient as unknown as DaemonClient,
-        connectToDaemon: async ({ host }) => ({
+        connectToDaemon: async ({ host: hostProfile }) => ({
           client: fakeClient as unknown as DaemonClient,
-          serverId: host.serverId,
-          hostname: host.label ?? null,
+          serverId: hostProfile.serverId,
+          hostname: hostProfile.label ?? null,
         }),
         getClientId: async () => "cid_test_runtime",
       },
@@ -1247,17 +1644,16 @@ describe("HostRuntimeStore", () => {
     store.syncHosts([host]);
 
     const timeoutAt = Date.now() + 300;
-    let archivedAt =
-      useSessionStore.getState().sessions[host.serverId]?.agents.get("agent-archived")
-        ?.archivedAt ?? null;
-    while (!archivedAt && Date.now() < timeoutAt) {
+    while (
+      useSessionStore.getState().sessions[host.serverId]?.agents.has("agent-archived") &&
+      Date.now() < timeoutAt
+    ) {
       await new Promise((resolve) => setTimeout(resolve, 0));
-      archivedAt =
-        useSessionStore.getState().sessions[host.serverId]?.agents.get("agent-archived")
-          ?.archivedAt ?? null;
     }
 
-    expect(archivedAt?.toISOString()).toBe("2026-03-30T15:31:00.000Z");
+    expect(useSessionStore.getState().sessions[host.serverId]?.agents.has("agent-archived")).toBe(
+      false,
+    );
 
     store.syncHosts([]);
     useSessionStore.getState().clearSession(host.serverId);

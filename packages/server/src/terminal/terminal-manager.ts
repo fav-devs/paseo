@@ -21,6 +21,7 @@ export interface TerminalManager {
     id?: string;
     cwd: string;
     name?: string;
+    title?: string;
     env?: Record<string, string>;
     command?: string;
     args?: string[];
@@ -160,6 +161,7 @@ export function createTerminalManager(): TerminalManager {
       id?: string;
       cwd: string;
       name?: string;
+      title?: string;
       env?: Record<string, string>;
       command?: string;
       args?: string[];
@@ -170,14 +172,13 @@ export function createTerminalManager(): TerminalManager {
       const defaultName = `Terminal ${terminals.length + 1}`;
       const inheritedEnv = resolveDefaultEnvForCwd(options.cwd);
       const mergedEnv =
-        inheritedEnv || options.env
-          ? { ...(inheritedEnv ?? {}), ...(options.env ?? {}) }
-          : undefined;
+        inheritedEnv || options.env ? { ...inheritedEnv, ...options.env } : undefined;
       const session = registerSession(
         await createTerminal({
           ...(options.id ? { id: options.id } : {}),
           cwd: options.cwd,
           name: options.name ?? defaultName,
+          ...(options.title ? { title: options.title } : {}),
           ...(options.command ? { command: options.command } : {}),
           ...(options.args ? { args: options.args } : {}),
           ...(mergedEnv ? { env: mergedEnv } : {}),

@@ -13,6 +13,7 @@ function workspace(overrides: Partial<SidebarWorkspaceEntry> = {}): SidebarWorks
     workspaceKey: "srv:ws-root",
     serverId: "srv",
     workspaceId: "ws-root",
+    projectKey: "project-1",
     workspaceDirectory: "/repo",
     projectKind: "git",
     workspaceKind: "checkout",
@@ -31,9 +32,6 @@ function project(overrides: Partial<SidebarProjectEntry> = {}): SidebarProjectEn
     projectName: "paseo",
     projectKind: "git",
     iconWorkingDir: "/repo",
-    statusBucket: "done",
-    activeCount: 0,
-    totalWorkspaces: 1,
     workspaces: [workspace()],
     ...overrides,
   };
@@ -58,13 +56,12 @@ describe("buildSidebarProjectRowModel", () => {
     expect(result).toEqual({
       kind: "workspace_link",
       workspace: flattenedWorkspace,
-      selected: false,
       chevron: null,
       trailingAction: "none",
     });
   });
 
-  it("marks flattened non-git project rows as selected when their workspace is active", () => {
+  it("builds flattened non-git rows without route selection input", () => {
     const flattenedWorkspace = workspace({
       serverId: "srv-2",
       workspaceId: "ws-non-git",
@@ -76,17 +73,15 @@ describe("buildSidebarProjectRowModel", () => {
         workspaces: [flattenedWorkspace],
       }),
       collapsed: false,
-      serverId: "srv-2",
-      activeWorkspaceSelection: {
-        serverId: "srv-2",
-        workspaceId: "ws-non-git",
-      },
     });
 
     expect(result).toMatchObject({
       kind: "workspace_link",
-      selected: true,
+      workspace: flattenedWorkspace,
+      chevron: null,
+      trailingAction: "none",
     });
+    expect(result).not.toHaveProperty("selected");
   });
 
   it("keeps single-workspace git projects as sections with the new worktree action", () => {

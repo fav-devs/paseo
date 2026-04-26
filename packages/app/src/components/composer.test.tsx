@@ -9,6 +9,8 @@ import type { GitHubSearchItem } from "@server/shared/messages";
 import { Composer } from "./composer";
 import { splitComposerAttachmentsForSubmit } from "./composer-attachments";
 
+const keyboardActionHandlerMock = vi.hoisted(() => vi.fn());
+
 const {
   theme,
   imageMetadata,
@@ -20,12 +22,14 @@ const {
   deleteAttachmentsMock,
   encodeImagesMock,
   openExternalUrlMock,
+  markScrollInvestigationRenderMock,
   mockSessionState,
   setAgentStreamTailMock,
   setAgentStreamHeadMock,
   setQueuedMessagesMock,
+  agentDirectoryStatusMock,
 } = vi.hoisted(() => {
-  const theme = {
+  const hoistedTheme = {
     spacing: { 1: 4, 2: 8, 3: 12, 4: 16, 6: 24, 8: 32 },
     iconSize: { sm: 14, md: 18, lg: 22 },
     borderWidth: { 1: 1 },
@@ -55,7 +59,7 @@ const {
     },
   };
 
-  const imageMetadata: AttachmentMetadata = {
+  const hoistedImageMetadata: AttachmentMetadata = {
     id: "img-1",
     mimeType: "image/png",
     storageType: "web-indexeddb",
@@ -65,7 +69,7 @@ const {
     createdAt: 1,
   };
 
-  const issueItem: GitHubSearchItem = {
+  const hoistedIssueItem: GitHubSearchItem = {
     kind: "issue",
     number: 101,
     title: "Fix composer attachments",
@@ -77,7 +81,7 @@ const {
     headRefName: null,
   };
 
-  const prItem: GitHubSearchItem = {
+  const hoistedPrItem: GitHubSearchItem = {
     kind: "pr",
     number: 202,
     title: "Refactor composer attachments",
@@ -89,19 +93,30 @@ const {
     headRefName: "composer-attachments",
   };
 
-  const mockClient = {
+  const hoistedMockClient = {
     isConnected: true,
-    searchGitHub: vi.fn(async () => ({ items: [issueItem, prItem] })),
+    searchGitHub: vi.fn(async () => ({ items: [hoistedIssueItem, hoistedPrItem] })),
     sendAgentMessage: vi.fn(async () => {}),
     cancelAgent: vi.fn(async () => {}),
   };
 
-  const setQueuedMessagesMock = vi.fn();
-  const mockSessionState: {
+  const hoistedSetQueuedMessagesMock = vi.fn();
+  const hoistedMockSessionState: {
     sessions: Record<
       string,
       {
         agents: Map<string, { status: string; lastUsage: null }>;
+        serverInfo: {
+          serverId: string;
+          hostname: string | null;
+          version: string | null;
+          capabilities?: {
+            voice?: {
+              dictation: { enabled: boolean; reason: string };
+              voice: { enabled: boolean; reason: string };
+            };
+          };
+        } | null;
         queuedMessages: Map<string, unknown[]>;
         agentStreamHead: Map<string, unknown[]>;
         agentStreamTail: Map<string, unknown[]>;
@@ -114,43 +129,58 @@ const {
     sessions: {
       server: {
         agents: new Map([["agent", { status: "idle", lastUsage: null }]]),
+        serverInfo: {
+          serverId: "server",
+          hostname: "test",
+          version: "0.0.0",
+          capabilities: {
+            voice: {
+              dictation: { enabled: true, reason: "" },
+              voice: { enabled: true, reason: "" },
+            },
+          },
+        },
         queuedMessages: new Map(),
         agentStreamHead: new Map(),
         agentStreamTail: new Map(),
       },
     },
-    setQueuedMessages: setQueuedMessagesMock,
+    setQueuedMessages: hoistedSetQueuedMessagesMock,
   };
-  const setAgentStreamTailMock = vi.fn(
+  const hoistedSetAgentStreamTailMock = vi.fn(
     (serverId: string, updater: (prev: Map<string, unknown[]>) => Map<string, unknown[]>) => {
-      const session = mockSessionState.sessions[serverId];
+      const session = hoistedMockSessionState.sessions[serverId];
       session.agentStreamTail = updater(session.agentStreamTail);
     },
   );
-  const setAgentStreamHeadMock = vi.fn(
+  const hoistedSetAgentStreamHeadMock = vi.fn(
     (serverId: string, updater: (prev: Map<string, unknown[]>) => Map<string, unknown[]>) => {
-      const session = mockSessionState.sessions[serverId];
+      const session = hoistedMockSessionState.sessions[serverId];
       session.agentStreamHead = updater(session.agentStreamHead);
     },
   );
-  mockSessionState.setAgentStreamTail = setAgentStreamTailMock;
-  mockSessionState.setAgentStreamHead = setAgentStreamHeadMock;
+  hoistedMockSessionState.setAgentStreamTail = hoistedSetAgentStreamTailMock;
+  hoistedMockSessionState.setAgentStreamHead = hoistedSetAgentStreamHeadMock;
+  const hoistedMarkScrollInvestigationRenderMock = vi.fn();
+  const hoistedAgentDirectoryStatusMock = vi.fn(() => "ready");
 
   return {
-    theme,
-    imageMetadata,
-    issueItem,
-    prItem,
-    mockClient,
+    theme: hoistedTheme,
+    imageMetadata: hoistedImageMetadata,
+    issueItem: hoistedIssueItem,
+    prItem: hoistedPrItem,
+    mockClient: hoistedMockClient,
     pickImagesMock: vi.fn(),
-    persistAttachmentFromBlobMock: vi.fn(async () => imageMetadata),
+    persistAttachmentFromBlobMock: vi.fn(async () => hoistedImageMetadata),
     deleteAttachmentsMock: vi.fn(async () => {}),
     encodeImagesMock: vi.fn(async (images: AttachmentMetadata[]) => images),
     openExternalUrlMock: vi.fn(async () => {}),
-    mockSessionState,
-    setAgentStreamTailMock,
-    setAgentStreamHeadMock,
-    setQueuedMessagesMock,
+    markScrollInvestigationRenderMock: hoistedMarkScrollInvestigationRenderMock,
+    mockSessionState: hoistedMockSessionState,
+    setAgentStreamTailMock: hoistedSetAgentStreamTailMock,
+    setAgentStreamHeadMock: hoistedSetAgentStreamHeadMock,
+    setQueuedMessagesMock: hoistedSetQueuedMessagesMock,
+    agentDirectoryStatusMock: hoistedAgentDirectoryStatusMock,
   };
 });
 
@@ -158,6 +188,7 @@ vi.mock("react-native-unistyles", () => ({
   StyleSheet: {
     create: (factory: unknown) => (typeof factory === "function" ? factory(theme) : factory),
   },
+  withUnistyles: <T,>(component: T) => component,
   useUnistyles: () => ({ theme }),
 }));
 
@@ -217,7 +248,7 @@ vi.mock("react-native-safe-area-context", () => ({
 vi.mock("@/runtime/host-runtime", () => ({
   useHostRuntimeClient: () => mockClient,
   useHostRuntimeIsConnected: () => true,
-  useHostRuntimeAgentDirectoryStatus: () => "ready",
+  useHostRuntimeAgentDirectoryStatus: () => agentDirectoryStatusMock(),
 }));
 
 vi.mock("@/stores/session-store", () => {
@@ -255,13 +286,7 @@ vi.mock("expo-image", () => ({
 
 vi.mock("react-native", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("react-native");
-  const Modal = ({
-    visible = true,
-    children,
-  }: {
-    visible?: boolean;
-    children?: React.ReactNode;
-  }) =>
+  const Modal = ({ visible = true, children }: { visible?: boolean; children?: React.ReactNode }) =>
     visible ? React.createElement("div", { "data-testid": "lightbox-modal" }, children) : null;
   return { ...actual, Modal };
 });
@@ -297,7 +322,9 @@ vi.mock("@/hooks/use-shortcut-keys", () => ({
 }));
 
 vi.mock("@/hooks/use-keyboard-action-handler", () => ({
-  useKeyboardActionHandler: () => {},
+  useKeyboardActionHandler: (input: unknown) => {
+    keyboardActionHandlerMock(input);
+  },
 }));
 
 vi.mock("@/hooks/use-keyboard-shift-style", () => ({
@@ -312,8 +339,8 @@ vi.mock("@/contexts/toast-context", () => ({
   useToast: () => ({ error: vi.fn() }),
 }));
 
-vi.mock("@/utils/scroll-jank-investigation", () => ({
-  markScrollInvestigationRender: vi.fn(),
+vi.mock("@/utils/scroll-jank", () => ({
+  markScrollInvestigationRender: markScrollInvestigationRenderMock,
   markScrollInvestigationEvent: vi.fn(),
 }));
 
@@ -360,6 +387,20 @@ vi.mock("@/hooks/use-dictation", () => ({
 }));
 
 vi.mock("@/utils/server-info-capabilities", () => ({
+  getVoiceReadinessState: ({
+    serverInfo,
+    mode,
+  }: {
+    serverInfo: {
+      capabilities?: {
+        voice?: {
+          dictation?: { enabled: boolean; reason: string };
+          voice?: { enabled: boolean; reason: string };
+        };
+      };
+    } | null;
+    mode: "dictation" | "voice";
+  }) => serverInfo?.capabilities?.voice?.[mode] ?? null,
   resolveVoiceUnavailableMessage: () => null,
 }));
 
@@ -368,7 +409,7 @@ vi.mock("@/components/ui/shortcut", () => ({
 }));
 
 vi.mock("@/components/ui/tooltip", () => ({
-  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Tooltip: ({ children }: { children: React.ReactNode }) => children,
   TooltipTrigger: ({
     asChild,
     children,
@@ -383,13 +424,13 @@ vi.mock("@/components/ui/tooltip", () => ({
     disabled?: boolean;
   }) =>
     asChild ? (
-      <>{children}</>
+      children
     ) : (
       <button type="button" aria-label={accessibilityLabel} disabled={disabled} onClick={onPress}>
         {typeof children === "function" ? children({ hovered: false }) : children}
       </button>
     ),
-  TooltipContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  TooltipContent: ({ children }: { children: React.ReactNode }) => children,
 }));
 
 vi.mock("@/components/ui/dropdown-menu", () => {
@@ -401,9 +442,8 @@ vi.mock("@/components/ui/dropdown-menu", () => {
   return {
     DropdownMenu: ({ children }: { children: React.ReactNode }) => {
       const [open, setOpen] = React.useState(false);
-      return (
-        <DropdownContext.Provider value={{ open, setOpen }}>{children}</DropdownContext.Provider>
-      );
+      const contextValue = React.useMemo(() => ({ open, setOpen }), [open]);
+      return <DropdownContext.Provider value={contextValue}>{children}</DropdownContext.Provider>;
     },
     DropdownMenuTrigger: ({
       children,
@@ -419,13 +459,14 @@ vi.mock("@/components/ui/dropdown-menu", () => {
       disabled?: boolean;
     }) => {
       const menu = React.useContext(DropdownContext);
+      const handleClick = React.useCallback(() => menu?.setOpen(true), [menu]);
       return (
         <button
           type="button"
           data-testid={testID}
           aria-label={accessibilityLabel}
           disabled={disabled}
-          onClick={() => menu?.setOpen(true)}
+          onClick={handleClick}
         >
           {typeof children === "function"
             ? children({ hovered: false, pressed: false, open: menu?.open ?? false })
@@ -533,6 +574,10 @@ beforeEach(() => {
   vi.stubGlobal("Node", dom.window.Node);
   vi.stubGlobal("navigator", dom.window.navigator);
   vi.stubGlobal("Blob", dom.window.Blob);
+  Object.assign(dom.window.HTMLElement.prototype, {
+    attachEvent: vi.fn(),
+    detachEvent: vi.fn(),
+  });
 
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -547,9 +592,27 @@ beforeEach(() => {
   deleteAttachmentsMock.mockClear();
   encodeImagesMock.mockClear();
   openExternalUrlMock.mockClear();
+  markScrollInvestigationRenderMock.mockClear();
   setAgentStreamTailMock.mockClear();
   setAgentStreamHeadMock.mockClear();
   setQueuedMessagesMock.mockClear();
+  keyboardActionHandlerMock.mockClear();
+  agentDirectoryStatusMock.mockReset();
+  agentDirectoryStatusMock.mockReturnValue("ready");
+  mockSessionState.sessions.server.serverInfo = {
+    serverId: "server",
+    hostname: "test",
+    version: "0.0.0",
+    capabilities: {
+      voice: {
+        dictation: { enabled: true, reason: "" },
+        voice: { enabled: true, reason: "" },
+      },
+    },
+  };
+  mockSessionState.sessions.server.agents = new Map([
+    ["agent", { status: "idle", lastUsage: null }],
+  ]);
   mockSessionState.sessions.server.agentStreamHead = new Map();
   mockSessionState.sessions.server.agentStreamTail = new Map();
   mockSessionState.sessions.server.queuedMessages = new Map();
@@ -592,6 +655,17 @@ function ComposerHarness({
   const [attachments, setAttachments] = useState(initialAttachments);
   latestAttachments = attachments;
 
+  const handleChangeAttachments = React.useCallback(
+    (updater: ComposerAttachment[] | ((current: ComposerAttachment[]) => ComposerAttachment[])) => {
+      setAttachments((current) => {
+        const next = typeof updater === "function" ? updater(current) : updater;
+        latestAttachments = next;
+        return next;
+      });
+    },
+    [],
+  );
+
   return (
     <QueryClientProvider client={queryClient!}>
       <Composer
@@ -601,13 +675,7 @@ function ComposerHarness({
         value={text}
         onChangeText={setText}
         attachments={attachments}
-        onChangeAttachments={(updater) => {
-          setAttachments((current) => {
-            const next = typeof updater === "function" ? updater(current) : updater;
-            latestAttachments = next;
-            return next;
-          });
-        }}
+        onChangeAttachments={handleChangeAttachments}
         isSubmitLoading={isSubmitLoading}
         submitBehavior={submitBehavior}
         cwd="/repo"
@@ -663,6 +731,61 @@ function queryAllAttachmentMenuItems(): NodeListOf<HTMLElement> {
   return document.querySelectorAll('[data-testid^="message-input-attachment-menu-item-"]');
 }
 
+function dispatchAgentInterrupt() {
+  act(() => {
+    const registeredHandler = keyboardActionHandlerMock.mock.calls.at(-1)?.[0];
+    registeredHandler?.handle({ id: "agent.interrupt", scope: "global" });
+  });
+}
+
+function countMessageInputRenders(): number {
+  return markScrollInvestigationRenderMock.mock.calls.filter(
+    ([componentId]) => componentId === "MessageInput:server:agent",
+  ).length;
+}
+
+describe("Composer keyboard shortcuts", () => {
+  it("interrupts a running agent without clearing a filled draft", async () => {
+    mockSessionState.sessions.server.agents = new Map([
+      ["agent", { status: "running", lastUsage: null }],
+    ]);
+
+    renderComposer({ initialText: "keep this prompt" });
+    await flushAsyncWork();
+
+    dispatchAgentInterrupt();
+
+    expect(mockClient.cancelAgent).toHaveBeenCalledWith("agent");
+    expect(document.querySelector('[aria-label="Message agent..."]')).toHaveProperty(
+      "value",
+      "keep this prompt",
+    );
+  });
+
+  it("interrupts a running agent when the message input is unfocused", async () => {
+    mockSessionState.sessions.server.agents = new Map([
+      ["agent", { status: "running", lastUsage: null }],
+    ]);
+
+    renderComposer();
+    await flushAsyncWork();
+
+    const input = document.querySelector('[aria-label="Message agent..."]') as HTMLElement | null;
+    input?.blur();
+    dispatchAgentInterrupt();
+
+    expect(mockClient.cancelAgent).toHaveBeenCalledWith("agent");
+  });
+
+  it("does not interrupt when the agent is idle", () => {
+    renderComposer();
+
+    dispatchAgentInterrupt();
+
+    expect(mockClient.cancelAgent).not.toHaveBeenCalled();
+  });
+});
+
 describe("Composer attachments", () => {
   it("opens a Plus menu with image and GitHub attachment actions", () => {
     renderComposer();
@@ -709,6 +832,23 @@ describe("Composer attachments", () => {
 
     const combobox = await findByTestId("composer-github-combobox");
     expect(combobox.dataset.anchor).toBe("attached");
+  });
+
+  it("lazily searches GitHub only after the GitHub combobox opens", async () => {
+    renderComposer();
+    await flushAsyncWork();
+
+    expect(mockClient.searchGitHub).not.toHaveBeenCalled();
+
+    click(queryByTestId("message-input-attach-button")!);
+    click(queryByTestId("message-input-attachment-menu-item-github")!);
+    await findByTestId("composer-github-combobox");
+
+    expect(mockClient.searchGitHub).toHaveBeenCalledWith({
+      cwd: "/repo",
+      query: "",
+      limit: 20,
+    });
   });
 
   it("closes the GitHub combobox after selecting an item", async () => {
@@ -845,6 +985,38 @@ describe("Composer attachments", () => {
     expect(queryByTestId("attachment-lightbox-image")).not.toBeNull();
     expect(openExternalUrlMock).not.toHaveBeenCalled();
     expect(latestAttachments).toEqual([{ kind: "image", metadata: image }]);
+  });
+
+  it("does not re-render MessageInput when opening the attachment lightbox", () => {
+    const image = imageAttachment("img-lightbox-render");
+    renderComposer({ initialAttachments: [{ kind: "image", metadata: image }] });
+    const renderCountBeforeLightbox = countMessageInputRenders();
+
+    click(queryByTestId("composer-image-attachment-pill")!);
+
+    expect(queryByTestId("attachment-lightbox-image")).not.toBeNull();
+    expect(countMessageInputRenders()).toBe(renderCountBeforeLightbox);
+  });
+
+  it("still re-renders MessageInput when submit loading semantics change", () => {
+    renderComposer({ initialText: "pending submit", isSubmitLoading: false });
+    const renderCountBeforeLoading = countMessageInputRenders();
+
+    renderComposer({ initialText: "pending submit", isSubmitLoading: true });
+
+    expect(countMessageInputRenders()).toBe(renderCountBeforeLoading + 1);
+    expect(document.querySelector('[aria-label="Send message"]')).toHaveProperty("disabled", true);
+  });
+
+  it("enables dictation from server capabilities before the agent directory finishes loading", () => {
+    agentDirectoryStatusMock.mockReturnValue("initial_loading");
+
+    renderComposer();
+
+    expect(document.querySelector('[aria-label="Start dictation"]')).toHaveProperty(
+      "disabled",
+      false,
+    );
   });
 
   it("locks the preserved draft while submit loading", () => {

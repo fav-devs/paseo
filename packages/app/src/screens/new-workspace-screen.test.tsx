@@ -13,9 +13,11 @@ const {
   theme,
   mockClient,
   mergeWorkspacesMock,
-  setAgentsMock,
   navigateMock,
-  createdAgent,
+  saveDraftInputMock,
+  clearDraftInputMock,
+  queueDraftSubmissionMock,
+  createdAgent: _createdAgent,
   createdWorkspace,
   prItem,
   prItemB,
@@ -23,7 +25,7 @@ const {
   initialAttachments,
   initialDraftState,
 } = vi.hoisted(() => {
-  const theme = {
+  const hoistedTheme = {
     spacing: { 1: 4, 2: 8, 3: 12, 4: 16, 6: 24, 8: 32 },
     iconSize: { sm: 14, md: 18, lg: 22 },
     borderWidth: { 1: 1 },
@@ -46,7 +48,7 @@ const {
     },
   };
 
-  const prItem: GitHubSearchItem = {
+  const hoistedPrItem: GitHubSearchItem = {
     kind: "pr",
     number: 202,
     title: "Refactor picker",
@@ -58,7 +60,7 @@ const {
     headRefName: "feature/picker",
   };
 
-  const prItemB: GitHubSearchItem = {
+  const hoistedPrItemB: GitHubSearchItem = {
     kind: "pr",
     number: 303,
     title: "Polish composer chip",
@@ -70,7 +72,7 @@ const {
     headRefName: "feature/composer-chip",
   };
 
-  const issueItem: GitHubSearchItem = {
+  const hoistedIssueItem: GitHubSearchItem = {
     kind: "issue",
     number: 44,
     title: "Keep manual attachment",
@@ -80,48 +82,50 @@ const {
     labels: [],
   };
 
-  const initialAttachments: ComposerAttachment[] = [];
-  const initialDraftState = { text: "" };
+  const hoistedInitialAttachments: ComposerAttachment[] = [];
+  const hoistedInitialDraftState = { text: "" };
 
-  const createdWorkspace = {
+  const hoistedCreatedWorkspace = {
     id: "workspace-1",
     workspaceDirectory: "/repo/.paseo/worktrees/workspace-1",
   };
 
-  const createdAgent = {
+  const hoistedCreatedAgent = {
     id: "agent-1",
-    cwd: createdWorkspace.workspaceDirectory,
+    cwd: hoistedCreatedWorkspace.workspaceDirectory,
   };
 
-  const mockClient = {
+  const hoistedMockClient = {
     isConnected: true,
     getCheckoutStatus: vi.fn(async () => ({ currentBranch: "main" })),
     getBranchSuggestions: vi.fn(async () => ({ branches: ["main", "dev", "feat/x"] })),
     searchGitHub: vi.fn(async () => ({
-      items: [prItem, prItemB],
+      items: [hoistedPrItem, hoistedPrItemB],
       githubFeaturesEnabled: true,
       error: null,
     })),
     createPaseoWorktree: vi.fn(async (_input: CreatePaseoWorktreeInput) => ({
-      workspace: createdWorkspace,
+      workspace: hoistedCreatedWorkspace,
       error: null,
     })),
-    createAgent: vi.fn(async () => createdAgent),
+    createAgent: vi.fn(async () => hoistedCreatedAgent),
   };
 
   return {
-    theme,
-    mockClient,
+    theme: hoistedTheme,
+    mockClient: hoistedMockClient,
     mergeWorkspacesMock: vi.fn(),
-    setAgentsMock: vi.fn(),
     navigateMock: vi.fn(),
-    createdAgent,
-    createdWorkspace,
-    prItem,
-    prItemB,
-    issueItem,
-    initialAttachments,
-    initialDraftState,
+    saveDraftInputMock: vi.fn(),
+    clearDraftInputMock: vi.fn(),
+    queueDraftSubmissionMock: vi.fn(),
+    createdAgent: hoistedCreatedAgent,
+    createdWorkspace: hoistedCreatedWorkspace,
+    prItem: hoistedPrItem,
+    prItemB: hoistedPrItemB,
+    issueItem: hoistedIssueItem,
+    initialAttachments: hoistedInitialAttachments,
+    initialDraftState: hoistedInitialDraftState,
   };
 });
 
@@ -145,6 +149,10 @@ vi.mock("@/constants/layout", () => ({
   useIsCompactFormFactor: () => false,
 }));
 
+vi.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+}));
+
 vi.mock("lucide-react-native", () => {
   const createIcon = (name: string) => (props: Record<string, unknown>) =>
     React.createElement("span", { ...props, "data-icon": name });
@@ -155,6 +163,26 @@ vi.mock("lucide-react-native", () => {
   };
 });
 
+function flattenReanimatedStyle(style: unknown) {
+  if (!Array.isArray(style)) {
+    return style;
+  }
+  return Object.assign({}, ...style.filter(Boolean));
+}
+
+vi.mock("react-native-reanimated", () => ({
+  default: {
+    View: ({
+      testID,
+      style,
+      ...props
+    }: React.HTMLAttributes<HTMLDivElement> & { testID?: string; style?: unknown }) => {
+      const flattenedStyle = flattenReanimatedStyle(style);
+      return <div {...props} data-testid={testID} style={flattenedStyle as React.CSSProperties} />;
+    },
+  },
+}));
+
 vi.mock("@/runtime/host-runtime", () => ({
   useHostRuntimeClient: () => mockClient,
   useHostRuntimeIsConnected: () => true,
@@ -164,7 +192,6 @@ vi.mock("@/stores/session-store", () => ({
   useSessionStore: (selector: (state: unknown) => unknown) =>
     selector({
       mergeWorkspaces: mergeWorkspacesMock,
-      setAgents: setAgentsMock,
     }),
   normalizeWorkspaceDescriptor: (workspace: unknown) => workspace,
 }));
@@ -189,6 +216,36 @@ vi.mock("@/utils/workspace-execution", () => ({
 
 vi.mock("@/utils/workspace-navigation", () => ({
   navigateToPreparedWorkspaceTab: navigateMock,
+}));
+
+vi.mock("@/stores/draft-keys", () => ({
+  buildDraftStoreKey: ({
+    serverId,
+    agentId,
+    draftId,
+  }: {
+    serverId: string;
+    agentId: string;
+    draftId?: string | null;
+  }) => (draftId ? `draft:${serverId}:${draftId}` : `agent:${serverId}:${agentId}`),
+  generateDraftId: () => "draft-new-workspace",
+}));
+
+vi.mock("@/stores/draft-store", () => ({
+  useDraftStore: {
+    getState: () => ({
+      saveDraftInput: saveDraftInputMock,
+      clearDraftInput: clearDraftInputMock,
+    }),
+  },
+}));
+
+vi.mock("@/stores/workspace-draft-submission-store", () => ({
+  useWorkspaceDraftSubmissionStore: {
+    getState: () => ({
+      setPending: queueDraftSubmissionMock,
+    }),
+  },
 }));
 
 vi.mock("@/contexts/toast-context", () => ({
@@ -218,30 +275,81 @@ vi.mock("@/hooks/use-agent-input-draft", () => ({
   },
 }));
 
-vi.mock("@/components/composer", () => ({
-  Composer: ({
-    onSubmitMessage,
-    submitBehavior,
-    submitIcon,
-    isSubmitLoading,
-    value,
-    onChangeText,
-    attachments,
-    onChangeAttachments,
-  }: {
-    onSubmitMessage: (payload: {
-      text: string;
-      attachments: ComposerAttachment[];
-      cwd: string;
-    }) => void;
-    submitBehavior?: "clear" | "preserve-and-lock";
-    submitIcon?: "arrow" | "return";
-    isSubmitLoading?: boolean;
-    value: string;
-    onChangeText: (text: string) => void;
+vi.mock("@/hooks/use-keyboard-shift-style", () => ({
+  useKeyboardShiftStyle: () => ({ style: { transform: "translateY(-216px)" } }),
+}));
+
+interface ComposerMockProps {
+  onSubmitMessage: (payload: {
+    text: string;
     attachments: ComposerAttachment[];
-    onChangeAttachments: (attachments: ComposerAttachment[]) => void;
-  }) => (
+    cwd: string;
+  }) => void;
+  submitBehavior?: "clear" | "preserve-and-lock";
+  submitIcon?: "arrow" | "return";
+  isSubmitLoading?: boolean;
+  value: string;
+  onChangeText: (text: string) => void;
+  attachments: ComposerAttachment[];
+  onChangeAttachments: (attachments: ComposerAttachment[]) => void;
+}
+
+interface AttachmentPillProps {
+  attachment: Extract<ComposerAttachment, { kind: "github_pr" | "github_issue" }>;
+  attachments: ComposerAttachment[];
+  isDisabled: boolean;
+  onChangeAttachments: (attachments: ComposerAttachment[]) => void;
+}
+
+function ComposerMockAttachmentPill({
+  attachment,
+  attachments,
+  isDisabled,
+  onChangeAttachments,
+}: AttachmentPillProps) {
+  const handleRemove = React.useCallback(() => {
+    onChangeAttachments(
+      attachments.filter(
+        (candidate) =>
+          candidate.kind !== attachment.kind || candidate.item.number !== attachment.item.number,
+      ),
+    );
+  }, [attachment, attachments, onChangeAttachments]);
+  return (
+    <div data-testid="composer-github-attachment-pill">
+      #{attachment.item.number} {attachment.item.title}
+      <button
+        type="button"
+        aria-label={`Remove ${attachment.kind === "github_pr" ? "PR" : "issue"} #${attachment.item.number}`}
+        disabled={isDisabled}
+        onClick={handleRemove}
+      >
+        Remove
+      </button>
+    </div>
+  );
+}
+
+function ComposerMock({
+  onSubmitMessage,
+  submitBehavior,
+  submitIcon,
+  isSubmitLoading,
+  value,
+  onChangeText,
+  attachments,
+  onChangeAttachments,
+}: ComposerMockProps) {
+  const isDisabled = submitBehavior === "preserve-and-lock" && Boolean(isSubmitLoading);
+  const handleTextareaChange = React.useCallback(
+    (event: React.ChangeEvent<HTMLTextAreaElement>) => onChangeText(event.currentTarget.value),
+    [onChangeText],
+  );
+  const handleSubmit = React.useCallback(
+    () => onSubmitMessage({ text: value, attachments, cwd: "/repo" }),
+    [onSubmitMessage, value, attachments],
+  );
+  return (
     <div
       data-testid="test-composer"
       data-submit-behavior={submitBehavior}
@@ -249,54 +357,33 @@ vi.mock("@/components/composer", () => ({
     >
       <textarea
         aria-label="Message agent..."
-        disabled={submitBehavior === "preserve-and-lock" && isSubmitLoading}
+        disabled={isDisabled}
         value={value}
-        onChange={(event) => onChangeText(event.currentTarget.value)}
+        onChange={handleTextareaChange}
       />
-      <button
-        type="button"
-        data-testid="message-input-attach-button"
-        disabled={submitBehavior === "preserve-and-lock" && isSubmitLoading}
-      >
+      <button type="button" data-testid="message-input-attach-button" disabled={isDisabled}>
         Attach
       </button>
       {attachments.map((attachment) =>
         attachment.kind === "github_pr" || attachment.kind === "github_issue" ? (
-          <div
-            data-testid="composer-github-attachment-pill"
+          <ComposerMockAttachmentPill
             key={`${attachment.kind}-${attachment.item.number}`}
-          >
-            #{attachment.item.number} {attachment.item.title}
-            <button
-              type="button"
-              aria-label={`Remove ${attachment.kind === "github_pr" ? "PR" : "issue"} #${
-                attachment.item.number
-              }`}
-              disabled={submitBehavior === "preserve-and-lock" && isSubmitLoading}
-              onClick={() =>
-                onChangeAttachments(
-                  attachments.filter(
-                    (candidate) =>
-                      candidate.kind !== attachment.kind ||
-                      candidate.item.number !== attachment.item.number,
-                  ),
-                )
-              }
-            >
-              Remove
-            </button>
-          </div>
+            attachment={attachment}
+            attachments={attachments}
+            isDisabled={isDisabled}
+            onChangeAttachments={onChangeAttachments}
+          />
         ) : null,
       )}
-      <button
-        type="button"
-        data-testid="test-composer-submit"
-        onClick={() => onSubmitMessage({ text: value, attachments, cwd: "/repo" })}
-      >
+      <button type="button" data-testid="test-composer-submit" onClick={handleSubmit}>
         Submit
       </button>
     </div>
-  ),
+  );
+}
+
+vi.mock("@/components/composer", () => ({
+  Composer: ComposerMock,
 }));
 
 vi.mock("@/components/composer-attachments", () => ({
@@ -343,10 +430,52 @@ vi.mock("@/components/headers/screen-header", () => ({
 }));
 
 vi.mock("@/components/ui/tooltip", () => ({
-  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  TooltipTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  TooltipContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Tooltip: ({ children }: { children: React.ReactNode }) => children,
+  TooltipTrigger: ({ children }: { children: React.ReactNode }) => children,
+  TooltipContent: ({ children }: { children: React.ReactNode }) => children,
 }));
+
+function ComboboxOptionButton({
+  option,
+  onSelect,
+}: {
+  option: { id: string; label: string };
+  onSelect: (id: string) => void;
+}) {
+  const handleClick = React.useCallback(() => onSelect(option.id), [onSelect, option.id]);
+  return (
+    <button type="button" onClick={handleClick}>
+      {option.label}
+    </button>
+  );
+}
+
+function ComboboxOptionRenderWrapper({
+  option,
+  onSelect,
+  renderOption,
+}: {
+  option: { id: string; label: string };
+  onSelect: (id: string) => void;
+  renderOption: (input: {
+    option: { id: string; label: string };
+    selected: boolean;
+    active: boolean;
+    onPress: () => void;
+  }) => React.ReactElement;
+}) {
+  const handlePress = React.useCallback(() => onSelect(option.id), [onSelect, option.id]);
+  return (
+    <>
+      {renderOption({
+        option,
+        selected: false,
+        active: false,
+        onPress: handlePress,
+      })}
+    </>
+  );
+}
 
 vi.mock("@/components/ui/combobox", () => ({
   Combobox: ({
@@ -370,18 +499,14 @@ vi.mock("@/components/ui/combobox", () => ({
       <div data-testid="ref-picker-combobox">
         {options.map((option) =>
           renderOption ? (
-            <React.Fragment key={option.id}>
-              {renderOption({
-                option,
-                selected: false,
-                active: false,
-                onPress: () => onSelect(option.id),
-              })}
-            </React.Fragment>
+            <ComboboxOptionRenderWrapper
+              key={option.id}
+              option={option}
+              onSelect={onSelect}
+              renderOption={renderOption}
+            />
           ) : (
-            <button type="button" key={option.id} onClick={() => onSelect(option.id)}>
-              {option.label}
-            </button>
+            <ComboboxOptionButton key={option.id} option={option} onSelect={onSelect} />
           ),
         )}
       </div>
@@ -440,6 +565,10 @@ beforeEach(() => {
   });
   mockClient.createPaseoWorktree.mockClear();
   mockClient.createAgent.mockClear();
+  saveDraftInputMock.mockClear();
+  clearDraftInputMock.mockClear();
+  queueDraftSubmissionMock.mockClear();
+  navigateMock.mockClear();
   initialAttachments.length = 0;
   initialDraftState.text = "";
 });
@@ -518,8 +647,21 @@ function firstCreateWorktreeCall(): CreatePaseoWorktreeArg {
 }
 
 describe("NewWorkspaceScreen picker payload", () => {
-  it("searches only GitHub PRs for the picker", async () => {
+  it("moves the ref picker row with the mobile keyboard shift", async () => {
     renderScreen();
+    await flush();
+
+    const pickerRow = await findByTestId("new-workspace-ref-picker-row");
+    expect(pickerRow.style.transform).toBe("translateY(-216px)");
+  });
+
+  it("lazily searches only GitHub PRs when the picker opens", async () => {
+    renderScreen();
+    await flush();
+
+    expect(mockClient.searchGitHub).not.toHaveBeenCalled();
+
+    click(await findByTestId("new-workspace-ref-picker-trigger"));
     await flush();
 
     expect(mockClient.searchGitHub).toHaveBeenCalledWith({
@@ -546,6 +688,50 @@ describe("NewWorkspaceScreen picker payload", () => {
     expect(call).not.toHaveProperty("refName");
     expect(call).not.toHaveProperty("action");
     expect(call).not.toHaveProperty("githubPrNumber");
+  });
+
+  it("opens the new workspace draft tab as soon as the worktree is ready", async () => {
+    initialDraftState.text = "please review this change";
+    renderScreen();
+    await flush();
+
+    click(await findByTestId("test-composer-submit"));
+    await flush();
+
+    expect(mockClient.createPaseoWorktree).toHaveBeenCalledTimes(1);
+    expect(mockClient.createAgent).not.toHaveBeenCalled();
+    expect(saveDraftInputMock).toHaveBeenCalledWith({
+      draftKey: "draft:server:draft-new-workspace",
+      draft: {
+        text: "please review this change",
+        attachments: [],
+        cwd: createdWorkspace.workspaceDirectory,
+      },
+    });
+    expect(queueDraftSubmissionMock).toHaveBeenCalledWith({
+      serverId: "server",
+      workspaceId: createdWorkspace.id,
+      draftId: "draft-new-workspace",
+      text: "please review this change",
+      attachments: [],
+      cwd: createdWorkspace.workspaceDirectory,
+      provider: "claude-code",
+      allowEmptyText: true,
+    });
+    expect(navigateMock).toHaveBeenCalledWith({
+      serverId: "server",
+      workspaceId: createdWorkspace.id,
+      target: { kind: "draft", draftId: "draft-new-workspace" },
+      navigationMethod: "replace",
+    });
+    expect(clearDraftInputMock).toHaveBeenCalledWith({
+      draftKey: "new-workspace:server:/repo",
+      lifecycle: "sent",
+    });
+    expect(navigateMock.mock.invocationCallOrder[0]).toBeLessThan(
+      clearDraftInputMock.mock.invocationCallOrder[0],
+    );
+    expect(document.querySelector("textarea")).toHaveProperty("disabled", true);
   });
 
   it("shows the selected PR number, title, and PR icon in the picker trigger", async () => {
@@ -743,10 +929,13 @@ describe("NewWorkspaceScreen picker payload", () => {
     );
   });
 
-  it("preserves and locks the composer and picker while chat creation is pending, then unlocks on error", async () => {
+  it("preserves and locks the composer and picker while worktree creation is pending, then unlocks on error", async () => {
     initialDraftState.text = "please review this change";
-    const createAgent = createDeferredPromise<typeof createdAgent>();
-    mockClient.createAgent.mockImplementationOnce(async () => await createAgent.promise);
+    const createWorktree = createDeferredPromise<{
+      workspace: typeof createdWorkspace;
+      error: null;
+    }>();
+    mockClient.createPaseoWorktree.mockImplementationOnce(async () => await createWorktree.promise);
     renderScreen();
     await flush();
 
@@ -773,8 +962,9 @@ describe("NewWorkspaceScreen picker payload", () => {
     expect(queryByTestId("message-input-attach-button")).toHaveProperty("disabled", true);
     expect(queryByTestId("new-workspace-ref-picker-trigger")).toHaveProperty("disabled", true);
     expect(queryByTestId("new-workspace-ref-picker-branch-dev")).toHaveProperty("disabled", true);
+    expect(clearDraftInputMock).not.toHaveBeenCalled();
 
-    createAgent.reject(new Error("Create agent failed"));
+    createWorktree.reject(new Error("Create worktree failed"));
     await flush();
 
     expect(textInput).toHaveProperty("value", "please review this change");

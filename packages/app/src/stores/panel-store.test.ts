@@ -91,7 +91,7 @@ describe("panel-store explorer tab resolution", () => {
         cwd,
         isGit: true,
         explorerTabByCheckout: {
-          [key]: "terminals" as any,
+          [key]: "terminals" as unknown as ExplorerTab,
         },
       }),
     ).toBe("changes");
@@ -151,5 +151,122 @@ describe("panel-store explorer tab resolution", () => {
         },
       }),
     ).toBe("spotify");
+  });
+});
+
+describe("panel-store visibility selectors", () => {
+  it("uses mobileView for compact layout visibility", () => {
+    const state = createPanelState({
+      mobileView: "file-explorer",
+      agentListOpen: true,
+      fileExplorerOpen: false,
+    });
+
+    expect(selectPanelVisibility(state, { isCompact: true })).toEqual({
+      isAgentListOpen: false,
+      isFileExplorerOpen: true,
+    });
+    expect(selectIsAgentListOpen(state, { isCompact: true })).toBe(false);
+    expect(selectIsFileExplorerOpen(state, { isCompact: true })).toBe(true);
+  });
+
+  it("uses desktop flags for expanded layout visibility", () => {
+    const state = createPanelState({
+      mobileView: "file-explorer",
+      agentListOpen: true,
+      fileExplorerOpen: false,
+    });
+
+    expect(selectPanelVisibility(state, { isCompact: false })).toEqual({
+      isAgentListOpen: true,
+      isFileExplorerOpen: false,
+    });
+    expect(selectIsAgentListOpen(state, { isCompact: false })).toBe(true);
+    expect(selectIsFileExplorerOpen(state, { isCompact: false })).toBe(false);
+  });
+});
+
+describe("panel-store checkout-intent file explorer actions", () => {
+  it("opens the compact explorer and resolves the tab from the explicit checkout", () => {
+    const checkout = { serverId: "server-1", cwd: "/tmp/repo", isGit: true };
+    const key = buildExplorerCheckoutKey(checkout.serverId, checkout.cwd)!;
+    usePanelStore.setState({
+      explorerTab: "changes",
+      explorerTabByCheckout: { [key]: "files" },
+    });
+
+    usePanelStore.getState().openFileExplorerForCheckout({
+      isCompact: true,
+      checkout,
+    });
+
+    expect(usePanelStore.getState().mobileView).toBe("file-explorer");
+    expect(usePanelStore.getState().desktop.fileExplorerOpen).toBe(false);
+    expect(usePanelStore.getState().explorerTab).toBe("files");
+  });
+
+  it("opens the expanded explorer and resolves the tab from the explicit checkout", () => {
+    const checkout = { serverId: "server-1", cwd: "/tmp/repo", isGit: true };
+    const key = buildExplorerCheckoutKey(checkout.serverId, checkout.cwd)!;
+    usePanelStore.setState({
+      explorerTab: "changes",
+      explorerTabByCheckout: { [key]: "files" },
+    });
+
+    usePanelStore.getState().openFileExplorerForCheckout({
+      isCompact: false,
+      checkout,
+    });
+
+    expect(usePanelStore.getState().mobileView).toBe("agent");
+    expect(usePanelStore.getState().desktop.fileExplorerOpen).toBe(true);
+    expect(usePanelStore.getState().explorerTab).toBe("files");
+  });
+
+  it("toggles the explorer closed without changing the active tab", () => {
+    usePanelStore.setState({
+      desktop: {
+        agentListOpen: false,
+        fileExplorerOpen: true,
+        focusModeEnabled: false,
+      },
+      explorerTab: "files",
+    });
+
+    usePanelStore.getState().toggleFileExplorerForCheckout({
+      isCompact: false,
+      checkout: { serverId: "server-1", cwd: "/tmp/repo", isGit: true },
+    });
+
+    expect(usePanelStore.getState().desktop.fileExplorerOpen).toBe(false);
+    expect(usePanelStore.getState().explorerTab).toBe("files");
+  });
+
+  it("coerces changes to files for a non-git checkout", () => {
+    const checkout = { serverId: "server-1", cwd: "/tmp/repo", isGit: false };
+    const key = buildExplorerCheckoutKey(checkout.serverId, checkout.cwd)!;
+    usePanelStore.setState({
+      explorerTab: "changes",
+      explorerTabByCheckout: { [key]: "changes" },
+    });
+
+    usePanelStore.getState().openFileExplorerForCheckout({
+      isCompact: false,
+      checkout,
+    });
+
+    expect(usePanelStore.getState().explorerTab).toBe("files");
+  });
+
+  it("opens with the default files tab for an explicit non-git checkout with no stored tab", () => {
+    usePanelStore.setState({ explorerTab: "changes", explorerTabByCheckout: {} });
+
+    usePanelStore.getState().openFileExplorerForCheckout({
+      isCompact: false,
+      checkout: { serverId: "server-1", cwd: "/tmp/non-git", isGit: false },
+    });
+
+    expect(usePanelStore.getState().desktop.fileExplorerOpen).toBe(true);
+    expect(usePanelStore.getState().explorerTab).toBe("files");
   });
 });

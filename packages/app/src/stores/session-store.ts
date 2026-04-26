@@ -1,3 +1,4 @@
+import equal from "fast-deep-equal";
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 import type { DaemonClient } from "@server/client/daemon-client";
@@ -7,9 +8,7 @@ import type { PendingPermission } from "@/types/shared";
 import type { ComposerAttachment } from "@/attachments/types";
 import type { AgentLifecycleStatus } from "@server/shared/agent-lifecycle";
 import type {
-  AgentPermissionResponse,
   AgentPermissionRequest,
-  AgentSessionConfig,
   AgentFeature,
   AgentProvider,
   AgentMode,
@@ -26,7 +25,6 @@ import type {
   ServerInfoStatusPayload,
   ProjectPlacementPayload,
   ServerCapabilities,
-  AgentSnapshotPayload,
   WorkspaceDescriptorPayload,
 } from "@server/shared/messages";
 import { normalizeWorkspaceOpaqueId } from "@/utils/workspace-identity";
@@ -128,6 +126,9 @@ export interface WorkspaceDescriptor {
   diffStat: { additions: number; deletions: number } | null;
   projectActions: ProjectActionPayload[];
   scripts: WorkspaceDescriptorPayload["scripts"];
+  gitRuntime?: WorkspaceDescriptorPayload["gitRuntime"];
+  githubRuntime?: WorkspaceDescriptorPayload["githubRuntime"];
+  project?: ProjectPlacementPayload;
 }
 
 export function normalizeWorkspaceDescriptor(
@@ -149,13 +150,22 @@ export function normalizeWorkspaceDescriptor(
   };
 }
 
-export function mergeWorkspaceSnapshotWithExisting(input: {
-  incoming: WorkspaceDescriptor;
-  existing?: WorkspaceDescriptor | null;
-}): WorkspaceDescriptor {
-  const { incoming, existing } = input;
-  if (!existing || existing.id !== incoming.id) {
-    return incoming;
+function preserveWorkspaceDescriptorIdentity(
+  incoming: WorkspaceDescriptor,
+  existing?: WorkspaceDescriptor | null,
+): WorkspaceDescriptor {
+  if (existing && equal(existing, incoming)) {
+    return existing;
+  }
+  return incoming;
+}
+
+function preserveWorkspaceMapIdentity(
+  existing: Map<string, WorkspaceDescriptor>,
+  incoming: Map<string, WorkspaceDescriptor>,
+): Map<string, WorkspaceDescriptor> {
+  if (existing === incoming) {
+    return existing;
   }
 
   return {
@@ -210,13 +220,13 @@ export interface AgentFileExplorerState {
   selectedEntryPath: string | null;
 }
 
-export type DaemonServerInfo = {
+export interface DaemonServerInfo {
   serverId: string;
   hostname: string | null;
   version: string | null;
   capabilities?: ServerCapabilities;
   features?: ServerInfoStatusPayload["features"];
-};
+}
 
 export interface AgentTimelineCursorState {
   epoch: string;
@@ -261,6 +271,7 @@ export interface SessionState {
 
   // Agents
   agents: Map<string, Agent>;
+  agentDetails: Map<string, Agent>;
   workspaces: Map<string, WorkspaceDescriptor>;
 
   // Permissions
@@ -353,6 +364,10 @@ interface SessionStoreActions {
     serverId: string,
     agents: Map<string, Agent> | ((prev: Map<string, Agent>) => Map<string, Agent>),
   ) => void;
+  setAgentDetails: (
+    serverId: string,
+    agents: Map<string, Agent> | ((prev: Map<string, Agent>) => Map<string, Agent>),
+  ) => void;
   setWorkspaces: (
     serverId: string,
     workspaces:
@@ -427,6 +442,7 @@ function createInitialSessionState(serverId: string, client: DaemonClient): Sess
     agentAuthoritativeHistoryApplied: new Map(),
     initializingAgents: new Map(),
     agents: new Map(),
+    agentDetails: new Map(),
     workspaces: new Map(),
     pendingPermissions: new Map(),
     fileExplorer: new Map(),
@@ -446,6 +462,26 @@ function areServerInfoFeaturesEqual(
   next: ServerInfoStatusPayload["features"] | undefined,
 ): boolean {
   return JSON.stringify(current ?? null) === JSON.stringify(next ?? null);
+}
+
+function isSessionServerInfoUnchanged(input: {
+  currentServerInfo: SessionState["serverInfo"] | undefined;
+  nextHostname: string | null;
+  nextVersion: string | null;
+  nextCapabilities: ServerCapabilities | undefined;
+  nextFeatures: ServerInfoStatusPayload["features"] | undefined;
+  nextServerId: string;
+}): boolean {
+  const { currentServerInfo, nextHostname, nextVersion, nextCapabilities, nextFeatures } = input;
+  const prevHostname = currentServerInfo?.hostname?.trim() || null;
+  const prevVersion = currentServerInfo?.version?.trim() || null;
+  return (
+    currentServerInfo?.serverId === input.nextServerId &&
+    prevHostname === nextHostname &&
+    prevVersion === nextVersion &&
+    areServerCapabilitiesEqual(currentServerInfo?.capabilities, nextCapabilities) &&
+    areServerInfoFeaturesEqual(currentServerInfo?.features, nextFeatures)
+  );
 }
 
 export const useSessionStore = create<SessionStore>()(
@@ -504,10 +540,13 @@ export const useSessionStore = create<SessionStore>()(
           const nextSessions = { ...prev.sessions };
           delete nextSessions[serverId];
           let nextActivity = prev.agentLastActivity;
-          if (session.agents.size > 0) {
+          if (session.agents.size > 0 || session.agentDetails.size > 0) {
             const candidate = new Map(prev.agentLastActivity);
             let changed = false;
-            for (const agentId of session.agents.keys()) {
+            for (const agentId of new Set([
+              ...session.agents.keys(),
+              ...session.agentDetails.keys(),
+            ])) {
               if (candidate.delete(agentId)) {
                 changed = true;
               }
@@ -558,20 +597,19 @@ export const useSessionStore = create<SessionStore>()(
           }
 
           const nextHostname = info.hostname?.trim() || null;
-          const prevHostname = session.serverInfo?.hostname?.trim() || null;
           const nextVersion = info.version?.trim() || null;
-          const prevVersion = session.serverInfo?.version?.trim() || null;
           const nextCapabilities = info.capabilities;
-          const prevCapabilities = session.serverInfo?.capabilities;
           const nextFeatures = info.features;
-          const prevFeatures = session.serverInfo?.features;
 
           if (
-            session.serverInfo?.serverId === info.serverId &&
-            prevHostname === nextHostname &&
-            prevVersion === nextVersion &&
-            areServerCapabilitiesEqual(prevCapabilities, nextCapabilities) &&
-            areServerInfoFeaturesEqual(prevFeatures, nextFeatures)
+            isSessionServerInfoUnchanged({
+              currentServerInfo: session.serverInfo,
+              nextHostname,
+              nextVersion,
+              nextCapabilities,
+              nextFeatures,
+              nextServerId: info.serverId,
+            })
           ) {
             return prev;
           }
@@ -937,6 +975,26 @@ export const useSessionStore = create<SessionStore>()(
         });
       },
 
+      setAgentDetails: (serverId, agents) => {
+        set((prev) => {
+          const session = prev.sessions[serverId];
+          if (!session) {
+            return prev;
+          }
+          const nextAgents = typeof agents === "function" ? agents(session.agentDetails) : agents;
+          if (session.agentDetails === nextAgents) {
+            return prev;
+          }
+          return {
+            ...prev,
+            sessions: {
+              ...prev.sessions,
+              [serverId]: { ...session, agentDetails: nextAgents },
+            },
+          };
+        });
+      },
+
       setWorkspaces: (serverId, workspaces) => {
         set((prev) => {
           const session = prev.sessions[serverId];
@@ -945,14 +1003,18 @@ export const useSessionStore = create<SessionStore>()(
           }
           const nextWorkspaces =
             typeof workspaces === "function" ? workspaces(session.workspaces) : workspaces;
-          if (session.workspaces === nextWorkspaces) {
+          const preservedWorkspaces = preserveWorkspaceMapIdentity(
+            session.workspaces,
+            nextWorkspaces,
+          );
+          if (session.workspaces === preservedWorkspaces) {
             return prev;
           }
           return {
             ...prev,
             sessions: {
               ...prev.sessions,
-              [serverId]: { ...session, workspaces: nextWorkspaces },
+              [serverId]: { ...session, workspaces: preservedWorkspaces },
             },
           };
         });
@@ -969,13 +1031,11 @@ export const useSessionStore = create<SessionStore>()(
           let changed = false;
           for (const workspace of nextEntries) {
             const existing = next.get(workspace.id);
-            if (existing === workspace) {
+            const nextWorkspace = preserveWorkspaceDescriptorIdentity(workspace, existing);
+            if (existing === nextWorkspace) {
               continue;
             }
-            next.set(
-              workspace.id,
-              mergeWorkspaceSnapshotWithExisting({ incoming: workspace, existing }),
-            );
+            next.set(workspace.id, nextWorkspace);
             changed = true;
           }
           if (!changed) {

@@ -1,68 +1,131 @@
 import { EventEmitter } from "node:events";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 import type { Logger } from "pino";
 
+import { withTimeout } from "../../utils/promise-timeout.js";
 import type { AgentProvider, ProviderSnapshotEntry } from "./agent-sdk-types.js";
 import type { ProviderDefinition } from "./provider-registry.js";
 
-const DEFAULT_CWD_KEY = "__default__";
 const DEFAULT_SNAPSHOT_TTL_MS = 300_000;
+const DEFAULT_REFRESH_TIMEOUT_MS = 30_000;
 
-type ProviderSnapshotChangeListener = (entries: ProviderSnapshotEntry[], cwd?: string) => void;
-type ProviderSnapshotManagerOptions = {
+type ProviderSnapshotChangeListener = (entries: ProviderSnapshotEntry[], cwd: string) => void;
+interface ProviderSnapshotManagerOptions {
   ttlMs?: number;
+  refreshTimeoutMs?: number;
   now?: () => number;
-};
-type ProviderSnapshotRefreshOptions = {
-  cwd?: string;
+}
+interface ProviderSnapshotRefreshOptions {
+  cwd: string;
   providers?: AgentProvider[];
-};
+}
+interface ProviderLoadOptions {
+  cwd: string;
+  providers: AgentProvider[];
+  force: boolean;
+}
+interface ProviderLoad {
+  promise: Promise<void>;
+}
 
 export class ProviderSnapshotManager {
   private readonly snapshots = new Map<string, Map<AgentProvider, ProviderSnapshotEntry>>();
   private readonly lastCheckedAts = new Map<string, number>();
-  private readonly warmUps = new Map<string, Promise<void>>();
+  private readonly providerLoads = new Map<string, Map<AgentProvider, ProviderLoad>>();
   private readonly events = new EventEmitter();
   private destroyed = false;
   private readonly ttlMs: number;
+  private readonly refreshTimeoutMs: number;
   private readonly now: () => number;
+  private providerRegistry: Record<AgentProvider, ProviderDefinition>;
 
   constructor(
-    private readonly providerRegistry: Record<AgentProvider, ProviderDefinition>,
+    providerRegistry: Record<AgentProvider, ProviderDefinition>,
     private readonly logger: Logger,
     options: ProviderSnapshotManagerOptions = {},
   ) {
+    this.providerRegistry = providerRegistry;
     this.ttlMs = options.ttlMs ?? DEFAULT_SNAPSHOT_TTL_MS;
+    this.refreshTimeoutMs = options.refreshTimeoutMs ?? DEFAULT_REFRESH_TIMEOUT_MS;
     this.now = options.now ?? Date.now;
   }
 
-  getSnapshot(cwd?: string): ProviderSnapshotEntry[] {
-    const cwdKey = normalizeCwdKey(cwd);
-    const entries = this.snapshots.get(cwdKey);
+  getSnapshot(_cwd?: string): ProviderSnapshotEntry[] {
+    const resolvedCwd = resolveGlobalSnapshotCwd();
+    const entries = this.snapshots.get(resolvedCwd);
     if (!entries) {
-      const loadingEntries = this.resetSnapshotToLoading(cwdKey);
-      void this.warmUp(cwd);
+      const loadingEntries = this.resetSnapshotToLoading(resolvedCwd);
+      void this.warmUp(resolvedCwd);
       return entriesToArray(loadingEntries);
     }
-    if (this.shouldRevalidate(cwdKey)) {
-      void this.warmUp(cwd);
+    const missingProviders = this.getProviderIds().filter((provider) => !entries.has(provider));
+    if (missingProviders.length > 0) {
+      this.resetSnapshotToLoading(resolvedCwd, missingProviders);
+      void this.warmUp(resolvedCwd, missingProviders);
+    }
+    const providerLoads = this.providerLoads.get(resolvedCwd);
+    const loadingProviders = Array.from(entries.values())
+      .filter((entry) => entry.status === "loading" && !providerLoads?.has(entry.provider))
+      .map((entry) => entry.provider);
+    if (loadingProviders.length > 0) {
+      void this.warmUp(resolvedCwd, loadingProviders);
+    }
+    if (this.shouldRevalidate(resolvedCwd)) {
+      void this.warmUp(resolvedCwd);
     }
     return entriesToArray(entries);
   }
 
-  async refresh(options: ProviderSnapshotRefreshOptions = {}): Promise<void> {
-    const { cwd } = options;
-    const cwdKey = normalizeCwdKey(cwd);
-    const inFlight = this.warmUps.get(cwdKey);
-    if (inFlight) {
-      await inFlight;
+  async refreshSnapshotForCwd(options: ProviderSnapshotRefreshOptions): Promise<void> {
+    const snapshotCwd = resolveGlobalSnapshotCwd();
+    const providers = this.resolveRefreshProviders(options.providers);
+    this.resetSnapshotToLoading(snapshotCwd, providers);
+    this.emitChange(snapshotCwd);
+    await this.refreshProviders(snapshotCwd, providers ?? this.getProviderIds());
+    if (!providers) {
+      this.lastCheckedAts.set(snapshotCwd, this.now());
+    }
+  }
+
+  async refreshSettingsSnapshot(
+    options: Omit<ProviderSnapshotRefreshOptions, "cwd"> = {},
+  ): Promise<void> {
+    const homeCwd = resolveGlobalSnapshotCwd();
+    const providers = this.resolveRefreshProviders(options.providers);
+    const providersToRefresh = providers ?? this.getProviderIds();
+
+    this.resetSnapshotToLoading(homeCwd, providers);
+    this.emitChange(homeCwd);
+    await this.refreshProviders(homeCwd, providersToRefresh);
+    if (!providers) {
+      this.lastCheckedAts.set(homeCwd, this.now());
+    }
+  }
+
+  async warmUpSnapshotForCwd(options: ProviderSnapshotRefreshOptions): Promise<void> {
+    const snapshotCwd = resolveGlobalSnapshotCwd();
+    const providers = this.resolveRefreshProviders(options.providers);
+    if (options.providers && providers?.length === 0) {
       return;
     }
-    const providers = this.resolveRefreshProviders(options.providers);
-    this.resetSnapshotToLoading(cwdKey, providers);
-    this.emitChange(cwdKey);
-    await this.warmUp(cwd, providers);
+
+    const snapshot = this.snapshots.get(snapshotCwd);
+    if (!snapshot) {
+      this.resetSnapshotToLoading(snapshotCwd, providers);
+    } else if (providers) {
+      const missingProviders = providers.filter((provider) => !snapshot.has(provider));
+      if (missingProviders.length > 0) {
+        this.resetSnapshotToLoading(snapshotCwd, missingProviders);
+      }
+    }
+
+    await this.warmUp(snapshotCwd, providers);
+  }
+
+  async refresh(options: ProviderSnapshotRefreshOptions): Promise<void> {
+    await this.refreshSnapshotForCwd(options);
   }
 
   on(event: "change", listener: ProviderSnapshotChangeListener): this {
@@ -80,7 +143,19 @@ export class ProviderSnapshotManager {
     this.events.removeAllListeners();
     this.snapshots.clear();
     this.lastCheckedAts.clear();
-    this.warmUps.clear();
+    this.providerLoads.clear();
+  }
+
+  replaceRegistry(providerRegistry: Record<AgentProvider, ProviderDefinition>): void {
+    this.providerRegistry = providerRegistry;
+
+    for (const cwd of this.snapshots.keys()) {
+      this.providerLoads.delete(cwd);
+      this.lastCheckedAts.delete(cwd);
+      this.snapshots.set(cwd, this.createLoadingEntries());
+      this.emitChange(cwd);
+      void this.warmUp(cwd);
+    }
   }
 
   private createLoadingEntries(): Map<AgentProvider, ProviderSnapshotEntry> {
@@ -90,6 +165,7 @@ export class ProviderSnapshotManager {
       entries.set(provider, {
         provider,
         status: "loading",
+        enabled: definition?.enabled ?? true,
         label: definition?.label,
         description: definition?.description,
         defaultModeId: definition?.defaultModeId ?? null,
@@ -98,91 +174,156 @@ export class ProviderSnapshotManager {
     return entries;
   }
 
-  private async warmUp(cwd?: string, providers?: AgentProvider[]): Promise<void> {
-    const cwdKey = normalizeCwdKey(cwd);
-    const inFlight = this.warmUps.get(cwdKey);
-    if (inFlight) {
-      return inFlight;
-    }
+  private async warmUp(cwd: string, providers?: AgentProvider[]): Promise<void> {
     const providersToRefresh = providers ?? this.getProviderIds();
 
-    const warmUpPromise = Promise.allSettled(
-      providersToRefresh.map((provider) => this.refreshProvider(cwdKey, provider, cwd)),
-    ).then(() => {
-      if (!providers) {
-        this.lastCheckedAts.set(cwdKey, this.now());
-      }
+    await this.loadProviders({
+      cwd,
+      providers: providersToRefresh,
+      force: false,
     });
+    if (!providers) {
+      this.lastCheckedAts.set(cwd, this.now());
+    }
+  }
 
-    this.warmUps.set(cwdKey, warmUpPromise);
+  private async refreshProviders(cwd: string, providers: AgentProvider[]): Promise<void> {
+    await this.loadProviders({ cwd, providers, force: true });
+  }
+
+  private async loadProviders(options: ProviderLoadOptions): Promise<void> {
+    await Promise.allSettled(
+      options.providers.map((provider) => this.loadProvider({ ...options, provider })),
+    );
+  }
+
+  private loadProvider(options: ProviderLoadOptions & { provider: AgentProvider }): Promise<void> {
+    const definition = this.providerRegistry[options.provider];
+    if (!definition) {
+      return Promise.resolve();
+    }
+
+    const existingLoad = this.getProviderLoad(options.cwd, options.provider);
+    if (existingLoad && !options.force) {
+      return existingLoad.promise;
+    }
+
+    const load: ProviderLoad = {
+      promise: Promise.resolve(),
+    };
+    this.setProviderLoad(options.cwd, options.provider, load);
+    load.promise = Promise.resolve()
+      .then(() =>
+        this.refreshProvider({
+          cwd: options.cwd,
+          provider: options.provider,
+          definition,
+          load,
+          force: options.force,
+        }),
+      )
+      .finally(() => {
+        const providerLoads = this.providerLoads.get(options.cwd);
+        if (providerLoads?.get(options.provider) === load) {
+          providerLoads.delete(options.provider);
+        }
+        if (providerLoads?.size === 0) {
+          this.providerLoads.delete(options.cwd);
+        }
+      });
+    return load.promise;
+  }
+
+  private async refreshProvider(options: {
+    cwd: string;
+    provider: AgentProvider;
+    definition: ProviderDefinition;
+    load: ProviderLoad;
+    force: boolean;
+  }): Promise<void> {
+    const { cwd, provider, definition, load, force } = options;
+    const snapshot = this.getOrCreateSnapshot(options.cwd);
+    const base = {
+      provider,
+      label: definition.label,
+      description: definition.description,
+      defaultModeId: definition.defaultModeId,
+    };
+    const setEntry = (entry: ProviderSnapshotEntry) => {
+      if (!this.isCurrentProviderLoad(cwd, provider, load)) {
+        return false;
+      }
+      snapshot.set(provider, entry);
+      this.emitChange(cwd);
+      return true;
+    };
 
     try {
-      await warmUpPromise;
-    } finally {
-      if (this.warmUps.get(cwdKey) === warmUpPromise) {
-        this.warmUps.delete(cwdKey);
+      if (!definition.enabled) {
+        setEntry({ ...base, status: "unavailable", enabled: false });
+        return;
+      }
+
+      const client = definition.createClient(this.logger);
+      const available = await withTimeout(
+        client.isAvailable(),
+        this.refreshTimeoutMs,
+        `Timed out checking ${definition.label} availability after ${this.refreshTimeoutMs}ms`,
+      );
+      if (!available) {
+        setEntry({ ...base, status: "unavailable", enabled: true });
+        return;
+      }
+
+      const [models, modes] = await withTimeout(
+        Promise.all([
+          definition.fetchModels({ cwd, force }),
+          definition.fetchModes({ cwd, force }),
+        ]),
+        this.refreshTimeoutMs,
+        `Timed out refreshing ${definition.label} after ${this.refreshTimeoutMs}ms`,
+      );
+
+      setEntry({
+        ...base,
+        status: "ready",
+        enabled: true,
+        models,
+        modes,
+        fetchedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      const emitted = setEntry({
+        ...base,
+        status: "error",
+        enabled: true,
+        error: toErrorMessage(error),
+      });
+      if (emitted) {
+        this.logger.warn({ err: error, provider, cwd }, "Failed to refresh provider snapshot");
       }
     }
   }
 
-  private async refreshProvider(
+  private getProviderLoad(cwdKey: string, provider: AgentProvider): ProviderLoad | undefined {
+    return this.providerLoads.get(cwdKey)?.get(provider);
+  }
+
+  private setProviderLoad(cwdKey: string, provider: AgentProvider, load: ProviderLoad): void {
+    let providerLoads = this.providerLoads.get(cwdKey);
+    if (!providerLoads) {
+      providerLoads = new Map<AgentProvider, ProviderLoad>();
+      this.providerLoads.set(cwdKey, providerLoads);
+    }
+    providerLoads.set(provider, load);
+  }
+
+  private isCurrentProviderLoad(
     cwdKey: string,
     provider: AgentProvider,
-    cwd?: string,
-  ): Promise<void> {
-    const definition = this.providerRegistry[provider];
-    if (!definition) {
-      return;
-    }
-
-    const snapshot = this.getOrCreateSnapshot(cwdKey);
-
-    try {
-      const client = definition.createClient(this.logger);
-      const available = await client.isAvailable();
-      if (!available) {
-        snapshot.set(provider, {
-          provider,
-          status: "unavailable",
-          label: definition.label,
-          description: definition.description,
-          defaultModeId: definition.defaultModeId,
-        });
-        this.emitChange(cwdKey);
-        return;
-      }
-
-      const [models, modes] = await Promise.all([
-        definition.fetchModels({ cwd }),
-        definition.fetchModes({ cwd }),
-      ]);
-
-      snapshot.set(provider, {
-        provider,
-        status: "ready",
-        models,
-        modes,
-        fetchedAt: new Date().toISOString(),
-        label: definition.label,
-        description: definition.description,
-        defaultModeId: definition.defaultModeId,
-      });
-      this.emitChange(cwdKey);
-    } catch (error) {
-      snapshot.set(provider, {
-        provider,
-        status: "error",
-        error: toErrorMessage(error),
-        label: definition.label,
-        description: definition.description,
-        defaultModeId: definition.defaultModeId,
-      });
-      this.logger.warn(
-        { err: error, provider, cwd: cwdKey },
-        "Failed to refresh provider snapshot",
-      );
-      this.emitChange(cwdKey);
-    }
+    load: ProviderLoad,
+  ): boolean {
+    return this.providerLoads.get(cwdKey)?.get(provider) === load;
   }
 
   private emitChange(cwdKey: string): void {
@@ -193,11 +334,11 @@ export class ProviderSnapshotManager {
     if (!snapshot) {
       return;
     }
-    this.events.emit("change", entriesToArray(snapshot), denormalizeCwdKey(cwdKey));
+    this.events.emit("change", entriesToArray(snapshot), cwdKey);
   }
 
   private shouldRevalidate(cwdKey: string): boolean {
-    if (this.warmUps.has(cwdKey)) {
+    if (this.providerLoads.has(cwdKey)) {
       return false;
     }
     const lastCheckedAt = this.lastCheckedAts.get(cwdKey);
@@ -261,21 +402,18 @@ export class ProviderSnapshotManager {
   }
 }
 
-function normalizeCwdKey(cwd?: string): string {
-  if (!cwd) {
-    return DEFAULT_CWD_KEY;
-  }
-
-  const trimmed = cwd.trim();
+export function resolveSnapshotCwd(cwd?: string | null): string {
+  const trimmed = cwd?.trim();
   if (!trimmed) {
-    return DEFAULT_CWD_KEY;
+    return homedir();
   }
-
-  return resolve(trimmed);
+  const expanded =
+    trimmed === "~" || trimmed.startsWith("~/") ? `${homedir()}${trimmed.slice(1)}` : trimmed;
+  return resolve(expanded);
 }
 
-function denormalizeCwdKey(cwdKey: string): string | undefined {
-  return cwdKey === DEFAULT_CWD_KEY ? undefined : cwdKey;
+function resolveGlobalSnapshotCwd(): string {
+  return resolveSnapshotCwd();
 }
 
 function entriesToArray(

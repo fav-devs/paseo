@@ -9,7 +9,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { app, BrowserWindow, ipcMain, nativeImage, net, protocol } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol } from "electron";
 import { registerDaemonManager } from "./daemon/daemon-manager.js";
 import {
   parseCliPassthroughArgsFromArgv,
@@ -21,6 +21,7 @@ import {
   getMainWindowChromeOptions,
   getWindowBackgroundColor,
   resolveSystemWindowTheme,
+  setupDarwinPaintRefresh,
   setupWindowResizeEvents,
   setupDefaultContextMenu,
   setupDragDropPrevention,
@@ -33,6 +34,15 @@ import {
 import { registerOpenerHandlers } from "./features/opener.js";
 import { setupApplicationMenu } from "./features/menu.js";
 import { parseOpenProjectPathFromArgv } from "./open-project-routing.js";
+import { getDesktopSettingsStore } from "./settings/desktop-settings-electron.js";
+import {
+  isDesktopManagedDaemonRunningSync,
+  stopDesktopDaemonViaCli,
+} from "./daemon/daemon-manager.js";
+import {
+  createBeforeQuitHandler,
+  stopDesktopManagedDaemonOnQuitIfNeeded,
+} from "./daemon/quit-lifecycle.js";
 
 const DEV_SERVER_URL = process.env.EXPO_DEV_URL ?? "http://localhost:8081";
 const APP_SCHEME = "paseo";
@@ -42,7 +52,11 @@ app.setName("Paseo");
 // In dev mode, detect git worktrees and isolate each instance so multiple
 // Electron windows can run side-by-side (separate userData = separate lock).
 let devWorktreeName: string | null = null;
-if (!app.isPackaged) {
+const forcedUserDataDir = process.env.PASEO_ELECTRON_USER_DATA_DIR?.trim();
+if (forcedUserDataDir) {
+  app.setPath("userData", forcedUserDataDir);
+  log.info("[dev-user-data] forced userData dir:", forcedUserDataDir);
+} else if (!app.isPackaged) {
   try {
     const topLevel = execFileSync("git", ["rev-parse", "--show-toplevel"], {
       encoding: "utf-8",
@@ -120,20 +134,27 @@ function getAppDistDir(): string {
   return path.resolve(__dirname, "../../app/dist");
 }
 
-function getWindowIconPath(): string | null {
-  const candidates = app.isPackaged
-    ? process.platform === "win32"
-      ? [path.join(process.resourcesPath, "icon.ico"), path.join(process.resourcesPath, "icon.png")]
-      : [path.join(process.resourcesPath, "icon.png")]
-    : process.platform === "darwin"
-      ? [path.resolve(__dirname, "../assets/icon.png")]
-      : process.platform === "win32"
-        ? [
-            path.resolve(__dirname, "../assets/icon.ico"),
-            path.resolve(__dirname, "../assets/icon.png"),
-          ]
-        : [path.resolve(__dirname, "../assets/icon.png")];
+function getWindowIconCandidates(): string[] {
+  if (app.isPackaged) {
+    if (process.platform === "win32") {
+      return [
+        path.join(process.resourcesPath, "icon.ico"),
+        path.join(process.resourcesPath, "icon.png"),
+      ];
+    }
+    return [path.join(process.resourcesPath, "icon.png")];
+  }
+  if (process.platform === "win32") {
+    return [
+      path.resolve(__dirname, "../assets/icon.ico"),
+      path.resolve(__dirname, "../assets/icon.png"),
+    ];
+  }
+  return [path.resolve(__dirname, "../assets/icon.png")];
+}
 
+function getWindowIconPath(): string | null {
+  const candidates = getWindowIconCandidates();
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
@@ -182,6 +203,7 @@ async function createMainWindow(): Promise<void> {
     app.dock?.setBadge(devWorktreeName);
   }
 
+  setupDarwinPaintRefresh(mainWindow);
   setupWindowResizeEvents(mainWindow);
   setupDefaultContextMenu(mainWindow);
   setupDragDropPrevention(mainWindow);
@@ -327,9 +349,33 @@ void bootstrap().catch((error) => {
   process.exit(1);
 });
 
-app.on("before-quit", () => {
-  closeAllTransportSessions();
-});
+function showDaemonShutdownDialog(): void {
+  void dialog.showMessageBox({
+    type: "info",
+    message: "Shutting down Paseo daemon…",
+    detail: "Paseo will quit once the local daemon has stopped.",
+    buttons: [],
+    noLink: true,
+  });
+}
+
+app.on(
+  "before-quit",
+  createBeforeQuitHandler({
+    app,
+    closeTransportSessions: closeAllTransportSessions,
+    stopDesktopManagedDaemonIfNeeded: () =>
+      stopDesktopManagedDaemonOnQuitIfNeeded({
+        settingsStore: getDesktopSettingsStore(),
+        isDesktopManagedDaemonRunning: isDesktopManagedDaemonRunningSync,
+        stopDaemon: stopDesktopDaemonViaCli,
+        showShutdownFeedback: showDaemonShutdownDialog,
+      }),
+    onStopError: (error) => {
+      log.error("[desktop daemon] failed to stop managed daemon on quit", error);
+    },
+  }),
+);
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {

@@ -1,14 +1,39 @@
 import { describe, expect, test, vi } from "vitest";
-import { Session } from "./session.js";
+import type pino from "pino";
+import { Session, type SessionOptions } from "./session.js";
 import type {
   WorkspaceGitListener,
   WorkspaceGitRuntimeSnapshot,
   WorkspaceGitService,
 } from "./workspace-git-service.js";
+import type { SessionOutboundMessage } from "./messages.js";
 import {
   createPersistedProjectRecord,
   createPersistedWorkspaceRecord,
 } from "./workspace-registry.js";
+import { createNoopWorkspaceGitService } from "./test-utils/workspace-git-service-stub.js";
+
+interface SessionInternals {
+  workspaceUpdatesSubscription: {
+    subscriptionId: string;
+    filter: undefined;
+    isBootstrapping: boolean;
+    pendingUpdatesByWorkspaceId: Map<string, unknown>;
+    lastEmittedByWorkspaceId: Map<string, unknown>;
+  };
+  buildWorkspaceDescriptorMap: () => Promise<Map<string, unknown>>;
+  syncWorkspaceGitObserver(cwd: string, details: { isGit: boolean }): void;
+  listAgentPayloads: () => Promise<unknown[]>;
+}
+
+type CheckoutStatusUpdatePayload = Extract<
+  SessionOutboundMessage,
+  { type: "checkout_status_update" }
+>["payload"];
+type WorkspaceUpdatePayload = Extract<
+  SessionOutboundMessage,
+  { type: "workspace_update" }
+>["payload"];
 
 function createWorkspaceRuntimeSnapshot(
   cwd: string,
@@ -27,16 +52,17 @@ function createWorkspaceRuntimeSnapshot(
       remoteUrl: "https://github.com/acme/repo.git",
       isPaseoOwnedWorktree: false,
       isDirty: false,
+      baseRef: "main",
       aheadBehind: { ahead: 0, behind: 0 },
       aheadOfOrigin: 0,
       behindOfOrigin: 0,
+      hasRemote: true,
       diffStat: { additions: 1, deletions: 0 },
     },
     github: {
       featuresEnabled: true,
       pullRequest: null,
       error: null,
-      refreshedAt: "2026-04-12T00:00:00.000Z",
     },
   };
 
@@ -67,7 +93,7 @@ function createSessionForWorkspaceGitWatchTests(): {
   projects: Map<string, ReturnType<typeof createPersistedProjectRecord>>;
   workspaces: Map<string, ReturnType<typeof createPersistedWorkspaceRecord>>;
   workspaceGitService: WorkspaceGitService & {
-    subscribe: ReturnType<typeof vi.fn>;
+    registerWorkspace: ReturnType<typeof vi.fn>;
     peekSnapshot: ReturnType<typeof vi.fn>;
     getSnapshot: ReturnType<typeof vi.fn>;
     refresh: ReturnType<typeof vi.fn>;
@@ -98,7 +124,8 @@ function createSessionForWorkspaceGitWatchTests(): {
     error: vi.fn(),
   };
   const workspaceGitService = {
-    subscribe: vi.fn(async (params: { cwd: string }, listener: WorkspaceGitListener) => {
+    ...createNoopWorkspaceGitService(),
+    registerWorkspace: vi.fn((params: { cwd: string }, listener: WorkspaceGitListener) => {
       const unsubscribe = vi.fn();
       subscriptions.push({
         params,
@@ -106,7 +133,6 @@ function createSessionForWorkspaceGitWatchTests(): {
         unsubscribe,
       });
       return {
-        initial: createWorkspaceRuntimeSnapshot(params.cwd),
         unsubscribe,
       };
     }),
@@ -133,11 +159,11 @@ function createSessionForWorkspaceGitWatchTests(): {
       subscribe: () => () => {},
       listAgents: () => [],
       getAgent: () => null,
-    } as any,
+    } as unknown as SessionOptions["agentManager"],
     agentStorage: {
       list: async () => [],
       get: async () => null,
-    } as any,
+    } as unknown as SessionOptions["agentStorage"],
     projectRegistry: {
       initialize: async () => {},
       existsOnDisk: async () => true,
@@ -154,7 +180,7 @@ function createSessionForWorkspaceGitWatchTests(): {
       remove: async (projectId: string) => {
         projects.delete(projectId);
       },
-    } as any,
+    } as unknown as SessionOptions["projectRegistry"],
     workspaceRegistry: {
       initialize: async () => {},
       existsOnDisk: async () => true,
@@ -171,7 +197,7 @@ function createSessionForWorkspaceGitWatchTests(): {
       remove: async (workspaceId: string) => {
         workspaces.delete(workspaceId);
       },
-    } as any,
+    } as unknown as SessionOptions["workspaceRegistry"],
     checkoutDiffManager: {
       subscribe: async () => ({
         initial: { cwd: "/tmp", files: [], error: null },
@@ -185,8 +211,8 @@ function createSessionForWorkspaceGitWatchTests(): {
         checkoutDiffFallbackRefreshTargetCount: 0,
       }),
       dispose: () => {},
-    } as any,
-    workspaceGitService: workspaceGitService as any,
+    } as unknown as SessionOptions["checkoutDiffManager"],
+    workspaceGitService,
     mcpBaseUrl: null,
     stt: null,
     tts: null,
@@ -194,14 +220,14 @@ function createSessionForWorkspaceGitWatchTests(): {
     portForwardManager: null,
   }) as any;
 
-  (session as any).listAgentPayloads = async () => [];
+  (session as unknown as SessionInternals).listAgentPayloads = async () => [];
 
   return {
     session,
     emitted,
     projects,
     workspaces,
-    workspaceGitService: workspaceGitService as any,
+    workspaceGitService,
     subscriptions,
   };
 }
@@ -243,7 +269,7 @@ describe("workspace git watch targets", () => {
   test("emits one workspace_update when the workspace git service emits a changed snapshot", async () => {
     const { session, emitted, projects, workspaces, workspaceGitService, subscriptions } =
       createSessionForWorkspaceGitWatchTests();
-    const sessionAny = session as any;
+    const sessionAny = session as unknown as SessionInternals;
     seedGitWorkspace({
       projects,
       workspaces,
@@ -276,9 +302,9 @@ describe("workspace git watch targets", () => {
 
     sessionAny.buildWorkspaceDescriptorMap = async () => new Map([[descriptor.id, descriptor]]);
 
-    await sessionAny.syncWorkspaceGitWatchTarget("/tmp/repo", { isGit: true });
+    sessionAny.syncWorkspaceGitObserver("/tmp/repo", { isGit: true });
 
-    expect(workspaceGitService.subscribe).toHaveBeenCalledWith(
+    expect(workspaceGitService.registerWorkspace).toHaveBeenCalledWith(
       { cwd: "/tmp/repo" },
       expect.any(Function),
     );
@@ -301,7 +327,7 @@ describe("workspace git watch targets", () => {
 
     const workspaceUpdates = emitted.filter(
       (message) => message.type === "workspace_update",
-    ) as any[];
+    ) as Array<{ type: "workspace_update"; payload: WorkspaceUpdatePayload }>;
     expect(workspaceUpdates).toHaveLength(1);
     expect(workspaceUpdates[0]?.payload).toMatchObject({
       kind: "upsert",
@@ -310,6 +336,153 @@ describe("workspace git watch targets", () => {
         name: "renamed-branch",
         diffStat: { additions: 1, deletions: 0 },
       },
+    });
+
+    await session.cleanup();
+  });
+
+  test("emits checkout_status_update to a client subscribed to the workspace git target", async () => {
+    const { session, emitted, projects, workspaces, workspaceGitService, subscriptions } =
+      createSessionForWorkspaceGitWatchTests();
+    const sessionAny = session as unknown as SessionInternals;
+    seedGitWorkspace({
+      projects,
+      workspaces,
+      projectId: "proj-1",
+      workspaceId: "ws-10",
+      cwd: "/tmp/repo",
+      name: "main",
+    });
+    sessionAny.workspaceUpdatesSubscription = {
+      subscriptionId: "sub-1",
+      filter: undefined,
+      isBootstrapping: false,
+      pendingUpdatesByWorkspaceId: new Map(),
+      lastEmittedByWorkspaceId: new Map(),
+    };
+
+    sessionAny.syncWorkspaceGitObserver("/tmp/repo", { isGit: true });
+    emitted.length = 0;
+
+    subscriptions[0]?.listener(
+      createWorkspaceRuntimeSnapshot("/tmp/repo", {
+        git: {
+          currentBranch: "feature/server-push",
+          isDirty: true,
+          aheadBehind: { ahead: 3, behind: 1 },
+          aheadOfOrigin: 3,
+          behindOfOrigin: 1,
+        },
+      }),
+    );
+
+    const statusUpdates = emitted.filter(
+      (message) => message.type === "checkout_status_update",
+    ) as Array<{ type: "checkout_status_update"; payload: CheckoutStatusUpdatePayload }>;
+    expect(statusUpdates).toHaveLength(1);
+    expect(statusUpdates[0]?.payload).toMatchObject({
+      cwd: "/tmp/repo",
+      isGit: true,
+      repoRoot: "/tmp/repo",
+      currentBranch: "feature/server-push",
+      isDirty: true,
+      baseRef: "main",
+      aheadBehind: { ahead: 3, behind: 1 },
+      aheadOfOrigin: 3,
+      behindOfOrigin: 1,
+      hasRemote: true,
+      remoteUrl: "https://github.com/acme/repo.git",
+      isPaseoOwnedWorktree: false,
+      error: null,
+      requestId: "subscription:/tmp/repo",
+    });
+    expect(workspaceGitService.registerWorkspace).toHaveBeenCalledWith(
+      { cwd: "/tmp/repo" },
+      expect.any(Function),
+    );
+
+    await session.cleanup();
+  });
+
+  test("embeds PR status in checkout_status_update for GitHub-inclusive snapshot pushes", async () => {
+    const { session, emitted, projects, workspaces, subscriptions } =
+      createSessionForWorkspaceGitWatchTests();
+    const sessionAny = session as unknown as SessionInternals;
+    seedGitWorkspace({
+      projects,
+      workspaces,
+      projectId: "proj-1",
+      workspaceId: "ws-10",
+      cwd: "/tmp/repo",
+      name: "main",
+    });
+    sessionAny.workspaceUpdatesSubscription = {
+      subscriptionId: "sub-1",
+      filter: undefined,
+      isBootstrapping: false,
+      pendingUpdatesByWorkspaceId: new Map(),
+      lastEmittedByWorkspaceId: new Map(),
+    };
+
+    sessionAny.syncWorkspaceGitObserver("/tmp/repo", { isGit: true });
+    emitted.length = 0;
+
+    subscriptions[0]?.listener(
+      createWorkspaceRuntimeSnapshot("/tmp/repo", {
+        github: {
+          featuresEnabled: true,
+          pullRequest: {
+            number: 456,
+            url: "https://github.com/acme/repo/pull/456",
+            title: "Runtime centralization",
+            state: "open",
+            baseRefName: "main",
+            headRefName: "workspace-git-service",
+            isMerged: false,
+            checks: [
+              {
+                name: "test",
+                status: "success",
+                url: "https://github.com/acme/repo/actions/runs/1",
+              },
+            ],
+            checksStatus: "success",
+            reviewDecision: "approved",
+          },
+          error: null,
+        },
+      }),
+    );
+
+    const statusUpdate = emitted.find((message) => message.type === "checkout_status_update") as
+      | { payload: CheckoutStatusUpdatePayload }
+      | undefined;
+    expect(statusUpdate?.payload.prStatus).toEqual({
+      cwd: "/tmp/repo",
+      status: {
+        number: 456,
+        url: "https://github.com/acme/repo/pull/456",
+        title: "Runtime centralization",
+        state: "open",
+        repoOwner: undefined,
+        repoName: undefined,
+        baseRefName: "main",
+        headRefName: "workspace-git-service",
+        isMerged: false,
+        isDraft: false,
+        checks: [
+          {
+            name: "test",
+            status: "success",
+            url: "https://github.com/acme/repo/actions/runs/1",
+          },
+        ],
+        checksStatus: "success",
+        reviewDecision: "approved",
+      },
+      githubFeaturesEnabled: true,
+      error: null,
+      requestId: "subscription:/tmp/repo",
     });
 
     await session.cleanup();
@@ -330,7 +503,6 @@ describe("workspace git watch targets", () => {
             headRefName: "workspace-git-service",
             isMerged: true,
           },
-          refreshedAt: "2026-04-12T00:05:00.000Z",
         },
       }),
     );
@@ -347,12 +519,19 @@ describe("workspace git watch targets", () => {
     ).toEqual({
       cwd: "/tmp/repo",
       status: {
+        number: undefined,
         url: "https://github.com/acme/repo/pull/456",
         title: "Runtime centralization",
         state: "merged",
+        repoOwner: undefined,
+        repoName: undefined,
         baseRefName: "main",
         headRefName: "workspace-git-service",
         isMerged: true,
+        isDraft: false,
+        checks: [],
+        checksStatus: undefined,
+        reviewDecision: undefined,
       },
       githubFeaturesEnabled: true,
       error: null,

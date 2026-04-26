@@ -1,4 +1,13 @@
-import { useState, useCallback, useEffect, useMemo, useRef, memo, type ReactElement } from "react";
+import {
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  memo,
+  type ReactElement,
+  type RefObject,
+} from "react";
 import { useRouter } from "expo-router";
 import {
   View,
@@ -133,6 +142,43 @@ const DiffFileHeader = memo(function DiffFileHeader({
     onClearArmedLine?.();
     onToggle(file.path);
   }, [file.path, onClearArmedLine, onToggle]);
+
+  const handleLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      layoutYRef.current = event.nativeEvent.layout.y;
+      onHeaderHeightChange?.(file.path, event.nativeEvent.layout.height);
+    },
+    [file.path, onHeaderHeightChange],
+  );
+
+  const handlePressIn = useCallback((event: { nativeEvent: { pageX: number; pageY: number } }) => {
+    pressHandledRef.current = false;
+    pressInRef.current = {
+      ts: Date.now(),
+      pageX: event.nativeEvent.pageX,
+      pageY: event.nativeEvent.pageY,
+    };
+  }, []);
+
+  const handlePressOut = useCallback(
+    (event: { nativeEvent: { pageX: number; pageY: number } }) => {
+      if (isNative && !pressHandledRef.current && layoutYRef.current === 0 && pressInRef.current) {
+        const durationMs = Date.now() - pressInRef.current.ts;
+        const dx = event.nativeEvent.pageX - pressInRef.current.pageX;
+        const dy = event.nativeEvent.pageY - pressInRef.current.pageY;
+        const distance = Math.hypot(dx, dy);
+        if (durationMs <= 500 && distance <= 12) {
+          toggleExpanded();
+        }
+      }
+    },
+    [toggleExpanded],
+  );
+
+  const containerStyle = useMemo(
+    () => [styles.fileSectionHeaderContainer, isExpanded && styles.fileSectionHeaderExpanded],
+    [isExpanded],
+  );
 
   return (
     <View
@@ -398,21 +444,21 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   const {
     status,
     isLoading: isStatusLoading,
-    isFetching: isStatusFetching,
     isError: isStatusError,
     error: statusError,
-    refresh: refreshStatus,
   } = useCheckoutStatusQuery({ serverId, cwd });
-  const gitStatus = status && status.isGit ? status : null;
-  const isGit = Boolean(gitStatus);
-  const notGit = status !== null && !status.isGit && !status.error;
-  const statusErrorMessage =
-    status?.error?.message ??
-    (isStatusError && statusError instanceof Error ? statusError.message : null);
-  const baseRef = gitStatus?.baseRef ?? undefined;
+  const statusState = deriveStatusState({ status, isStatusLoading, isStatusError, statusError });
+  const {
+    gitStatus,
+    isGit,
+    notGit,
+    statusErrorMessage,
+    baseRef,
+    hasUncommittedChanges,
+    actionsDisabled,
+  } = statusState;
 
   // Auto-select diff mode based on state: uncommitted when dirty, base when clean
-  const hasUncommittedChanges = Boolean(gitStatus?.isDirty);
   const autoDiffMode = hasUncommittedChanges ? "uncommitted" : "base";
   const diffMode = diffModeOverride ?? autoDiffMode;
 
@@ -420,10 +466,6 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
     files,
     payloadError: diffPayloadError,
     isLoading: isDiffLoading,
-    isFetching: isDiffFetching,
-    isError: isDiffError,
-    error: diffError,
-    refresh: refreshDiff,
   } = useCheckoutDiffQuery({
     serverId,
     cwd,
@@ -436,7 +478,6 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
     status: prStatus,
     githubFeaturesEnabled,
     payloadError: prPayloadError,
-    refresh: refreshPrStatus,
   } = useCheckoutPrStatusQuery({
     serverId,
     cwd,
@@ -479,7 +520,7 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   const diffListScrollOffsetRef = useRef(0);
   const diffListViewportHeightRef = useRef(0);
   const headerHeightByPathRef = useRef<Record<string, number>>({});
-  const bodyHeightByPathRef = useRef<Record<string, number>>({});
+  const bodyHeightByKeyRef = useRef<Record<string, number>>({});
   const defaultHeaderHeightRef = useRef<number>(44);
   const graphHeightRef = useRef(graphHeight);
   const graphResizeStartHeightRef = useRef(graphHeight);
@@ -535,6 +576,7 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
         if (value === "pr" || value === "merge") {
           setShipDefault(value);
         }
+        return;
       })
       .catch(() => undefined);
     return () => {
@@ -577,27 +619,83 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
     [changesPreferences.viewMode, expandedPaths, files, flatItems],
   );
 
+  const getBodyHeightKey = useCallback(
+    (file: ParsedDiffFile): string => {
+      if (file.status === "too_large" || file.status === "binary") {
+        return `${effectiveLayout}:${wrapLines ? "wrap" : "scroll"}:${file.path}:${file.status}`;
+      }
+
+      return [
+        effectiveLayout,
+        wrapLines ? "wrap" : "scroll",
+        file.path,
+        file.status ?? "ok",
+        file.additions,
+        file.deletions,
+        file.hunks.length,
+        getUnifiedDiffLineCount(file),
+        getDiffContentLength(file),
+      ].join(":");
+    },
+    [effectiveLayout, wrapLines],
+  );
+
+  const estimateBodyHeight = useCallback(
+    (file: ParsedDiffFile): number => {
+      if (file.status === "too_large" || file.status === "binary") {
+        return statusBodyHeightEstimate;
+      }
+
+      const lineCount =
+        effectiveLayout === "split"
+          ? buildSplitDiffRows(file).length
+          : getUnifiedDiffLineCount(file);
+      return diffBodyChromeHeight + lineCount * diffBodyLineHeight;
+    },
+    [diffBodyChromeHeight, diffBodyLineHeight, effectiveLayout, statusBodyHeightEstimate],
+  );
+
   const handleHeaderHeightChange = useCallback((path: string, height: number) => {
     if (!Number.isFinite(height) || height <= 0) {
       return;
     }
-    headerHeightByPathRef.current[path] = height;
-    defaultHeaderHeightRef.current = height;
-  }, []);
-
-  const handleBodyHeightChange = useCallback((path: string, height: number) => {
-    if (!Number.isFinite(height) || height < 0) {
+    const previousHeight = headerHeightByPathRef.current[path];
+    if (
+      previousHeight !== undefined &&
+      Math.abs(previousHeight - height) <= DIFF_HEIGHT_CHANGE_EPSILON
+    ) {
       return;
     }
-    bodyHeightByPathRef.current[path] = height;
+    headerHeightByPathRef.current[path] = height;
+    defaultHeaderHeightRef.current = height;
+    setHeightVersion((version) => version + 1);
   }, []);
+
+  const handleBodyHeightChange = useCallback(
+    (file: ParsedDiffFile, height: number) => {
+      if (!Number.isFinite(height) || height < 0) {
+        return;
+      }
+      const heightKey = getBodyHeightKey(file);
+      const previousHeight = bodyHeightByKeyRef.current[heightKey];
+      if (
+        previousHeight !== undefined &&
+        Math.abs(previousHeight - height) <= DIFF_HEIGHT_CHANGE_EPSILON
+      ) {
+        return;
+      }
+      bodyHeightByKeyRef.current[heightKey] = height;
+      setHeightVersion((version) => version + 1);
+    },
+    [getBodyHeightKey],
+  );
 
   const handleDiffListScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       diffListScrollOffsetRef.current = event.nativeEvent.contentOffset.y;
       scrollbar.onScroll(event);
     },
-    [scrollbar.onScroll],
+    [scrollbar],
   );
 
   const handleDiffListLayout = useCallback(
@@ -609,7 +707,7 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
       diffListViewportHeightRef.current = height;
       scrollbar.onLayout(event);
     },
-    [scrollbar.onLayout],
+    [scrollbar],
   );
 
   const computeHeaderOffset = useCallback(
@@ -622,12 +720,13 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
         }
         offset += headerHeightByPathRef.current[file.path] ?? defaultHeaderHeight;
         if (expandedPaths.has(file.path)) {
-          offset += bodyHeightByPathRef.current[file.path] ?? 0;
+          const bodyHeightKey = getBodyHeightKey(file);
+          offset += bodyHeightByKeyRef.current[bodyHeightKey] ?? estimateBodyHeight(file);
         }
       }
       return Math.max(0, offset);
     },
-    [expandedPaths, files],
+    [estimateBodyHeight, expandedPaths, files, getBodyHeightKey],
   );
 
   const handleToggleExpanded = useCallback(
@@ -683,13 +782,6 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
       );
     }
   }, [allExpanded, files, setDiffExpandedPathsForWorkspace, workspaceStateKey]);
-
-  // Reset manual refresh flag when fetch completes
-  useEffect(() => {
-    if (!(isDiffFetching || isStatusFetching) && isManualRefresh) {
-      setIsManualRefresh(false);
-    }
-  }, [isDiffFetching, isStatusFetching, isManualRefresh]);
 
   // Clear diff mode override when auto mode changes (e.g., after commit)
   useEffect(() => {
@@ -757,91 +849,62 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
       });
   }, [commitMessage, cwd, runCommit, serverId, toastActionError, toastActionSuccess]);
 
-  const handlePull = useCallback(() => {
-    void runPull({ serverId, cwd })
-      .then(() => {
-        toastActionSuccess("Pulled");
-      })
-      .catch((err) => {
-        toastActionError(err, "Failed to pull");
-      });
-  }, [cwd, runPull, serverId, toastActionError, toastActionSuccess]);
+  const handleArchiveSuccess = useCallback(
+    (targetWorkingDir: string) => {
+      router.replace(buildNewAgentRoute(serverId, targetWorkingDir));
+    },
+    [router, serverId],
+  );
 
-  const handlePush = useCallback(() => {
-    void runPush({ serverId, cwd })
-      .then(() => {
-        toastActionSuccess("Pushed");
-      })
-      .catch((err) => {
-        toastActionError(err, "Failed to push");
-      });
-  }, [cwd, runPush, serverId, toastActionError, toastActionSuccess]);
+  const toastError = useCallback(
+    (message: string) => {
+      toast.error(message);
+    },
+    [toast],
+  );
 
-  const handleCreatePr = useCallback(() => {
-    void persistShipDefault("pr");
-    void runCreatePr({ serverId, cwd })
-      .then(() => {
-        toastActionSuccess("PR created");
-      })
-      .catch((err) => {
-        toastActionError(err, "Failed to create PR");
-      });
-  }, [cwd, persistShipDefault, runCreatePr, serverId, toastActionError, toastActionSuccess]);
+  const runners = useMemo<GitActionRunners>(
+    () => ({
+      runCommit,
+      runPull,
+      runPush,
+      runCreatePr,
+      runMergeBranch,
+      runMergeFromBase,
+      runArchiveWorktree,
+    }),
+    [
+      runArchiveWorktree,
+      runCommit,
+      runCreatePr,
+      runMergeBranch,
+      runMergeFromBase,
+      runPull,
+      runPush,
+    ],
+  );
 
-  const handleMergeBranch = useCallback(() => {
-    if (!baseRef) {
-      toast.error("Base ref unavailable");
-      return;
-    }
-    void persistShipDefault("merge");
-    void runMergeBranch({ serverId, cwd, baseRef })
-      .then(() => {
-        setPostShipArchiveSuggested(true);
-        toastActionSuccess("Merged");
-      })
-      .catch((err) => {
-        toastActionError(err, "Failed to merge");
-      });
-  }, [
-    baseRef,
-    cwd,
-    persistShipDefault,
-    runMergeBranch,
+  const {
+    handleCommit,
+    handlePull,
+    handlePush,
+    handleCreatePr,
+    handleMergeBranch,
+    handleMergeFromBase,
+    handleArchiveWorktree,
+  } = useGitActionHandlers({
     serverId,
-    toast,
+    cwd,
+    baseRef,
+    status,
+    runners,
+    persistShipDefault,
+    toastError,
     toastActionError,
     toastActionSuccess,
-  ]);
-
-  const handleMergeFromBase = useCallback(() => {
-    if (!baseRef) {
-      toast.error("Base ref unavailable");
-      return;
-    }
-    void runMergeFromBase({ serverId, cwd, baseRef })
-      .then(() => {
-        toastActionSuccess("Updated");
-      })
-      .catch((err) => {
-        toastActionError(err, "Failed to merge from base");
-      });
-  }, [baseRef, cwd, runMergeFromBase, serverId, toast, toastActionError, toastActionSuccess]);
-
-  const handleArchiveWorktree = useCallback(() => {
-    const worktreePath = status?.cwd;
-    if (!worktreePath) {
-      toast.error("Worktree path unavailable");
-      return;
-    }
-    const targetWorkingDir = resolveNewAgentWorkingDir(cwd, status ?? null);
-    void runArchiveWorktree({ serverId, cwd, worktreePath })
-      .then(() => {
-        router.replace(buildNewAgentRoute(serverId, targetWorkingDir));
-      })
-      .catch((err) => {
-        toastActionError(err, "Failed to archive worktree");
-      });
-  }, [cwd, router, runArchiveWorktree, serverId, status, toast, toastActionError]);
+    onMergeBranchSuccess: handleMergeBranchSuccess,
+    onArchiveSuccess: handleArchiveSuccess,
+  });
 
   const renderDiffItem = useCallback(
     ({ item }: { item: DiffListItem }) => {
@@ -928,6 +991,40 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
     return `${item.type}-${item.file.path}`;
   }, []);
 
+  const getFlatItemHeight = useCallback(
+    (item: DiffFlatItem): number => {
+      if (item.type === "header") {
+        return headerHeightByPathRef.current[item.file.path] ?? defaultHeaderHeightRef.current;
+      }
+
+      const bodyHeightKey = getBodyHeightKey(item.file);
+      return bodyHeightByKeyRef.current[bodyHeightKey] ?? estimateBodyHeight(item.file);
+    },
+    [estimateBodyHeight, getBodyHeightKey],
+  );
+
+  const getFlatItemLayout = useCallback<DiffFlatItemLayoutGetter>(
+    (_data, index) => {
+      let offset = 0;
+      for (let itemIndex = 0; itemIndex < index; itemIndex += 1) {
+        const item = flatItems[itemIndex];
+        if (item) {
+          offset += getFlatItemHeight(item);
+        }
+      }
+
+      const item = flatItems[index];
+      const length = item ? getFlatItemHeight(item) : 0;
+      return { length, offset, index };
+    },
+    [flatItems, getFlatItemHeight],
+  );
+
+  const flatExtraData = useMemo(
+    () => ({ expandedPathsArray, effectiveLayout, heightVersion, wrapLines }),
+    [expandedPathsArray, effectiveLayout, heightVersion, wrapLines],
+  );
+
   const hasChanges = files.length > 0;
   const historyEntries = history?.entries ?? [];
   const diffErrorMessage =
@@ -998,7 +1095,10 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   const pushDisabled = actionsDisabled || pushStatus === "pending";
   const archiveDisabled = actionsDisabled || archiveStatus === "pending";
 
-  let bodyContent: ReactElement;
+  const gitActionsDisabled = useMemo<GitActionsDisabledInputs>(
+    () => computeDisabledStates(actionsDisabled, gitActionsStatuses),
+    [actionsDisabled, gitActionsStatuses],
+  );
 
   if (isStatusLoading) {
     bodyContent = (
@@ -1098,114 +1198,83 @@ export function GitDiffPane({ serverId, workspaceId, cwd, hideHeaderRow }: GitDi
   // - menu: Kebab overflow menu
   // ==========================================================================
 
-  const gitActions: GitActions = useMemo(() => {
-    return buildGitActions({
-      isGit,
+  const handlePr = useMemo(
+    () => createPrHandler(prStatus, handleCreatePr),
+    [handleCreatePr, prStatus],
+  );
+
+  const gitActionsHandlers = useMemo(
+    () => ({
+      handleCommit,
+      handlePull,
+      handlePush,
+      handleCreatePr,
+      handleMergeBranch,
+      handleMergeFromBase,
+      handleArchiveWorktree,
+      handlePr,
+    }),
+    [
+      handleArchiveWorktree,
+      handleCommit,
+      handleCreatePr,
+      handleMergeBranch,
+      handleMergeFromBase,
+      handlePr,
+      handlePull,
+      handlePush,
+    ],
+  );
+
+  const gitActions: GitActions = useMemo(
+    () =>
+      buildGitActionsForPane({
+        policy: {
+          isGit,
+          githubFeaturesEnabled,
+          hasPullRequest,
+          pullRequestUrl: prStatus?.url ?? null,
+          hasRemote,
+          isPaseoOwnedWorktree,
+          isOnBaseBranch,
+          hasUncommittedChanges,
+          baseRefAvailable: Boolean(baseRef),
+          baseRefLabel,
+          aheadCount,
+          behindBaseCount,
+          aheadOfOrigin,
+          behindOfOrigin,
+          shouldPromoteArchive,
+          shipDefault,
+        },
+        statuses: gitActionsStatuses,
+        disabled: gitActionsDisabled,
+        handlers: gitActionsHandlers,
+        iconColor: theme.colors.foregroundMuted,
+      }),
+    [
+      aheadCount,
+      aheadOfOrigin,
+      baseRef,
+      baseRefLabel,
+      behindBaseCount,
+      behindOfOrigin,
+      gitActionsDisabled,
+      gitActionsHandlers,
+      gitActionsStatuses,
       githubFeaturesEnabled,
       hasPullRequest,
-      pullRequestUrl: prStatus?.url ?? null,
       hasRemote,
-      isPaseoOwnedWorktree,
-      isOnBaseBranch,
       hasUncommittedChanges,
-      baseRefAvailable: Boolean(baseRef),
-      baseRefLabel,
-      aheadCount,
-      behindBaseCount,
-      aheadOfOrigin,
-      behindOfOrigin,
-      shouldPromoteArchive,
+      isGit,
+      isOnBaseBranch,
+      isPaseoOwnedWorktree,
+      prStatus?.url,
       shipDefault,
-      runtime: {
-        commit: {
-          disabled: commitDisabled,
-          status: commitStatus,
-          icon: <GitCommitHorizontal size={16} color={theme.colors.foregroundMuted} />,
-          handler: handleCommit,
-        },
-        pull: {
-          disabled: pullDisabled,
-          status: pullStatus,
-          icon: <Download size={16} color={theme.colors.foregroundMuted} />,
-          handler: handlePull,
-        },
-        push: {
-          disabled: pushDisabled,
-          status: pushStatus,
-          icon: <Upload size={16} color={theme.colors.foregroundMuted} />,
-          handler: handlePush,
-        },
-        pr: {
-          disabled: prDisabled,
-          status: hasPullRequest ? "idle" : prCreateStatus,
-          icon: <GitHubIcon size={16} color={theme.colors.foregroundMuted} />,
-          handler: () => {
-            if (prStatus?.url) {
-              openURLInNewTab(prStatus.url);
-              return;
-            }
-            handleCreatePr();
-          },
-        },
-        "merge-branch": {
-          disabled: mergeDisabled,
-          status: mergeStatus,
-          icon: <GitMerge size={16} color={theme.colors.foregroundMuted} />,
-          handler: handleMergeBranch,
-        },
-        "merge-from-base": {
-          disabled: mergeFromBaseDisabled,
-          status: mergeFromBaseStatus,
-          icon: <RefreshCcw size={16} color={theme.colors.foregroundMuted} />,
-          handler: handleMergeFromBase,
-        },
-        "archive-worktree": {
-          disabled: archiveDisabled,
-          status: archiveStatus,
-          icon: <Archive size={16} color={theme.colors.foregroundMuted} />,
-          handler: handleArchiveWorktree,
-        },
-      },
-    });
-  }, [
-    isGit,
-    hasRemote,
-    hasPullRequest,
-    prStatus?.url,
-    aheadCount,
-    behindBaseCount,
-    isPaseoOwnedWorktree,
-    isOnBaseBranch,
-    githubFeaturesEnabled,
-    hasUncommittedChanges,
-    aheadOfOrigin,
-    behindOfOrigin,
-    shipDefault,
-    baseRefLabel,
-    shouldPromoteArchive,
-    commitDisabled,
-    pullDisabled,
-    pushDisabled,
-    prDisabled,
-    mergeDisabled,
-    mergeFromBaseDisabled,
-    archiveDisabled,
-    commitStatus,
-    pullStatus,
-    pushStatus,
-    prCreateStatus,
-    mergeStatus,
-    mergeFromBaseStatus,
-    archiveStatus,
-    handleCommit,
-    handlePull,
-    handlePush,
-    handleCreatePr,
-    handleMergeBranch,
-    handleMergeFromBase,
-    handleArchiveWorktree,
-    theme.colors.foregroundMuted,
-  ]);
+      shouldPromoteArchive,
+      theme.colors.foregroundMuted,
+    ],
+  );
 
   // Helper to get display label based on status
 
@@ -2165,3 +2234,9 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
   },
 }));
+
+const HEADER_LINE_TEXT_STYLE = [styles.diffLineText, styles.headerLineText];
+const FILE_SECTION_BODY_STYLE = [styles.fileSectionBodyContainer, styles.fileSectionBorder];
+const DIFF_CONTENT_SPLIT_ROW_STYLE = [styles.diffContent, styles.splitRow];
+const DIFF_CONTENT_ROW_STYLE = [styles.diffContent, styles.diffContentRow];
+const DIFF_HEIGHT_CHANGE_EPSILON = 0.5;

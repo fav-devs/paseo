@@ -11,16 +11,20 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test, afterEach } from "vitest";
+import { describe, expect, test, afterEach, vi } from "vitest";
 
 import type { GitHubService } from "../services/github-service.js";
 import { UnknownBranchError } from "../utils/worktree.js";
-import { createWorktreeCore as createCoreWorktree } from "./worktree-core.js";
+import {
+  createWorktreeCore as createCoreWorktree,
+  resolveWorktreeRepoRoot,
+} from "./worktree-core.js";
 
 function createGitHubServiceStub(): GitHubService {
   return {
     listPullRequests: async () => [],
     listIssues: async () => [],
+    searchIssuesAndPrs: async () => ({ items: [], githubFeaturesEnabled: true }),
     getPullRequest: async ({ number }) => ({
       number,
       title: `PR ${number}`,
@@ -48,7 +52,10 @@ function createCoreDeps(options?: {
 }) {
   return {
     github: options?.github ?? createGitHubServiceStub(),
-    resolveRepositoryDefaultBranch: async () => "main",
+    workspaceGitService: {
+      resolveRepoRoot: async (cwd: string) => cwd,
+    },
+    resolveDefaultBranch: async () => "main",
     generateBranchName: options?.generateBranchName ?? ((seed) => seed ?? "generated-worktree"),
   };
 }
@@ -144,6 +151,56 @@ function createGitHubPrRemoteRepo(): { tempDir: string; repoDir: string; paseoHo
   execSync("git fetch origin", { cwd: repoDir, stdio: "pipe" });
 
   return { tempDir, repoDir, paseoHome };
+}
+
+function createForkGitHubPrRemoteRepo(): {
+  tempDir: string;
+  repoDir: string;
+  headRemoteDir: string;
+  paseoHome: string;
+} {
+  const { tempDir, repoDir, paseoHome } = createGitRepo();
+  const baseRemoteDir = path.join(tempDir, "base.git");
+  const headRemoteDir = path.join(tempDir, "therainisme.git");
+  const headCloneDir = path.join(tempDir, "therainisme-clone");
+
+  execSync(`git clone --bare ${JSON.stringify(repoDir)} ${JSON.stringify(baseRemoteDir)}`, {
+    stdio: "pipe",
+  });
+  execSync(`git clone --bare ${JSON.stringify(repoDir)} ${JSON.stringify(headRemoteDir)}`, {
+    stdio: "pipe",
+  });
+  execSync(`git remote add origin ${JSON.stringify(baseRemoteDir)}`, {
+    cwd: repoDir,
+    stdio: "pipe",
+  });
+
+  execSync(`git clone ${JSON.stringify(headRemoteDir)} ${JSON.stringify(headCloneDir)}`, {
+    stdio: "pipe",
+  });
+  execSync("git config user.email 'test@test.com'", { cwd: headCloneDir, stdio: "pipe" });
+  execSync("git config user.name 'Test'", { cwd: headCloneDir, stdio: "pipe" });
+  writeFileSync(path.join(headCloneDir, "README.md"), "fork pr main branch\n");
+  execSync("git add README.md", { cwd: headCloneDir, stdio: "pipe" });
+  execSync("git -c commit.gpgsign=false commit -m 'fork pr main branch'", {
+    cwd: headCloneDir,
+    stdio: "pipe",
+  });
+  const prHead = execSync("git rev-parse HEAD", { cwd: headCloneDir, stdio: "pipe" })
+    .toString()
+    .trim();
+  execSync("git push origin main", { cwd: headCloneDir, stdio: "pipe" });
+  execSync(
+    `git --git-dir=${JSON.stringify(baseRemoteDir)} fetch ${JSON.stringify(headRemoteDir)} main`,
+    { stdio: "pipe" },
+  );
+  execSync(
+    `git --git-dir=${JSON.stringify(baseRemoteDir)} update-ref refs/pull/526/head ${prHead}`,
+    { stdio: "pipe" },
+  );
+  execSync("git fetch origin", { cwd: repoDir, stdio: "pipe" });
+
+  return { tempDir, repoDir, headRemoteDir, paseoHome };
 }
 
 describe.skipIf(process.platform === "win32")("createWorktreeCore", () => {
@@ -347,6 +404,124 @@ describe.skipIf(process.platform === "win32")("createWorktreeCore", () => {
     expect(result.worktree.branchName).toBe("pr-123");
   });
 
+  test("checks out a fork PR whose head branch collides with local main", async () => {
+    const { tempDir, repoDir, headRemoteDir, paseoHome } = createForkGitHubPrRemoteRepo();
+    cleanupPaths.push(tempDir);
+    const github = {
+      ...createGitHubServiceStub(),
+      getPullRequestCheckoutTarget: async () => ({
+        number: 526,
+        baseRefName: "main",
+        headRefName: "main",
+        headOwnerLogin: "therainisme",
+        headRepositorySshUrl: headRemoteDir,
+        headRepositoryUrl: headRemoteDir,
+        isCrossRepository: true,
+      }),
+    };
+
+    const result = await createCoreWorktree(
+      {
+        cwd: repoDir,
+        action: "checkout",
+        githubPrNumber: 526,
+        refName: "main",
+        paseoHome,
+        runSetup: false,
+      },
+      createCoreDeps({ github }),
+    );
+
+    const sourceBranch = execSync("git branch --show-current", { cwd: repoDir, stdio: "pipe" })
+      .toString()
+      .trim();
+    const worktreeBranch = execSync("git branch --show-current", {
+      cwd: result.worktree.worktreePath,
+      stdio: "pipe",
+    })
+      .toString()
+      .trim();
+    const readme = readFileSync(path.join(result.worktree.worktreePath, "README.md"), "utf8");
+    writeFileSync(path.join(result.worktree.worktreePath, "FOLLOWUP.md"), "maintainer edit\n");
+    execSync("git add FOLLOWUP.md", { cwd: result.worktree.worktreePath, stdio: "pipe" });
+    execSync("git -c commit.gpgsign=false commit -m 'maintainer edit'", {
+      cwd: result.worktree.worktreePath,
+      stdio: "pipe",
+    });
+    const pushDryRun = execSync("git push --dry-run 2>&1", {
+      cwd: result.worktree.worktreePath,
+      stdio: "pipe",
+    }).toString();
+
+    expect(sourceBranch).toBe("main");
+    expect(result.intent).toEqual({
+      kind: "checkout-github-pr",
+      githubPrNumber: 526,
+      headRef: "main",
+      baseRefName: "main",
+      localBranchName: "therainisme/main",
+      pushRemoteUrl: headRemoteDir,
+    });
+    expect(result.worktree.branchName).toBe("therainisme/main");
+    expect(path.basename(result.worktree.worktreePath)).toBe("therainisme-main");
+    expect(worktreeBranch).toBe("therainisme/main");
+    expect(readme).toBe("fork pr main branch\n");
+    expect(pushDryRun).toContain("HEAD -> main");
+  });
+
+  test("uses a unique local branch when the same fork PR branch already exists", async () => {
+    const { tempDir, repoDir, headRemoteDir, paseoHome } = createForkGitHubPrRemoteRepo();
+    cleanupPaths.push(tempDir);
+    const github = {
+      ...createGitHubServiceStub(),
+      getPullRequestCheckoutTarget: async () => ({
+        number: 526,
+        baseRefName: "main",
+        headRefName: "main",
+        headOwnerLogin: "therainisme",
+        headRepositorySshUrl: headRemoteDir,
+        headRepositoryUrl: headRemoteDir,
+        isCrossRepository: true,
+      }),
+    };
+
+    const first = await createCoreWorktree(
+      {
+        cwd: repoDir,
+        worktreeSlug: "first-pr-worktree",
+        action: "checkout",
+        githubPrNumber: 526,
+        refName: "main",
+        paseoHome,
+        runSetup: false,
+      },
+      createCoreDeps({ github }),
+    );
+    const second = await createCoreWorktree(
+      {
+        cwd: repoDir,
+        worktreeSlug: "second-pr-worktree",
+        action: "checkout",
+        githubPrNumber: 526,
+        refName: "main",
+        paseoHome,
+        runSetup: false,
+      },
+      createCoreDeps({ github }),
+    );
+
+    expect(first.worktree.branchName).toBe("therainisme/main");
+    expect(second.worktree.branchName).toBe("therainisme/main-1");
+    expect(
+      execSync("git config --get remote.paseo-pr-526.push", {
+        cwd: second.worktree.worktreePath,
+        stdio: "pipe",
+      })
+        .toString()
+        .trim(),
+    ).toBe("HEAD:refs/heads/main");
+  });
+
   test("throws a typed error for an unknown checkout branch", async () => {
     const { tempDir, repoDir, paseoHome } = createGitRepo();
     cleanupPaths.push(tempDir);
@@ -480,5 +655,25 @@ describe.skipIf(process.platform === "win32")("createWorktreeCore", () => {
   test("keeps direct createWorktree calls isolated to the core layer", () => {
     const serverSrc = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     expect(findDirectCreateWorktreeCallSites(serverSrc)).toEqual(["server/worktree-core.ts"]);
+  });
+});
+
+describe("resolveWorktreeRepoRoot", () => {
+  test("resolves repository roots through the workspace git service", async () => {
+    const workspaceGitService = {
+      resolveRepoRoot: vi.fn().mockResolvedValue("/tmp/main-repo"),
+    };
+
+    await expect(
+      resolveWorktreeRepoRoot(
+        { cwd: "/tmp/main-repo/worktrees/feature", paseoHome: "/tmp/paseo-home" },
+        workspaceGitService,
+      ),
+    ).resolves.toBe("/tmp/main-repo");
+
+    expect(workspaceGitService.resolveRepoRoot).toHaveBeenCalledTimes(1);
+    expect(workspaceGitService.resolveRepoRoot).toHaveBeenCalledWith(
+      "/tmp/main-repo/worktrees/feature",
+    );
   });
 });

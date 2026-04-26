@@ -1,27 +1,22 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { getCheckoutDiffMock, toCheckoutErrorMock } = vi.hoisted(() => ({
-  getCheckoutDiffMock: vi.fn(async () => ({ diff: "", structured: [] })),
+const { toCheckoutErrorMock } = vi.hoisted(() => ({
   toCheckoutErrorMock: vi.fn((error: unknown) => ({
     message: error instanceof Error ? error.message : String(error),
   })),
-}));
-
-vi.mock("../utils/checkout-git.js", () => ({
-  getCheckoutDiff: getCheckoutDiffMock,
 }));
 
 vi.mock("./checkout-git-utils.js", () => ({
   toCheckoutError: toCheckoutErrorMock,
 }));
 
+import type pino from "pino";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
+import type { WorkspaceGitService } from "./workspace-git-service.js";
 
 describe("CheckoutDiffManager", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    getCheckoutDiffMock.mockReset();
-    getCheckoutDiffMock.mockResolvedValue({ diff: "", structured: [] });
     toCheckoutErrorMock.mockClear();
   });
 
@@ -31,7 +26,7 @@ describe("CheckoutDiffManager", () => {
 
   function createManager(options?: {
     repoRoot?: string | null;
-    getCheckoutDiffImplementation?: typeof getCheckoutDiffMock;
+    getCheckoutDiffImplementation?: ReturnType<typeof vi.fn>;
   }) {
     const unsubscribe = vi.fn();
     let onChange: (() => void) | null = null;
@@ -47,15 +42,13 @@ describe("CheckoutDiffManager", () => {
       subscribe: vi.fn(),
       peekSnapshot: vi.fn(),
       getSnapshot: vi.fn(),
+      getCheckoutDiff:
+        options?.getCheckoutDiffImplementation ?? vi.fn(async () => ({ diff: "", structured: [] })),
       refresh: vi.fn(),
       scheduleRefreshForCwd: vi.fn(),
       requestWorkingTreeWatch: mockRequestWorkingTreeWatch,
       dispose: vi.fn(),
     };
-
-    if (options?.getCheckoutDiffImplementation) {
-      getCheckoutDiffMock.mockImplementation(options.getCheckoutDiffImplementation);
-    }
 
     const logger = {
       child: () => logger,
@@ -63,9 +56,9 @@ describe("CheckoutDiffManager", () => {
     };
 
     const manager = new CheckoutDiffManager({
-      logger: logger as any,
+      logger: logger as unknown as pino.Logger,
       paseoHome: "/tmp/paseo-test",
-      workspaceGitService: workspaceGitService as any,
+      workspaceGitService: workspaceGitService as unknown as WorkspaceGitService,
     });
 
     return {
@@ -111,7 +104,7 @@ describe("CheckoutDiffManager", () => {
   });
 
   test("diffCwd uses repoRoot from the working tree watch result", async () => {
-    const { manager } = createManager({ repoRoot: "/tmp/repo" });
+    const { manager, workspaceGitService } = createManager({ repoRoot: "/tmp/repo" });
 
     await manager.subscribe(
       {
@@ -121,15 +114,16 @@ describe("CheckoutDiffManager", () => {
       () => {},
     );
 
-    expect(getCheckoutDiffMock).toHaveBeenCalledWith(
+    expect(workspaceGitService.getCheckoutDiff).toHaveBeenCalledWith(
       "/tmp/repo",
       expect.objectContaining({ mode: "uncommitted", includeStructured: true }),
-      { paseoHome: "/tmp/paseo-test" },
+      undefined,
     );
   });
 
   test("diff refresh is triggered when the working tree watch callback fires", async () => {
-    getCheckoutDiffMock
+    const getCheckoutDiff = vi
+      .fn()
       .mockResolvedValueOnce({
         diff: "",
         structured: [{ path: "a.ts", additions: 1, deletions: 0, status: "modified" }],
@@ -139,7 +133,9 @@ describe("CheckoutDiffManager", () => {
         structured: [{ path: "b.ts", additions: 2, deletions: 0, status: "modified" }],
       });
 
-    const { manager, getOnChange } = createManager();
+    const { manager, getOnChange } = createManager({
+      getCheckoutDiffImplementation: getCheckoutDiff,
+    });
     const listener = vi.fn();
 
     await manager.subscribe(
@@ -164,8 +160,51 @@ describe("CheckoutDiffManager", () => {
     });
   });
 
+  test("watch-triggered refresh forces a cache bypass on getCheckoutDiff", async () => {
+    const getCheckoutDiff = vi
+      .fn()
+      .mockResolvedValueOnce({
+        diff: "",
+        structured: [{ path: "a.ts", additions: 1, deletions: 0, status: "modified" }],
+      })
+      .mockResolvedValueOnce({
+        diff: "",
+        structured: [{ path: "b.ts", additions: 2, deletions: 0, status: "modified" }],
+      });
+
+    const { manager, getOnChange } = createManager({
+      getCheckoutDiffImplementation: getCheckoutDiff,
+    });
+
+    await manager.subscribe(
+      {
+        cwd: "/tmp/repo/packages/server",
+        compare: { mode: "uncommitted" },
+      },
+      vi.fn(),
+    );
+
+    expect(getCheckoutDiff).toHaveBeenNthCalledWith(
+      1,
+      "/tmp/repo",
+      expect.objectContaining({ mode: "uncommitted" }),
+      undefined,
+    );
+
+    const onChange = getOnChange();
+    onChange?.();
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(getCheckoutDiff).toHaveBeenCalledTimes(2);
+    const watchFiredCall = getCheckoutDiff.mock.calls[1];
+    expect(watchFiredCall[2]).toEqual({
+      force: true,
+      reason: expect.stringContaining("working-tree"),
+    });
+  });
+
   test("falls back to cwd when the working tree watch returns no repo root", async () => {
-    const { manager } = createManager({ repoRoot: null });
+    const { manager, workspaceGitService } = createManager({ repoRoot: null });
 
     await manager.subscribe(
       {
@@ -175,10 +214,10 @@ describe("CheckoutDiffManager", () => {
       () => {},
     );
 
-    expect(getCheckoutDiffMock).toHaveBeenCalledWith(
+    expect(workspaceGitService.getCheckoutDiff).toHaveBeenCalledWith(
       "/tmp/plain",
       expect.objectContaining({ mode: "uncommitted", includeStructured: true }),
-      { paseoHome: "/tmp/paseo-test" },
+      undefined,
     );
   });
 });

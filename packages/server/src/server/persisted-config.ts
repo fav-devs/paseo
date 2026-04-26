@@ -325,10 +325,10 @@ const DEFAULT_PERSISTED_CONFIG = PersistedConfigSchema.parse({
   },
 }) as PersistedConfig;
 
-type LoggerLike = {
+interface LoggerLike {
   child(bindings: Record<string, unknown>): LoggerLike;
-  info(...args: any[]): void;
-};
+  info(...args: unknown[]): void;
+}
 
 function getConfigPath(paseoHome: string): string {
   return path.join(paseoHome, CONFIG_FILENAME);
@@ -377,7 +377,7 @@ export function loadPersistedConfig(paseoHome: string, logger?: LoggerLike): Per
       log?.info(`Initialized config file at ${configPath}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`[Config] Failed to initialize ${configPath}: ${message}`);
+      throw new Error(`[Config] Failed to initialize ${configPath}: ${message}`, { cause: err });
     }
   }
 
@@ -386,7 +386,7 @@ export function loadPersistedConfig(paseoHome: string, logger?: LoggerLike): Per
     raw = readFileSync(configPath, "utf-8");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`[Config] Failed to read ${configPath}: ${message}`);
+    throw new Error(`[Config] Failed to read ${configPath}: ${message}`, { cause: err });
   }
 
   let parsed: unknown;
@@ -394,7 +394,7 @@ export function loadPersistedConfig(paseoHome: string, logger?: LoggerLike): Per
     parsed = JSON.parse(raw);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`[Config] Invalid JSON in ${configPath}: ${message}`);
+    throw new Error(`[Config] Invalid JSON in ${configPath}: ${message}`, { cause: err });
   }
 
   const migrated = stripDeprecatedLocalSpeechConfigFields(parsed);
@@ -431,6 +431,6 @@ export function savePersistedConfig(
     log?.info(`Saved to ${configPath}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`[Config] Failed to write ${configPath}: ${message}`);
+    throw new Error(`[Config] Failed to write ${configPath}: ${message}`, { cause: err });
   }
 }

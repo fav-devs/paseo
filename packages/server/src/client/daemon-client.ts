@@ -32,6 +32,7 @@ import type {
   CheckoutPushResponse,
   CheckoutPrCreateResponse,
   CheckoutPrStatusResponse,
+  PullRequestTimelineResponse,
   CheckoutSwitchBranchResponse,
   StashSaveResponse,
   StashPopResponse,
@@ -107,6 +108,7 @@ import {
   type DaemonTransportFactory,
   type WebSocketFactory,
 } from "./daemon-client-transport.js";
+import { DaemonClientRuntimeMetrics } from "./daemon-client-runtime-metrics.js";
 
 export interface Logger {
   debug(obj: object, msg?: string): void;
@@ -117,10 +119,15 @@ export interface Logger {
 
 const consoleLogger: Logger = {
   debug: () => {},
-  info: (obj, msg) => console.info(msg, obj),
+  info: (obj, msg) => console.log(msg, obj),
   warn: (obj, msg) => console.warn(msg, obj),
   error: (obj, msg) => console.error(msg, obj),
 };
+
+const perfNow: () => number =
+  typeof performance !== "undefined" && typeof performance.now === "function"
+    ? () => performance.now()
+    : () => Date.now();
 
 export type {
   DaemonTransport,
@@ -192,7 +199,7 @@ export type DaemonEvent =
 
 export type DaemonEventHandler = (event: DaemonEvent) => void;
 
-export type DaemonClientConfig = {
+export interface DaemonClientConfig {
   url: string;
   clientId: string;
   clientType?: "mobile" | "browser" | "cli" | "mcp";
@@ -213,13 +220,15 @@ export type DaemonClientConfig = {
     baseDelayMs?: number;
     maxDelayMs?: number;
   };
-};
+  runtimeMetricsIntervalMs?: number;
+  runtimeMetricsWindowMs?: number;
+}
 
-export type SendMessageOptions = {
+export interface SendMessageOptions {
   messageId?: string;
   images?: Array<{ data: string; mimeType: string }>;
   attachments?: SendAgentMessageRequest["attachments"];
-};
+}
 
 type AgentConfigOverrides = Partial<Omit<AgentSessionConfig, "provider" | "cwd">>;
 
@@ -239,11 +248,10 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   labels?: Record<string, string>;
 }
 
-export interface CreatePaseoWorktreeInput
-  extends Pick<
-    CreatePaseoWorktreeRequest,
-    "cwd" | "worktreeSlug" | "attachments" | "refName" | "action" | "githubPrNumber"
-  > {}
+export interface CreatePaseoWorktreeInput extends Pick<
+  CreatePaseoWorktreeRequest,
+  "cwd" | "worktreeSlug" | "attachments" | "refName" | "action" | "githubPrNumber"
+> {}
 
 export type ForkAgentOptions = {
   /** ID of the agent whose conversation will be used as context. */
@@ -283,6 +291,7 @@ type CheckoutPullPayload = CheckoutPullResponse["payload"];
 type CheckoutPushPayload = CheckoutPushResponse["payload"];
 type CheckoutPrCreatePayload = CheckoutPrCreateResponse["payload"];
 type CheckoutPrStatusPayload = CheckoutPrStatusResponse["payload"];
+type PullRequestTimelinePayload = PullRequestTimelineResponse["payload"];
 type CheckoutSwitchBranchPayload = CheckoutSwitchBranchResponse["payload"];
 type StashSavePayload = StashSaveResponse["payload"];
 type StashPopPayload = StashPopResponse["payload"];
@@ -308,15 +317,29 @@ type ListAvailableProvidersPayload = ListAvailableProvidersResponse["payload"];
 type GetProvidersSnapshotPayload = GetProvidersSnapshotResponseMessage["payload"];
 type RefreshProvidersSnapshotPayload = RefreshProvidersSnapshotResponseMessage["payload"];
 type ProviderDiagnosticPayload = ProviderDiagnosticResponseMessage["payload"];
+type ReadProjectConfigPayload = Extract<
+  SessionOutboundMessage,
+  { type: "read_project_config_response" }
+>["payload"];
+type WriteProjectConfigPayload = Extract<
+  SessionOutboundMessage,
+  { type: "write_project_config_response" }
+>["payload"];
 type ListCommandsPayload = ListCommandsResponse["payload"];
 type ListCommandsDraftConfig = Pick<
   AgentSessionConfig,
   "provider" | "cwd" | "modeId" | "model" | "thinkingOptionId" | "featureValues"
 >;
-type ListCommandsOptions = {
+export interface WriteProjectConfigInput {
+  repoRoot: string;
+  config: PaseoConfigRaw;
+  expectedRevision: PaseoConfigRevision | null;
+  requestId?: string;
+}
+interface ListCommandsOptions {
   requestId?: string;
   draftConfig?: ListCommandsDraftConfig;
-};
+}
 type SetVoiceModePayload = Extract<
   SessionOutboundMessage,
   { type: "set_voice_mode_response" }
@@ -416,13 +439,13 @@ export type FetchAgentTimelinePayload = FetchAgentTimelineResponseMessage["paylo
 export type FetchAgentTimelineDirection = FetchAgentTimelinePayload["direction"];
 export type FetchAgentTimelineProjection = FetchAgentTimelinePayload["projection"];
 export type FetchAgentTimelineCursor = NonNullable<FetchAgentTimelinePayload["startCursor"]>;
-export type FetchAgentTimelineOptions = {
+export interface FetchAgentTimelineOptions {
   direction?: FetchAgentTimelineDirection;
   cursor?: FetchAgentTimelineCursor;
   limit?: number;
   projection?: FetchAgentTimelineProjection;
   requestId?: string;
-};
+}
 
 type AgentRefreshedStatusPayload = z.infer<typeof AgentRefreshedStatusPayloadSchema>;
 type RestartRequestedStatusPayload = z.infer<typeof RestartRequestedStatusPayloadSchema>;
@@ -437,6 +460,19 @@ export type FetchAgentsOptions = Omit<FetchAgentsRequest, "type" | "requestId"> 
 };
 export type FetchAgentsEntry = FetchAgentsPayload["entries"][number];
 export type FetchAgentsPageInfo = FetchAgentsPayload["pageInfo"];
+type FetchAgentHistoryPayload = Extract<
+  SessionOutboundMessage,
+  { type: "fetch_agent_history_response" }
+>["payload"];
+type FetchAgentHistoryRequest = Extract<
+  SessionInboundMessage,
+  { type: "fetch_agent_history_request" }
+>;
+export type FetchAgentHistoryOptions = Omit<FetchAgentHistoryRequest, "type" | "requestId"> & {
+  requestId?: string;
+};
+export type FetchAgentHistoryEntry = FetchAgentHistoryPayload["entries"][number];
+export type FetchAgentHistoryPageInfo = FetchAgentHistoryPayload["pageInfo"];
 type FetchWorkspacesPayload = Extract<
   SessionOutboundMessage,
   { type: "fetch_workspaces_response" }
@@ -447,40 +483,40 @@ export type FetchWorkspacesOptions = Omit<FetchWorkspacesRequest, "type" | "requ
 };
 export type FetchWorkspacesEntry = FetchWorkspacesPayload["entries"][number];
 export type FetchWorkspacesPageInfo = FetchWorkspacesPayload["pageInfo"];
-export type CreateChatRoomOptions = {
+export interface CreateChatRoomOptions {
   name: string;
   purpose?: string | null;
   requestId?: string;
-};
-export type InspectChatRoomOptions = {
+}
+export interface InspectChatRoomOptions {
   room: string;
   requestId?: string;
-};
-export type DeleteChatRoomOptions = {
+}
+export interface DeleteChatRoomOptions {
   room: string;
   requestId?: string;
-};
-export type PostChatMessageOptions = {
+}
+export interface PostChatMessageOptions {
   room: string;
   body: string;
   authorAgentId?: string;
   replyToMessageId?: string | null;
   requestId?: string;
-};
-export type ReadChatMessagesOptions = {
+}
+export interface ReadChatMessagesOptions {
   room: string;
   limit?: number;
   since?: string;
   authorAgentId?: string;
   requestId?: string;
-};
-export type WaitForChatMessagesOptions = {
+}
+export interface WaitForChatMessagesOptions {
   room: string;
   afterMessageId?: string | null;
   timeoutMs?: number;
   requestId?: string;
-};
-export type RunLoopOptions = {
+}
+export interface RunLoopOptions {
   prompt: string;
   cwd: string;
   verifyPrompt?: string | null;
@@ -490,21 +526,21 @@ export type RunLoopOptions = {
   maxIterations?: number;
   maxTimeMs?: number;
   requestId?: string;
-};
-export type InspectLoopOptions = {
+}
+export interface InspectLoopOptions {
   id: string;
   requestId?: string;
-};
-export type LoopLogsOptions = {
+}
+export interface LoopLogsOptions {
   id: string;
   afterSeq?: number;
   requestId?: string;
-};
-export type StopLoopOptions = {
+}
+export interface StopLoopOptions {
   id: string;
   requestId?: string;
-};
-export type CreateScheduleOptions = {
+}
+export interface CreateScheduleOptions {
   prompt: string;
   name?: string | null;
   cadence:
@@ -546,11 +582,11 @@ export type CreateScheduleOptions = {
   maxRuns?: number;
   expiresAt?: string;
   requestId?: string;
-};
-export type InspectScheduleOptions = {
+}
+export interface InspectScheduleOptions {
   id: string;
   requestId?: string;
-};
+}
 type ListAvailableEditorsPayload = ListAvailableEditorsResponseMessage["payload"];
 type OpenInEditorPayload = OpenInEditorResponseMessage["payload"];
 type OpenProjectPayload = OpenProjectResponseMessage["payload"];
@@ -559,29 +595,29 @@ type UpdateProjectActionsPayload = UpdateProjectActionsResponseMessage["payload"
 type WorkspaceSetupStatusPayload = WorkspaceSetupStatusResponseMessage["payload"];
 export type EditorTargetDescriptor = ListAvailableEditorsPayload["editors"][number];
 
-export type FetchAgentResult = {
+export interface FetchAgentResult {
   agent: AgentSnapshotPayload;
   project: ProjectPlacementPayload | null;
-};
+}
 
-export type WaitForFinishResult = {
+export interface WaitForFinishResult {
   status: "idle" | "error" | "permission" | "timeout";
   final: AgentSnapshotPayload | null;
   error: string | null;
   lastMessage: string | null;
-};
+}
 
-type Waiter<T> = {
+interface Waiter<T> {
   predicate: (msg: SessionOutboundMessage) => T | null;
   resolve: (value: T) => void;
   reject: (error: Error) => void;
   timeoutHandle: ReturnType<typeof setTimeout> | null;
-};
+}
 
-type WaitHandle<T> = {
+interface WaitHandle<T> {
   promise: Promise<T>;
   cancel: (error: Error) => void;
-};
+}
 
 type RpcWaitResult<T> = { kind: "ok"; value: T } | { kind: "error"; error: DaemonRpcError };
 type GetDaemonConfigResponse = Extract<
@@ -699,7 +735,7 @@ export class DaemonClient {
     Set<(message: SessionOutboundMessage) => void>
   > = new Map();
   private eventListeners: Set<DaemonEventHandler> = new Set();
-  private waiters: Set<Waiter<any>> = new Set();
+  private waiters: Set<Waiter<unknown>> = new Set();
   private checkoutStatusInFlight: Map<string, Promise<CheckoutStatusPayload>> = new Map();
   private connectionListeners: Set<(status: ConnectionState) => void> = new Set();
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -731,6 +767,8 @@ export class DaemonClient {
   private readonly logClientIdHash: string;
   private readonly logGeneration: number | null;
   private lastServerInfoMessage: ServerInfoStatusPayload | null = null;
+  private runtimeMetricsInterval: ReturnType<typeof setInterval> | null = null;
+  private runtimeMetrics: DaemonClientRuntimeMetrics | null = null;
 
   constructor(private config: DaemonClientConfig) {
     this.logger = config.logger ?? consoleLogger;
@@ -754,6 +792,28 @@ export class DaemonClient {
       Number.isFinite(this.config.runtimeGeneration)
         ? this.config.runtimeGeneration
         : null;
+    const runtimeMetricsIntervalMs =
+      typeof config.runtimeMetricsIntervalMs === "number" && config.runtimeMetricsIntervalMs > 0
+        ? config.runtimeMetricsIntervalMs
+        : 0;
+    if (runtimeMetricsIntervalMs > 0) {
+      const runtimeMetricsWindowMs =
+        typeof config.runtimeMetricsWindowMs === "number" && config.runtimeMetricsWindowMs > 0
+          ? Math.max(config.runtimeMetricsWindowMs, runtimeMetricsIntervalMs)
+          : undefined;
+      this.runtimeMetrics = new DaemonClientRuntimeMetrics(
+        this.logger,
+        {
+          connectionPath: this.logConnectionPath,
+          serverId: this.logServerId,
+          getConnectionStatus: () => this.connectionState.status,
+        },
+        runtimeMetricsWindowMs ? { windowMs: runtimeMetricsWindowMs } : undefined,
+      );
+      this.runtimeMetricsInterval = setInterval(() => {
+        this.runtimeMetrics?.flush();
+      }, runtimeMetricsIntervalMs);
+    }
   }
 
   // ============================================================================
@@ -964,6 +1024,12 @@ export class DaemonClient {
     this.rejectPendingSendQueue(new Error("Daemon client closed"));
     this.clearTerminalSlots();
     this.lastServerInfoMessage = null;
+    if (this.runtimeMetricsInterval) {
+      clearInterval(this.runtimeMetricsInterval);
+      this.runtimeMetricsInterval = null;
+      this.runtimeMetrics?.flush({ final: true });
+      this.runtimeMetrics = null;
+    }
     this.updateConnectionState(
       { status: "disposed" },
       { event: "DISPOSE", reason: "Client closed", reasonCode: "disposed" },
@@ -1026,9 +1092,9 @@ export class DaemonClient {
     };
   }
 
-  on(
-    type: SessionOutboundMessage["type"],
-    handler: (message: SessionOutboundMessage) => void,
+  on<TType extends SessionOutboundMessage["type"]>(
+    type: TType,
+    handler: (message: Extract<SessionOutboundMessage, { type: TType }>) => void,
   ): () => void;
   on(handler: DaemonEventHandler): () => void;
   on(
@@ -1381,6 +1447,7 @@ export class DaemonClient {
     const message = SessionInboundMessageSchema.parse({
       type: "fetch_agents_request",
       requestId: resolvedRequestId,
+      ...(options?.scope ? { scope: options.scope } : {}),
       ...(options?.filter ? { filter: options.filter } : {}),
       ...(options?.sort ? { sort: options.sort } : {}),
       ...(options?.page ? { page: options.page } : {}),
@@ -1393,6 +1460,32 @@ export class DaemonClient {
       options: { skipQueue: true },
       select: (msg) => {
         if (msg.type !== "fetch_agents_response") {
+          return null;
+        }
+        if (msg.payload.requestId !== resolvedRequestId) {
+          return null;
+        }
+        return msg.payload;
+      },
+    });
+  }
+
+  async fetchAgentHistory(options?: FetchAgentHistoryOptions): Promise<FetchAgentHistoryPayload> {
+    const resolvedRequestId = this.createRequestId(options?.requestId);
+    const message = SessionInboundMessageSchema.parse({
+      type: "fetch_agent_history_request",
+      requestId: resolvedRequestId,
+      ...(options?.filter ? { filter: options.filter } : {}),
+      ...(options?.sort ? { sort: options.sort } : {}),
+      ...(options?.page ? { page: options.page } : {}),
+    });
+    return this.sendRequest({
+      requestId: resolvedRequestId,
+      message,
+      timeout: 10000,
+      options: { skipQueue: true },
+      select: (msg) => {
+        if (msg.type !== "fetch_agent_history_response") {
           return null;
         }
         if (msg.payload.requestId !== resolvedRequestId) {
@@ -2652,6 +2745,24 @@ export class DaemonClient {
     });
   }
 
+  async pullRequestTimeline(
+    input: { cwd: string; prNumber: number; repoOwner: string; repoName: string },
+    requestId?: string,
+  ): Promise<PullRequestTimelinePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "pull_request_timeline_request",
+        cwd: input.cwd,
+        prNumber: input.prNumber,
+        repoOwner: input.repoOwner,
+        repoName: input.repoName,
+      },
+      responseType: "pull_request_timeline_response",
+      timeout: 60000,
+    });
+  }
+
   async checkoutSwitchBranch(
     cwd: string,
     branch: string,
@@ -3335,9 +3446,6 @@ export class DaemonClient {
 
       unsubscribe = this.on("agent_update", (message) => {
         if (settled) {
-          return;
-        }
-        if (message.type !== "agent_update") {
           return;
         }
         if (message.payload.kind !== "upsert") {
@@ -4126,17 +4234,15 @@ export class DaemonClient {
     }
 
     const rawBytes = asUint8Array(rawData);
-    if (rawBytes) {
-      const frame = decodeTerminalStreamFrame(rawBytes);
-      if (frame) {
-        this.handleBinaryFrame(frame);
-        return;
-      }
+    if (rawBytes && this.tryHandleBinaryFrame(rawBytes)) {
+      return;
     }
     const payload = decodeMessageData(rawData);
     if (!payload) {
       return;
     }
+    this.handleJsonPayload(payload, rawBytes?.byteLength);
+  }
 
     if (payload.length > DaemonClient.MAX_WS_TEXT_PAYLOAD_CHARS) {
       throw new Error("WebSocket text message too large");
@@ -4176,10 +4282,37 @@ export class DaemonClient {
     }
 
     if (parsed.data.type === "pong") {
+      this.runtimeMetrics?.recordMessage("pong", bytes, perfNow() - startMs);
       return;
     }
 
     this.handleSessionMessage(parsed.data.message);
+    const msgType = parsed.data.message.type;
+    this.runtimeMetrics?.recordMessage(msgType, bytes, perfNow() - startMs);
+    if (parsed.data.message.type === "agent_stream") {
+      this.runtimeMetrics?.recordAgentStream(parsed.data.message.payload);
+    }
+  }
+
+  private tryHandleBinaryFrame(rawBytes: Uint8Array): boolean {
+    const frame = decodeTerminalStreamFrame(rawBytes);
+    if (!frame) {
+      return false;
+    }
+    const binaryStartMs = perfNow();
+    this.handleBinaryFrame(frame);
+    let frameKind: "output" | "snapshot" | "other" = "other";
+    if (frame.opcode === TerminalStreamOpcode.Output) {
+      frameKind = "output";
+    } else if (frame.opcode === TerminalStreamOpcode.Snapshot) {
+      frameKind = "snapshot";
+    }
+    this.runtimeMetrics?.recordBinaryFrame(
+      frameKind,
+      rawBytes.byteLength,
+      perfNow() - binaryStartMs,
+    );
+    return true;
   }
 
   private handleBinaryFrame(frame: TerminalStreamFrame): void {
@@ -4284,6 +4417,19 @@ export class DaemonClient {
       this.rejectConnect(new Error(reason ?? "Daemon client is disposed"));
       return;
     }
+    this.emitDisconnectedStateForReconnect(reason, input);
+    if (!this.shouldReconnect || this.config.reconnect?.enabled === false) {
+      this.rejectConnect(new Error(reason ?? "Transport disconnected before connect"));
+      return;
+    }
+
+    this.armReconnectTimer();
+  }
+
+  private emitDisconnectedStateForReconnect(
+    reason: string | undefined,
+    input: { reason?: string; event?: string; reasonCode?: string } | undefined,
+  ): void {
     this.updateConnectionState(
       {
         status: "disconnected",
@@ -4295,11 +4441,9 @@ export class DaemonClient {
         ...(input?.reasonCode ? { reasonCode: input.reasonCode } : {}),
       },
     );
-    if (!this.shouldReconnect || this.config.reconnect?.enabled === false) {
-      this.rejectConnect(new Error(reason ?? "Transport disconnected before connect"));
-      return;
-    }
+  }
 
+  private armReconnectTimer(): void {
     const attempt = this.reconnectAttempt;
     const baseDelay = this.config.reconnect?.baseDelayMs ?? DEFAULT_RECONNECT_BASE_DELAY_MS;
     const maxDelay = this.config.reconnect?.maxDelayMs ?? DEFAULT_RECONNECT_MAX_DELAY_MS;
@@ -4493,7 +4637,7 @@ export class DaemonClient {
         timeout > 0
           ? setTimeout(() => {
               if (waiter) {
-                this.waiters.delete(waiter);
+                this.waiters.delete(waiter as Waiter<unknown>);
               }
               wrappedReject(timeoutError);
             }, timeout)
@@ -4505,7 +4649,7 @@ export class DaemonClient {
         reject: wrappedReject,
         timeoutHandle,
       };
-      this.waiters.add(waiter);
+      this.waiters.add(waiter as Waiter<unknown>);
     });
 
     const cancel = (error: Error) => {
@@ -4514,7 +4658,7 @@ export class DaemonClient {
       }
 
       if (waiter) {
-        this.waiters.delete(waiter);
+        this.waiters.delete(waiter as Waiter<unknown>);
         if (waiter.timeoutHandle) {
           clearTimeout(waiter.timeoutHandle);
         }

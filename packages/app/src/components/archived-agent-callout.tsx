@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { View, Text } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import Animated from "react-native-reanimated";
@@ -24,7 +24,12 @@ export function ArchivedAgentCallout({ serverId, agentId, onHandoff }: ArchivedA
 
   const { style: keyboardAnimatedStyle } = useKeyboardShiftStyle({ mode: "translate" });
 
-  async function handleUnarchive() {
+  const containerStyle = useMemo(
+    () => [styles.container, { paddingBottom: insets.bottom }, keyboardAnimatedStyle],
+    [insets.bottom, keyboardAnimatedStyle],
+  );
+
+  const handleUnarchive = useCallback(async () => {
     if (!client || !isConnected || isUnarchiving) return;
     setIsUnarchiving(true);
     try {
@@ -33,12 +38,10 @@ export function ArchivedAgentCallout({ serverId, agentId, onHandoff }: ArchivedA
       console.error("[ArchivedAgentCallout] Failed to unarchive agent:", error);
       setIsUnarchiving(false);
     }
-  }
+  }, [client, isConnected, isUnarchiving, agentId]);
 
   return (
-    <Animated.View
-      style={[styles.container, { paddingBottom: insets.bottom }, keyboardAnimatedStyle]}
-    >
+    <Animated.View style={containerStyle}>
       <View style={styles.inputAreaContainer}>
         <View style={styles.inputAreaContent}>
           <View style={styles.callout}>
@@ -65,7 +68,7 @@ export function ArchivedAgentCallout({ serverId, agentId, onHandoff }: ArchivedA
   );
 }
 
-const styles = StyleSheet.create(((theme: Theme) => ({
+const styles = StyleSheet.create((theme: Theme) => ({
   container: {
     flexDirection: "column",
     position: "relative",

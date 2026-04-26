@@ -29,6 +29,7 @@ import {
   removeTabFromTree,
   useWorkspaceLayoutStore,
   type SplitNode,
+  type SplitPane,
 } from "@/stores/workspace-layout-store";
 
 const SERVER_ID = "server-1";
@@ -55,7 +56,7 @@ function createPane(input: {
       tabIds: input.tabIds,
       focusedTabId: input.focusedTabId ?? input.tabIds[input.tabIds.length - 1] ?? null,
       tabs,
-    } as any,
+    } as SplitPane,
   };
 }
 
@@ -580,7 +581,7 @@ describe("workspace-layout-store actions", () => {
     const store = useWorkspaceLayoutStore.getState();
 
     store.openTabFocused(workspaceKey, { kind: "file", path: "/repo/worktree/a.ts" });
-    const secondTabId = store.openTabFocused(workspaceKey, {
+    store.openTabFocused(workspaceKey, {
       kind: "file",
       path: "/repo/worktree/b.ts",
     });
@@ -1048,7 +1049,7 @@ describe("workspace-layout-store actions", () => {
                   createdAt: 4,
                 },
               ],
-            } as any,
+            } as SplitPane,
           },
           focusedPaneId: "main",
         },
@@ -1100,6 +1101,47 @@ describe("workspace-layout-store actions", () => {
       terminalsHydrated: true,
       activeAgentIds: ["agent-1"],
       knownAgentIds: ["agent-1"],
+      standaloneTerminalIds: [],
+      hasActivePendingDraftCreate: false,
+    });
+
+    expect(useWorkspaceLayoutStore.getState().getWorkspaceTabs(workspaceKey)).toEqual([]);
+  });
+
+  it("reconcileTabs auto-opens only standalone terminals while keeping explicitly opened live terminals", () => {
+    const workspaceKey = createWorkspaceKey();
+    const store = useWorkspaceLayoutStore.getState();
+
+    const scriptTabId = store.openTabFocused(workspaceKey, {
+      kind: "terminal",
+      terminalId: "term-script",
+    });
+
+    store.reconcileTabs(workspaceKey, {
+      agentsHydrated: true,
+      terminalsHydrated: true,
+      activeAgentIds: [],
+      knownAgentIds: [],
+      knownTerminalIds: ["term-script", "term-manual"],
+      standaloneTerminalIds: ["term-manual"],
+      hasActivePendingDraftCreate: false,
+    });
+
+    const tabs = useWorkspaceLayoutStore.getState().getWorkspaceTabs(workspaceKey);
+    const layout = useWorkspaceLayoutStore.getState().layoutByWorkspace[workspaceKey]!;
+    expect(tabs.map((tab) => tab.tabId)).toEqual(["terminal_term-script", "terminal_term-manual"]);
+    expect(findPaneById(layout.root, layout.focusedPaneId)?.focusedTabId).toBe(scriptTabId);
+  });
+
+  it("reconcileTabs does not auto-open live non-standalone terminals", () => {
+    const workspaceKey = createWorkspaceKey();
+
+    useWorkspaceLayoutStore.getState().reconcileTabs(workspaceKey, {
+      agentsHydrated: true,
+      terminalsHydrated: true,
+      activeAgentIds: [],
+      knownAgentIds: [],
+      knownTerminalIds: ["term-script"],
       standaloneTerminalIds: [],
       hasActivePendingDraftCreate: false,
     });

@@ -1,9 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
+import type { DaemonClient } from "@server/client/daemon-client";
+import { queryClient as appQueryClient } from "@/query/query-client";
 import { useSessionStore } from "@/stores/session-store";
+import type { WorkspaceDescriptor } from "@/stores/session-store";
 import {
   __resetCheckoutGitActionsStoreForTests,
+  invalidateCheckoutGitQueriesForClient,
   useCheckoutGitActionsStore,
 } from "@/stores/checkout-git-actions-store";
+
+vi.mock("@react-native-async-storage/async-storage", () => ({
+  default: {
+    getItem: vi.fn(async () => null),
+    setItem: vi.fn(async () => undefined),
+    removeItem: vi.fn(async () => undefined),
+  },
+}));
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -15,6 +28,22 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
+function workspace(input: Partial<WorkspaceDescriptor> & Pick<WorkspaceDescriptor, "id">) {
+  return {
+    id: input.id,
+    projectId: input.projectId ?? "project-1",
+    projectDisplayName: input.projectDisplayName ?? "Project",
+    projectRootPath: input.projectRootPath ?? "/tmp/repo",
+    workspaceDirectory: input.workspaceDirectory ?? input.id,
+    projectKind: input.projectKind ?? "git",
+    workspaceKind: input.workspaceKind ?? "worktree",
+    name: input.name ?? input.id,
+    status: input.status ?? "done",
+    diffStat: input.diffStat ?? null,
+    scripts: input.scripts ?? [],
+  } satisfies WorkspaceDescriptor;
+}
+
 describe("checkout-git-actions-store", () => {
   const serverId = "server-1";
   const cwd = "/tmp/repo";
@@ -22,17 +51,19 @@ describe("checkout-git-actions-store", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     __resetCheckoutGitActionsStoreForTests();
-    useSessionStore.setState((state) => ({ ...state, sessions: {} as any }));
+    appQueryClient.clear();
+    useSessionStore.setState((state) => ({ ...state, sessions: {} }));
   });
 
   afterEach(() => {
     vi.useRealTimers();
     __resetCheckoutGitActionsStoreForTests();
-    useSessionStore.setState((state) => ({ ...state, sessions: {} as any }));
+    appQueryClient.clear();
+    useSessionStore.setState((state) => ({ ...state, sessions: {} }));
   });
 
   it("shares pending state per checkout and de-dupes in-flight calls", async () => {
-    const deferred = createDeferred<any>();
+    const deferred = createDeferred<unknown>();
     const client = {
       checkoutCommit: vi.fn(() => deferred.promise),
     };
@@ -40,8 +71,8 @@ describe("checkout-git-actions-store", () => {
     useSessionStore.setState((state) => ({
       ...state,
       sessions: {
-        ...(state.sessions as any),
-        [serverId]: { client } as any,
+        ...state.sessions,
+        [serverId]: { client } as unknown as (typeof state.sessions)[string],
       },
     }));
 

@@ -104,6 +104,71 @@ function mapDirectorySuggestionsToEntries(payload: {
   }));
 }
 
+type AutocompleteMode = "command" | "file" | null;
+
+function resolveAutocompleteMode(args: {
+  showFileAutocomplete: boolean;
+  showCommandAutocomplete: boolean;
+}): AutocompleteMode {
+  if (args.showFileAutocomplete) {
+    return "file";
+  }
+  if (args.showCommandAutocomplete) {
+    return "command";
+  }
+  return null;
+}
+
+function resolveAutocompleteIsVisible(args: {
+  mode: AutocompleteMode;
+  canLoadCommands: boolean;
+  serverId: string;
+  autocompleteCwd: string;
+}): boolean {
+  if (args.mode === "command") {
+    return args.canLoadCommands;
+  }
+  if (args.mode === "file") {
+    return Boolean(args.serverId) && args.autocompleteCwd.length > 0;
+  }
+  return false;
+}
+
+function resolveAutocompleteIsLoading(args: {
+  mode: AutocompleteMode;
+  isCommandsLoading: boolean;
+  fileSuggestionsIsPending: boolean;
+  fileSuggestionsIsLoading: boolean;
+  optionsLength: number;
+}): boolean {
+  if (args.mode === "command") {
+    return args.isCommandsLoading;
+  }
+  if (args.mode === "file") {
+    return (
+      args.fileSuggestionsIsPending || (args.fileSuggestionsIsLoading && args.optionsLength === 0)
+    );
+  }
+  return false;
+}
+
+function resolveAutocompleteErrorMessage(args: {
+  mode: AutocompleteMode;
+  isCommandError: boolean;
+  commandError: Error | null;
+  fileSuggestionsError: unknown;
+}): string | undefined {
+  if (args.mode === "command") {
+    return args.isCommandError ? (args.commandError?.message ?? "Failed to load") : undefined;
+  }
+  if (args.mode === "file") {
+    return args.fileSuggestionsError instanceof Error
+      ? args.fileSuggestionsError.message
+      : undefined;
+  }
+  return undefined;
+}
+
 export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAutocompleteResult {
   const {
     userInput,

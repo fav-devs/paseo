@@ -1,15 +1,37 @@
 import { describe, expect, test, vi } from "vitest";
+import type { PromptResponse, SessionConfigOption, SessionUpdate } from "@agentclientprotocol/sdk";
 
 import {
   ACPAgentClient,
   ACPAgentSession,
+  type SpawnedACPProcess,
   type SessionStateResponse,
+  createLoggedNdJsonStream,
   deriveModelDefinitionsFromACP,
   deriveModesFromACP,
   mapACPUsage,
 } from "./acp-agent.js";
-import { transformPiModels, transformPiSessionResponse, wrapPiSession } from "./pi-acp-agent.js";
+import { transformPiModels } from "./pi-direct-agent.js";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
+
+interface ACPSessionInternals {
+  sessionId: string | null;
+  connection: { prompt: (...args: unknown[]) => Promise<PromptResponse> };
+  activeForegroundTurnId: string | null;
+  translateSessionUpdate(update: SessionUpdate): unknown;
+}
+
+interface ACPModelSelectionInternals {
+  sessionId: string | null;
+  connection: {
+    setSessionConfigOption: (input: {
+      sessionId: string;
+      configId: string;
+      value: string;
+    }) => Promise<void>;
+  };
+  configOptions: SessionConfigOption[];
+}
 
 function createSession(): ACPAgentSession {
   return new ACPAgentSession(
@@ -33,6 +55,109 @@ function createSession(): ACPAgentSession {
     },
   );
 }
+
+test("ACP setModel forwards model ids that are absent from the advertised catalog", async () => {
+  const session = createSession();
+  const setSessionConfigOption = vi.fn(async () => undefined);
+  const internals = session as unknown as ACPModelSelectionInternals;
+  internals.sessionId = "session-1";
+  internals.connection = { setSessionConfigOption };
+  internals.configOptions = [
+    {
+      id: "model-option",
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: "sonnet",
+      options: [{ value: "sonnet", name: "Sonnet" }],
+    },
+  ];
+
+  await session.setModel("new-provider-model");
+
+  expect(setSessionConfigOption).toHaveBeenCalledWith({
+    sessionId: "session-1",
+    configId: "model-option",
+    value: "new-provider-model",
+  });
+});
+
+describe("createLoggedNdJsonStream", () => {
+  test("routes malformed ACP stdout through the provider logger instead of console.error", async () => {
+    const input = new TransformStream<Uint8Array, Uint8Array>();
+    const output = new TransformStream<Uint8Array, Uint8Array>();
+    const logger = {
+      warn: vi.fn(),
+    };
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const stream = createLoggedNdJsonStream(output.writable, input.readable, {
+      logger: logger as unknown as ReturnType<typeof createTestLogger>,
+      provider: "gemini",
+    });
+    const reader = stream.readable.getReader();
+    const writer = input.writable.getWriter();
+
+    await writer.write(
+      new TextEncoder().encode(
+        'Please visit the following URL to authorize the application:\n{"jsonrpc":"2.0","method":"ok","params":{}}\n',
+      ),
+    );
+
+    const parsed = await reader.read();
+
+    expect(parsed.value).toEqual({ jsonrpc: "2.0", method: "ok", params: {} });
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: {
+          type: "SyntaxError",
+          message: "ACP stdout line was not valid JSON",
+        },
+        provider: "gemini",
+      }),
+      "ACP agent emitted non-JSON stdout; ignoring line",
+    );
+    expect(logger.warn.mock.calls[0]?.[0]).not.toHaveProperty("linePreview");
+    expect(consoleError).not.toHaveBeenCalled();
+
+    await writer.close();
+    reader.releaseLock();
+    consoleError.mockRestore();
+  });
+
+  test("does not log terminal control sequences from malformed ACP stdout", async () => {
+    const input = new TransformStream<Uint8Array, Uint8Array>();
+    const output = new TransformStream<Uint8Array, Uint8Array>();
+    const logger = {
+      warn: vi.fn(),
+    };
+
+    const stream = createLoggedNdJsonStream(output.writable, input.readable, {
+      logger: logger as unknown as ReturnType<typeof createTestLogger>,
+      provider: "gemini",
+    });
+    const reader = stream.readable.getReader();
+    const writer = input.writable.getWriter();
+
+    await writer.write(new TextEncoder().encode('\u001b[1G\u001b[0JEn\n{"ok":true}\n'));
+
+    const parsed = await reader.read();
+
+    expect(parsed.value).toEqual({ ok: true });
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("\u001b");
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("[1G");
+    expect(logger.warn.mock.calls[0]?.[0]).toEqual({
+      err: {
+        type: "SyntaxError",
+        message: "ACP stdout line was not valid JSON",
+      },
+      provider: "gemini",
+    });
+
+    await writer.close();
+    reader.releaseLock();
+  });
+});
 
 describe("mapACPUsage", () => {
   test("maps ACP usage fields into Paseo usage", () => {
@@ -218,7 +343,7 @@ describe("deriveModelDefinitionsFromACP", () => {
 describe("ACPAgentClient modelTransformer", () => {
   test("applies modelTransformer after deriving ACP models", async () => {
     class TestACPAgentClient extends ACPAgentClient {
-      protected override async spawnProcess(): Promise<any> {
+      protected override async spawnProcess(): Promise<SpawnedACPProcess> {
         return {
           child: { kill: vi.fn(), exitCode: 0, signalCode: null, once: vi.fn() },
           connection: {
@@ -237,7 +362,7 @@ describe("ACPAgentClient modelTransformer", () => {
             }),
           },
           initialize: { agentCapabilities: {} },
-        };
+        } as unknown as SpawnedACPProcess;
       }
 
       protected override async closeProbe(): Promise<void> {}
@@ -246,11 +371,11 @@ describe("ACPAgentClient modelTransformer", () => {
     const client = new TestACPAgentClient({
       provider: "pi",
       logger: createTestLogger(),
-      defaultCommand: ["pi-acp"],
+      defaultCommand: ["test-acp"],
       modelTransformer: transformPiModels,
     });
 
-    await expect(client.listModels()).resolves.toEqual([
+    await expect(client.listModels({ cwd: "/tmp/acp-models", force: false })).resolves.toEqual([
       {
         provider: "pi",
         id: "openrouter/openai/gpt-4.1-mini",
@@ -266,27 +391,14 @@ describe("ACPAgentClient modelTransformer", () => {
 
 describe("ACPAgentClient sessionResponseTransformer", () => {
   class TestACPAgentClient extends ACPAgentClient {
-    protected override async spawnProcess(): Promise<any> {
+    protected override async spawnProcess(): Promise<SpawnedACPProcess> {
       const response: SessionStateResponse = {
         sessionId: "session-1",
         modes: {
-          availableModes: [
-            { id: "off", name: "Thinking: Off", description: "No extra reasoning" },
-            { id: "medium", name: "Thinking: Medium", description: "Balanced reasoning" },
-            { id: "high", name: "Thinking: High", description: "Deeper reasoning" },
-          ],
-          currentModeId: "medium",
+          availableModes: [{ id: "raw", name: "Raw", description: "Before transform" }],
+          currentModeId: "raw",
         },
-        models: {
-          availableModels: [
-            {
-              modelId: "openrouter/openai/gpt-4.1-mini",
-              name: "openrouter/openai/gpt-4.1-mini",
-              description: null,
-            },
-          ],
-          currentModelId: "openrouter/openai/gpt-4.1-mini",
-        },
+        models: null,
         configOptions: [],
       };
 
@@ -296,63 +408,76 @@ describe("ACPAgentClient sessionResponseTransformer", () => {
           newSession: vi.fn().mockResolvedValue(response),
         },
         initialize: { agentCapabilities: {} },
-      };
+      } as unknown as SpawnedACPProcess;
     }
 
     protected override async closeProbe(): Promise<void> {}
   }
 
-  test("remaps Pi thinking modes into thinking options for list probes", async () => {
+  test("applies sessionResponseTransformer before deriving list probe modes", async () => {
     const client = new TestACPAgentClient({
-      provider: "pi",
+      provider: "claude-acp",
       logger: createTestLogger(),
-      defaultCommand: ["pi-acp"],
+      defaultCommand: ["claude", "--acp"],
       defaultModes: [],
-      modelTransformer: transformPiModels,
-      sessionResponseTransformer: transformPiSessionResponse,
+      sessionResponseTransformer: (response) => ({
+        ...response,
+        modes: {
+          availableModes: [{ id: "review", name: "Review", description: "After transform" }],
+          currentModeId: "review",
+        },
+      }),
     });
 
-    await expect(client.listModes()).resolves.toEqual([]);
-    await expect(client.listModels()).resolves.toEqual([
+    await expect(client.listModes({ cwd: "/tmp/acp-modes", force: false })).resolves.toEqual([
       {
-        provider: "pi",
-        id: "openrouter/openai/gpt-4.1-mini",
-        label: "gpt-4.1-mini",
-        description: "openrouter/openai/gpt-4.1-mini",
-        isDefault: true,
-        thinkingOptions: [
-          {
-            id: "off",
-            label: "Off",
-            description: "No extra reasoning",
-            isDefault: false,
-            metadata: undefined,
-          },
-          {
-            id: "medium",
-            label: "Medium",
-            description: "Balanced reasoning",
-            isDefault: true,
-            metadata: undefined,
-          },
-          {
-            id: "high",
-            label: "High",
-            description: "Deeper reasoning",
-            isDefault: false,
-            metadata: undefined,
-          },
-        ],
-        defaultThinkingOptionId: "medium",
+        id: "review",
+        label: "Review",
+        description: "After transform",
       },
     ]);
   });
 });
 
 describe("ACPAgentClient listModes", () => {
+  test("passes the requested cwd to list model and mode probes", async () => {
+    const newSession = vi.fn().mockResolvedValue({ modes: null, models: null, configOptions: [] });
+
+    class TestACPAgentClient extends ACPAgentClient {
+      protected override async spawnProcess(): Promise<SpawnedACPProcess> {
+        return {
+          child: { kill: vi.fn(), exitCode: 0, signalCode: null, once: vi.fn() },
+          connection: { newSession },
+          initialize: { agentCapabilities: {} },
+        } as unknown as SpawnedACPProcess;
+      }
+
+      protected override async closeProbe(): Promise<void> {}
+    }
+
+    const client = new TestACPAgentClient({
+      provider: "pi",
+      logger: createTestLogger(),
+      defaultCommand: ["test-acp"],
+      defaultModes: [],
+    });
+
+    await client.listModels({ cwd: "/tmp/acp-model-cwd", force: false });
+    await client.listModes({ cwd: "/tmp/acp-mode-cwd", force: false });
+
+    expect(newSession).toHaveBeenNthCalledWith(1, {
+      cwd: "/tmp/acp-model-cwd",
+      mcpServers: [],
+    });
+    expect(newSession).toHaveBeenNthCalledWith(2, {
+      cwd: "/tmp/acp-mode-cwd",
+      mcpServers: [],
+    });
+  });
+
   test("returns an empty array when no ACP modes are reported and fallback modes are empty", async () => {
     class TestACPAgentClient extends ACPAgentClient {
-      protected override async spawnProcess(): Promise<any> {
+      protected override async spawnProcess(): Promise<SpawnedACPProcess> {
         return {
           child: { kill: vi.fn(), exitCode: 0, signalCode: null, once: vi.fn() },
           connection: {
@@ -375,7 +500,7 @@ describe("ACPAgentClient listModes", () => {
             }),
           },
           initialize: { agentCapabilities: {} },
-        };
+        } as unknown as SpawnedACPProcess;
       }
 
       protected override async closeProbe(): Promise<void> {}
@@ -384,11 +509,11 @@ describe("ACPAgentClient listModes", () => {
     const client = new TestACPAgentClient({
       provider: "pi",
       logger: createTestLogger(),
-      defaultCommand: ["pi-acp"],
+      defaultCommand: ["test-acp"],
       defaultModes: [],
     });
 
-    await expect(client.listModes()).resolves.toEqual([]);
+    await expect(client.listModes({ cwd: "/tmp/acp-modes", force: false })).resolves.toEqual([]);
   });
 });
 
@@ -456,21 +581,19 @@ describe("ACPAgentSession slash commands", () => {
   test("waits for async available_commands_update when enabled", async () => {
     const session = new ACPAgentSession(
       {
-        provider: "pi",
+        provider: "claude-acp",
         cwd: "/tmp/paseo-acp-test",
       },
       {
-        provider: "pi",
+        provider: "claude-acp",
         logger: createTestLogger(),
-        defaultCommand: ["pi-acp"],
+        defaultCommand: ["claude", "--acp"],
         defaultModes: [],
-        modelTransformer: transformPiModels,
-        sessionResponseTransformer: transformPiSessionResponse,
         capabilities: {
           supportsStreaming: true,
           supportsSessionPersistence: true,
           supportsDynamicModes: true,
-          supportsMcpServers: false,
+          supportsMcpServers: true,
           supportsReasoningStream: true,
           supportsToolInvocations: true,
         },
@@ -481,7 +604,7 @@ describe("ACPAgentSession slash commands", () => {
 
     const listCommandsPromise = session.listCommands();
 
-    (session as any).translateSessionUpdate({
+    (session as unknown as ACPSessionInternals).translateSessionUpdate({
       sessionUpdate: "available_commands_update",
       availableCommands: [
         {
@@ -524,162 +647,10 @@ describe("ACPAgentSession slash commands", () => {
 });
 
 describe("ACPAgentSession", () => {
-  test("applies sessionResponseTransformer before deriving modes and thinking state", () => {
-    const session = new ACPAgentSession(
-      {
-        provider: "pi",
-        cwd: "/tmp/paseo-acp-test",
-      },
-      {
-        provider: "pi",
-        logger: createTestLogger(),
-        defaultCommand: ["pi-acp"],
-        defaultModes: [],
-        modelTransformer: transformPiModels,
-        sessionResponseTransformer: transformPiSessionResponse,
-        capabilities: {
-          supportsStreaming: true,
-          supportsSessionPersistence: true,
-          supportsDynamicModes: true,
-          supportsMcpServers: false,
-          supportsReasoningStream: true,
-          supportsToolInvocations: true,
-        },
-      },
-    );
-
-    (session as any).applySessionState({
-      sessionId: "session-1",
-      modes: {
-        availableModes: [
-          { id: "low", name: "Thinking: Low", description: "Faster" },
-          { id: "medium", name: "Thinking: Medium", description: "Balanced" },
-        ],
-        currentModeId: "medium",
-      },
-      models: {
-        availableModels: [
-          {
-            modelId: "openrouter/openai/gpt-4.1-mini",
-            name: "openrouter/openai/gpt-4.1-mini",
-            description: null,
-          },
-        ],
-        currentModelId: "openrouter/openai/gpt-4.1-mini",
-      },
-      configOptions: [],
-    } satisfies SessionStateResponse);
-
-    expect((session as any).availableModes).toEqual([]);
-    expect((session as any).thinkingOptionId).toBe("medium");
-    expect((session as any).availableModels).toEqual([
-      {
-        provider: "pi",
-        id: "openrouter/openai/gpt-4.1-mini",
-        label: "gpt-4.1-mini",
-        description: "openrouter/openai/gpt-4.1-mini",
-        isDefault: true,
-        thinkingOptions: [
-          {
-            id: "low",
-            label: "Low",
-            description: "Faster",
-            isDefault: false,
-            metadata: undefined,
-          },
-          {
-            id: "medium",
-            label: "Medium",
-            description: "Balanced",
-            isDefault: true,
-            metadata: undefined,
-          },
-        ],
-        defaultThinkingOptionId: "medium",
-      },
-    ]);
-  });
-
-  test("Pi session wrapper hides synthetic modes and exposes them as thinking", async () => {
-    const wrapped = wrapPiSession(
-      {
-        provider: "pi",
-        id: "session-1",
-        capabilities: {
-          supportsStreaming: true,
-          supportsSessionPersistence: true,
-          supportsDynamicModes: true,
-          supportsMcpServers: false,
-          supportsReasoningStream: true,
-          supportsToolInvocations: true,
-        },
-        features: [
-          {
-            type: "select",
-            id: "thought_level",
-            label: "Thinking",
-            value: "medium",
-            options: [
-              { id: "low", label: "Low" },
-              { id: "medium", label: "Medium" },
-            ],
-          },
-        ],
-        run: vi.fn(),
-        startTurn: vi.fn(),
-        subscribe: vi.fn(() => () => {}),
-        streamHistory: async function* () {},
-        getRuntimeInfo: vi.fn(async () => ({
-          provider: "pi",
-          sessionId: "session-1",
-          model: "gpt-4.1-mini",
-          thinkingOptionId: null,
-          modeId: "xhigh",
-        })),
-        getAvailableModes: vi.fn(async () => [{ id: "xhigh", label: "xhigh" }]),
-        getCurrentMode: vi.fn(async () => "xhigh"),
-        setMode: vi.fn(),
-        getPendingPermissions: vi.fn(() => []),
-        respondToPermission: vi.fn(),
-        describePersistence: vi.fn(() => null),
-        interrupt: vi.fn(),
-        close: vi.fn(),
-        setThinkingOption: vi.fn(),
-      },
-      {
-        provider: "pi",
-        cwd: "/tmp/paseo-acp-test",
-        thinkingOptionId: "medium",
-      },
-    );
-
-    await expect(wrapped.getAvailableModes()).resolves.toEqual([]);
-    await expect(wrapped.getCurrentMode()).resolves.toBeNull();
-    await expect(wrapped.getRuntimeInfo()).resolves.toEqual({
-      provider: "pi",
-      sessionId: "session-1",
-      model: "gpt-4.1-mini",
-      thinkingOptionId: "xhigh",
-      modeId: null,
-    });
-    expect(wrapped.features).toEqual([
-      {
-        type: "select",
-        id: "thought_level",
-        label: "Thinking",
-        value: "xhigh",
-        options: [
-          { id: "low", label: "Low" },
-          { id: "medium", label: "Medium" },
-        ],
-      },
-    ]);
-  });
-
   test("emits assistant and reasoning chunks as deltas while user chunks stay accumulated", async () => {
     const session = createSession();
     const events: Array<{ type: string; item?: { type: string; text?: string } }> = [];
-    (session as any).sessionId = "session-1";
+    (session as unknown as ACPSessionInternals).sessionId = "session-1";
 
     session.subscribe((event) => {
       events.push(event as { type: string; item?: { type: string; text?: string } });
@@ -691,7 +662,7 @@ describe("ACPAgentSession", () => {
         sessionUpdate: "agent_message_chunk",
         messageId: "assistant-1",
         content: { type: "text", text: "Hey!" },
-      } as any,
+      } as unknown as SessionUpdate,
     });
     await session.sessionUpdate({
       sessionId: "session-1",
@@ -699,7 +670,7 @@ describe("ACPAgentSession", () => {
         sessionUpdate: "agent_message_chunk",
         messageId: "assistant-1",
         content: { type: "text", text: " How are you?" },
-      } as any,
+      } as unknown as SessionUpdate,
     });
     await session.sessionUpdate({
       sessionId: "session-1",
@@ -707,7 +678,7 @@ describe("ACPAgentSession", () => {
         sessionUpdate: "agent_thought_chunk",
         messageId: "thought-1",
         content: { type: "text", text: "Thinking" },
-      } as any,
+      } as unknown as SessionUpdate,
     });
     await session.sessionUpdate({
       sessionId: "session-1",
@@ -715,7 +686,7 @@ describe("ACPAgentSession", () => {
         sessionUpdate: "agent_thought_chunk",
         messageId: "thought-1",
         content: { type: "text", text: " more" },
-      } as any,
+      } as unknown as SessionUpdate,
     });
     await session.sessionUpdate({
       sessionId: "session-1",
@@ -723,7 +694,7 @@ describe("ACPAgentSession", () => {
         sessionUpdate: "user_message_chunk",
         messageId: "user-1",
         content: { type: "text", text: "hel" },
-      } as any,
+      } as unknown as SessionUpdate,
     });
     await session.sessionUpdate({
       sessionId: "session-1",
@@ -731,7 +702,7 @@ describe("ACPAgentSession", () => {
         sessionUpdate: "user_message_chunk",
         messageId: "user-1",
         content: { type: "text", text: "lo" },
-      } as any,
+      } as unknown as SessionUpdate,
     });
 
     const timeline = events
@@ -877,7 +848,7 @@ describe("ACPAgentSession", () => {
   test("startTurn returns before the ACP prompt settles and completes later via subscribers", async () => {
     const session = createSession();
     const events: Array<{ type: string; turnId?: string }> = [];
-    let resolvePrompt!: (value: any) => void;
+    let resolvePrompt!: (value: PromptResponse) => void;
     const prompt = vi.fn(
       () =>
         new Promise((resolve) => {
@@ -885,8 +856,8 @@ describe("ACPAgentSession", () => {
         }),
     );
 
-    (session as any).sessionId = "session-1";
-    (session as any).connection = { prompt };
+    (session as unknown as ACPSessionInternals).sessionId = "session-1";
+    (session as unknown as ACPSessionInternals).connection = { prompt };
 
     session.subscribe((event) => {
       events.push(event as { type: string; turnId?: string });
@@ -899,7 +870,7 @@ describe("ACPAgentSession", () => {
       type: "turn_started",
       turnId,
     });
-    expect((session as any).activeForegroundTurnId).toBe(turnId);
+    expect((session as unknown as ACPSessionInternals).activeForegroundTurnId).toBe(turnId);
 
     resolvePrompt({ stopReason: "end_turn", usage: { outputTokens: 3 } });
     await Promise.resolve();
@@ -909,7 +880,7 @@ describe("ACPAgentSession", () => {
       type: "turn_completed",
       turnId,
     });
-    expect((session as any).activeForegroundTurnId).toBeNull();
+    expect((session as unknown as ACPSessionInternals).activeForegroundTurnId).toBeNull();
   });
 
   test("startTurn converts background prompt rejections into turn_failed events", async () => {
@@ -923,8 +894,8 @@ describe("ACPAgentSession", () => {
         }),
     );
 
-    (session as any).sessionId = "session-1";
-    (session as any).connection = { prompt };
+    (session as unknown as ACPSessionInternals).sessionId = "session-1";
+    (session as unknown as ACPSessionInternals).connection = { prompt };
 
     session.subscribe((event) => {
       events.push(event as { type: string; turnId?: string; error?: string });
@@ -942,57 +913,6 @@ describe("ACPAgentSession", () => {
       turnId,
       error: "prompt failed",
     });
-    expect((session as any).activeForegroundTurnId).toBeNull();
-  });
-
-  test("auto-approves Copilot ACP permissions in autopilot mode without emitting prompt events", async () => {
-    const session = new ACPAgentSession(
-      {
-        provider: "copilot",
-        cwd: "/tmp/paseo-acp-test",
-        modeId: "https://agentclientprotocol.com/protocol/session-modes#autopilot",
-      },
-      {
-        provider: "copilot",
-        logger: createTestLogger(),
-        defaultCommand: ["copilot", "--acp"],
-        defaultModes: [],
-        capabilities: {
-          supportsStreaming: true,
-          supportsSessionPersistence: true,
-          supportsDynamicModes: true,
-          supportsMcpServers: true,
-          supportsReasoningStream: true,
-          supportsToolInvocations: true,
-        },
-      },
-    );
-
-    const events: Array<{ type: string }> = [];
-    session.subscribe((event) => {
-      events.push(event as { type: string });
-    });
-
-    const response = await session.requestPermission({
-      toolCall: {
-        toolCallId: "tool-1",
-        title: "Edit file",
-        kind: "edit",
-        status: "pending",
-      } as any,
-      options: [
-        { optionId: "allow-once", name: "Allow Once", kind: "allow_once" },
-        { optionId: "reject-once", name: "Reject Once", kind: "reject_once" },
-      ],
-    } as any);
-
-    expect(response).toEqual({
-      outcome: {
-        outcome: "selected",
-        optionId: "allow-once",
-      },
-    });
-    expect(session.getPendingPermissions()).toEqual([]);
-    expect(events.find((event) => event.type === "permission_requested")).toBeUndefined();
+    expect((session as unknown as ACPSessionInternals).activeForegroundTurnId).toBeNull();
   });
 });

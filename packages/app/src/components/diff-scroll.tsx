@@ -8,7 +8,7 @@ import {
 } from "react-native";
 import { ScrollView, type ScrollView as ScrollViewType } from "react-native-gesture-handler";
 import { useHorizontalScrollOptional } from "@/contexts/horizontal-scroll-context";
-import { useExplorerSidebarAnimation } from "@/contexts/explorer-sidebar-animation-context";
+import { useExplorerSidebarAnimationOptional } from "@/contexts/explorer-sidebar-animation-context";
 
 interface DiffScrollProps {
   children: React.ReactNode;
@@ -21,7 +21,7 @@ interface DiffScrollProps {
 
 export function DiffScroll({
   children,
-  scrollViewWidth,
+  scrollViewWidth: _scrollViewWidth,
   onScrollViewWidthChange,
   onScroll,
   style,
@@ -33,13 +33,8 @@ export function DiffScroll({
   const scrollViewRef = useRef<ScrollViewType>(null);
 
   // Get the close gesture ref from animation context (may not be available outside sidebar)
-  let closeGestureRef: React.MutableRefObject<any> | undefined;
-  try {
-    const animation = useExplorerSidebarAnimation();
-    closeGestureRef = animation.closeGestureRef;
-  } catch {
-    // Not inside ExplorerSidebarAnimationProvider, which is fine
-  }
+  const animation = useExplorerSidebarAnimationOptional();
+  const closeGestureRef = animation?.closeGestureRef;
 
   // Register/unregister scroll offset tracking
   useEffect(() => {
@@ -64,6 +59,11 @@ export function DiffScroll({
     [horizontalScroll, onScroll, scrollId],
   );
 
+  const handleLayout = useCallback(
+    (e: LayoutChangeEvent) => onScrollViewWidthChange(e.nativeEvent.layout.width),
+    [onScrollViewWidthChange],
+  );
+
   return (
     <ScrollView
       ref={scrollViewRef}
@@ -75,7 +75,7 @@ export function DiffScroll({
       contentContainerStyle={contentContainerStyle}
       onScroll={handleScroll}
       scrollEventThrottle={16}
-      onLayout={(e: LayoutChangeEvent) => onScrollViewWidthChange(e.nativeEvent.layout.width)}
+      onLayout={handleLayout}
       // When at left edge, wait for close gesture to fail before scrolling.
       // The close gesture fails quickly on leftward swipes (failOffsetX=-10),
       // so scrolling left works normally. On rightward swipes, close gesture

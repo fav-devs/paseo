@@ -1,10 +1,12 @@
+import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { create } from "zustand";
-import { useSessionStore } from "@/stores/session-store";
-import { queryClient } from "@/query/query-client";
+import { queryClient as appQueryClient } from "@/query/query-client";
 import {
   buildWorkspaceTabPersistenceKey,
   useWorkspaceLayoutStore,
 } from "@/stores/workspace-layout-store";
+import { useSessionStore } from "@/stores/session-store";
+import type { WorkspaceDescriptor } from "@/stores/session-store";
 import { useWorkspaceTabsStore } from "@/stores/workspace-tabs-store";
 
 const SUCCESS_DISPLAY_MS = 1000;
@@ -51,12 +53,50 @@ function setStatus(
       statusByCheckout: {
         ...state.statusByCheckout,
         [key]: {
-          ...(state.statusByCheckout[key] ?? {}),
+          ...state.statusByCheckout[key],
           [actionId]: status,
         },
       },
     };
   });
+}
+
+export async function invalidateCheckoutGitQueriesForClient(
+  queryClient: QueryClient,
+  { serverId, cwd }: { serverId: string; cwd: string },
+) {
+  await Promise.all([
+    queryClient.invalidateQueries({
+      queryKey: ["checkoutStatus", serverId, cwd],
+    }),
+    queryClient.invalidateQueries({
+      predicate: (query) => {
+        const key = query.queryKey;
+        return (
+          Array.isArray(key) && key[0] === "checkoutDiff" && key[1] === serverId && key[2] === cwd
+        );
+      },
+    }),
+    queryClient.invalidateQueries({
+      predicate: (query) => {
+        const key = query.queryKey;
+        return (
+          Array.isArray(key) &&
+          key[0] === "checkoutPrStatus" &&
+          key[1] === serverId &&
+          key[2] === cwd
+        );
+      },
+    }),
+    queryClient.invalidateQueries({
+      predicate: (query) => {
+        const key = query.queryKey;
+        return (
+          Array.isArray(key) && key[0] === "prPaneTimeline" && key[1] === serverId && key[2] === cwd
+        );
+      },
+    }),
+  ]);
 }
 
 function invalidateCheckoutGitQueries(serverId: string, cwd: string) {
@@ -90,11 +130,11 @@ function invalidateCheckoutGitQueries(serverId: string, cwd: string) {
 }
 
 function invalidateWorktreeList() {
-  void queryClient.invalidateQueries({
+  void appQueryClient.invalidateQueries({
     predicate: (query) =>
       Array.isArray(query.queryKey) && query.queryKey[0] === "paseoWorktreeList",
   });
-  void queryClient.invalidateQueries({
+  void appQueryClient.invalidateQueries({
     predicate: (query) =>
       Array.isArray(query.queryKey) && query.queryKey[0] === "sidebarPaseoWorktreeList",
   });
@@ -115,7 +155,7 @@ function removeWorktreeFromCachedLists(input: { serverId: string; worktreePath: 
     return filtered.length === current.length ? current : filtered;
   };
 
-  queryClient.setQueriesData(
+  appQueryClient.setQueriesData(
     {
       predicate: (query) =>
         Array.isArray(query.queryKey) &&
@@ -125,7 +165,7 @@ function removeWorktreeFromCachedLists(input: { serverId: string; worktreePath: 
     removeFromList,
   );
 
-  queryClient.setQueriesData(
+  appQueryClient.setQueriesData(
     {
       predicate: (query) =>
         Array.isArray(query.queryKey) &&
@@ -134,6 +174,58 @@ function removeWorktreeFromCachedLists(input: { serverId: string; worktreePath: 
     },
     removeFromList,
   );
+}
+
+interface WorktreeArchiveSnapshot {
+  workspace: WorkspaceDescriptor | null;
+  worktreeLists: Array<[QueryKey, unknown]>;
+}
+
+function isWorktreeListQuery(input: { queryKey: QueryKey; serverId: string }): boolean {
+  return (
+    Array.isArray(input.queryKey) &&
+    (input.queryKey[0] === "paseoWorktreeList" ||
+      input.queryKey[0] === "sidebarPaseoWorktreeList") &&
+    input.queryKey[1] === input.serverId
+  );
+}
+
+function snapshotWorktreeArchiveState(input: {
+  serverId: string;
+  worktreePath: string;
+}): WorktreeArchiveSnapshot {
+  return {
+    workspace:
+      useSessionStore.getState().sessions[input.serverId]?.workspaces.get(input.worktreePath) ??
+      null,
+    worktreeLists: appQueryClient.getQueriesData({
+      predicate: (query) =>
+        isWorktreeListQuery({ queryKey: query.queryKey, serverId: input.serverId }),
+    }),
+  };
+}
+
+function removeWorktreeFromSessionStore(input: { serverId: string; worktreePath: string }): void {
+  const serverId = input.serverId.trim();
+  const worktreePath = input.worktreePath.trim();
+  if (!serverId || !worktreePath) {
+    return;
+  }
+  useSessionStore.getState().removeWorkspace(serverId, worktreePath);
+}
+
+function restoreWorktreeArchiveState(input: {
+  serverId: string;
+  worktreePath: string;
+  snapshot: WorktreeArchiveSnapshot;
+}): void {
+  if (input.snapshot.workspace) {
+    useSessionStore.getState().mergeWorkspaces(input.serverId, [input.snapshot.workspace]);
+  }
+
+  for (const [queryKey, data] of input.snapshot.worktreeLists) {
+    appQueryClient.setQueryData(queryKey, data);
+  }
 }
 
 function purgeArchivedWorkspaceState(input: { serverId: string; worktreePath: string }): void {
@@ -209,7 +301,7 @@ async function runCheckoutAction({
   const promise = (async () => {
     try {
       await run();
-      invalidateCheckoutGitQueries(serverId, cwd);
+      await invalidateCheckoutGitQueries(serverId, cwd);
       setStatus(key, actionId, "success");
       const timer = setTimeout(() => {
         setStatus(key, actionId, "idle");
@@ -343,11 +435,18 @@ export const useCheckoutGitActionsStore = create<CheckoutGitActionsStoreState>()
       actionId: "archive-worktree",
       run: async () => {
         const client = resolveClient(serverId);
-        const payload = await client.archivePaseoWorktree({ worktreePath });
-        if (payload.error) {
-          throw new Error(payload.error.message);
-        }
+        const snapshot = snapshotWorktreeArchiveState({ serverId, worktreePath });
         removeWorktreeFromCachedLists({ serverId, worktreePath });
+        removeWorktreeFromSessionStore({ serverId, worktreePath });
+        try {
+          const payload = await client.archivePaseoWorktree({ worktreePath });
+          if (payload.error) {
+            throw new Error(payload.error.message);
+          }
+        } catch (error) {
+          restoreWorktreeArchiveState({ serverId, worktreePath, snapshot });
+          throw error;
+        }
         invalidateWorktreeList();
         purgeArchivedWorkspaceState({ serverId, worktreePath });
       },

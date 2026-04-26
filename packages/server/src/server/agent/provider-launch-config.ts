@@ -67,6 +67,7 @@ export const ProviderOverrideSchema = z
     command: z.array(z.string().min(1)).min(1).optional(),
     env: z.record(z.string()).optional(),
     models: z.array(ProviderProfileModelSchema).optional(),
+    additionalModels: z.array(ProviderProfileModelSchema).optional(),
     disallowedTools: z.array(z.string()).optional(),
     enabled: z.boolean().optional(),
     order: z.number().optional(),
@@ -86,10 +87,10 @@ export type AgentProviderRuntimeSettingsMap = Partial<
   Record<AgentProvider, ProviderRuntimeSettings>
 >;
 
-export type ProviderCommandPrefix = {
+export interface ProviderCommandPrefix {
   command: string;
   args: string[];
-};
+}
 
 export async function resolveProviderCommandPrefix(
   commandConfig: ProviderCommand | undefined,
@@ -147,9 +148,6 @@ export function migrateProviderSettings(
     const nextEntry: ProviderOverride = {};
     const command = parsedOld.data.command;
     if (command?.mode === "append") {
-      console.warn(
-        `[Config] Skipping legacy agents.providers.${providerId}.command append mode during provider override migration because it cannot be auto-migrated.`,
-      );
       continue;
     }
     if (command?.mode === "replace") {
@@ -184,7 +182,7 @@ export function applyProviderEnv(
 ): Record<string, string | undefined> {
   const merged: Record<string, string | undefined> = {
     ...baseEnv,
-    ...(runtimeSettings?.env ?? {}),
+    ...runtimeSettings?.env,
   };
   for (const key of PARENT_SESSION_ENV_VARS) {
     delete merged[key];

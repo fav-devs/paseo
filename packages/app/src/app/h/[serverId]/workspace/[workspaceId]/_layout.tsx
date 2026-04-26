@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigation } from "@react-navigation/native";
+import { StyleSheet, View } from "react-native";
 import {
   useGlobalSearchParams,
   useLocalSearchParams,
@@ -7,8 +8,14 @@ import {
   useRootNavigationState,
 } from "expo-router";
 import { HostRouteBootstrapBoundary } from "@/components/host-route-bootstrap-boundary";
+import {
+  activateNavigationWorkspaceSelection,
+  type ActiveWorkspaceSelection,
+  useNavigationActiveWorkspaceSelection,
+} from "@/stores/navigation-active-workspace-store";
 import type { WorkspaceTabTarget } from "@/stores/workspace-tabs-store";
 import { WorkspaceScreen } from "@/screens/workspace/workspace-screen";
+import { useWorkspaceLayoutStoreHydrated } from "@/stores/workspace-layout-store";
 import {
   buildHostWorkspaceRoute,
   decodeWorkspaceIdFromPathSegment,
@@ -58,14 +65,16 @@ function stripOpenSearchParamFromBrowserUrl() {
 }
 
 function clearConsumedOpenIntent(input: {
-  navigation: { setParams: (...args: any[]) => void };
-  router: { replace: (...args: any[]) => void };
+  navigation: { setParams: (params: { open?: string | undefined }) => void };
+  router: ReturnType<typeof useRouter>;
   serverId: string;
   workspaceId: string;
 }) {
-  input.router.replace(buildHostWorkspaceRoute(input.serverId, input.workspaceId));
   input.navigation.setParams({ open: undefined });
-  stripOpenSearchParamFromBrowserUrl();
+  if (isWeb) {
+    input.router.replace(buildHostWorkspaceRoute(input.serverId, input.workspaceId));
+    stripOpenSearchParamFromBrowserUrl();
+  }
 }
 
 export default function HostWorkspaceLayout() {
@@ -80,6 +89,7 @@ function HostWorkspaceLayoutContent() {
   const navigation = useNavigation();
   const router = useRouter();
   const rootNavigationState = useRootNavigationState();
+  const hasHydratedWorkspaceLayoutStore = useWorkspaceLayoutStoreHydrated();
   const consumedIntentRef = useRef<string | null>(null);
   const [intentConsumed, setIntentConsumed] = useState(false);
   const params = useLocalSearchParams<{
@@ -95,6 +105,23 @@ function HostWorkspaceLayoutContent() {
     ? (decodeWorkspaceIdFromPathSegment(workspaceValue) ?? "")
     : "";
   const openValue = getParamValue(globalParams.open);
+  const routeWorkspaceSelection = useMemo(
+    () =>
+      serverId && workspaceId
+        ? {
+            serverId,
+            workspaceId,
+          }
+        : null,
+    [serverId, workspaceId],
+  );
+
+  useEffect(() => {
+    if (!routeWorkspaceSelection) {
+      return;
+    }
+    activateNavigationWorkspaceSelection(routeWorkspaceSelection);
+  }, [routeWorkspaceSelection]);
 
   useEffect(() => {
     if (!openValue) {
@@ -103,11 +130,16 @@ function HostWorkspaceLayoutContent() {
     if (!rootNavigationState?.key) {
       return;
     }
+    if (!hasHydratedWorkspaceLayoutStore) {
+      return;
+    }
 
     const consumptionKey = `${serverId}:${workspaceId}:${openValue}`;
     if (consumedIntentRef.current === consumptionKey) {
       clearConsumedOpenIntent({
-        navigation,
+        navigation: navigation as unknown as {
+          setParams: (params: { open?: string | undefined }) => void;
+        },
         router,
         serverId,
         workspaceId,
@@ -131,24 +163,96 @@ function HostWorkspaceLayoutContent() {
     // skips search params). Strip ?open from the browser URL directly so the
     // address bar reflects the clean workspace route.
     clearConsumedOpenIntent({
-      navigation,
+      navigation: navigation as unknown as {
+        setParams: (params: { open?: string | undefined }) => void;
+      },
       router,
       serverId,
       workspaceId,
     });
 
     setIntentConsumed(true);
-  }, [navigation, openValue, rootNavigationState?.key, router, serverId, workspaceId]);
+  }, [
+    hasHydratedWorkspaceLayoutStore,
+    navigation,
+    openValue,
+    rootNavigationState?.key,
+    router,
+    serverId,
+    workspaceId,
+  ]);
 
-  if (openValue && !intentConsumed) {
+  if (openValue && (!intentConsumed || !hasHydratedWorkspaceLayoutStore)) {
+    return null;
+  }
+
+  return <WorkspaceDeck fallbackSelection={routeWorkspaceSelection} />;
+}
+
+function areWorkspaceSelectionsEqual(
+  left: ActiveWorkspaceSelection | null,
+  right: ActiveWorkspaceSelection | null,
+): boolean {
+  return left?.serverId === right?.serverId && left?.workspaceId === right?.workspaceId;
+}
+
+function WorkspaceDeck({
+  fallbackSelection,
+}: {
+  fallbackSelection: ActiveWorkspaceSelection | null;
+}) {
+  const activeSelection = useNavigationActiveWorkspaceSelection() ?? fallbackSelection;
+  const [mountedSelections, setMountedSelections] = useState<ActiveWorkspaceSelection[]>(() =>
+    activeSelection ? [activeSelection] : [],
+  );
+
+  useEffect(() => {
+    if (!activeSelection) {
+      return;
+    }
+    setMountedSelections((current) => {
+      if (current.some((selection) => areWorkspaceSelectionsEqual(selection, activeSelection))) {
+        return current;
+      }
+      return [...current, activeSelection];
+    });
+  }, [activeSelection]);
+
+  if (!activeSelection) {
     return null;
   }
 
   return (
-    <WorkspaceScreen
-      key={`${serverId}:${workspaceId}`}
-      serverId={serverId}
-      workspaceId={workspaceId}
-    />
+    <View style={styles.deck}>
+      {mountedSelections.map((selection) => {
+        const isActive = areWorkspaceSelectionsEqual(selection, activeSelection);
+        return (
+          <View
+            key={`${selection.serverId}:${selection.workspaceId}`}
+            style={isActive ? styles.activeDeckEntry : styles.inactiveDeckEntry}
+            testID={`workspace-deck-entry-${selection.serverId}:${selection.workspaceId}`}
+          >
+            <WorkspaceScreen
+              serverId={selection.serverId}
+              workspaceId={selection.workspaceId}
+              isRouteFocused={isActive}
+            />
+          </View>
+        );
+      })}
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  deck: {
+    flex: 1,
+  },
+  activeDeckEntry: {
+    flex: 1,
+  },
+  inactiveDeckEntry: {
+    display: "none",
+    flex: 1,
+  },
+});

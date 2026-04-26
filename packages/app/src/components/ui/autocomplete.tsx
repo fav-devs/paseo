@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useRef } from "react";
-import { ScrollView, Text, View, Pressable, type LayoutChangeEvent } from "react-native";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import {
+  ScrollView,
+  Text,
+  View,
+  Pressable,
+  type LayoutChangeEvent,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+  type PressableStateCallbackType,
+} from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { File, Folder, KeyRound } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
@@ -24,7 +33,7 @@ interface AutocompleteProps {
   maxHeight?: number;
 }
 
-const BOLT_GLYPH_PATTERN = /[\u26A1\uFE0F]/g;
+const BOLT_GLYPH_PATTERN = /\u26A1|\uFE0F/gu;
 
 function removeBoltGlyphs(value?: string): string | undefined {
   if (!value) {
@@ -32,6 +41,79 @@ function removeBoltGlyphs(value?: string): string | undefined {
   }
   const cleaned = value.replace(BOLT_GLYPH_PATTERN, "").trim();
   return cleaned.length > 0 ? cleaned : undefined;
+}
+
+interface AutocompleteRowProps {
+  index: number;
+  option: AutocompleteOption;
+  isSelected: boolean;
+  mutedColor: string;
+  onSelect: (option: AutocompleteOption) => void;
+  onRowLayout: (index: number, event: LayoutChangeEvent) => void;
+}
+
+function AutocompleteRow({
+  index,
+  option,
+  isSelected,
+  mutedColor,
+  onSelect,
+  onRowLayout,
+}: AutocompleteRowProps) {
+  const optionLabel = removeBoltGlyphs(option.label) ?? option.label;
+  const optionDescription = removeBoltGlyphs(option.description);
+  const isFileOrDir = option.kind === "directory" || option.kind === "file";
+
+  const handleLayout = useCallback(
+    (event: LayoutChangeEvent) => onRowLayout(index, event),
+    [index, onRowLayout],
+  );
+  const handlePress = useCallback(() => onSelect(option), [onSelect, option]);
+  const pressableStyle = useCallback(
+    ({ hovered = false, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+      styles.item,
+      (Boolean(hovered) || pressed || isSelected) && styles.itemActive,
+    ],
+    [isSelected],
+  );
+
+  return (
+    <Pressable onLayout={handleLayout} onPress={handlePress} style={pressableStyle}>
+      {isFileOrDir ? (
+        <>
+          <View style={styles.itemLeading}>
+            {option.kind === "directory" ? (
+              <Folder size={14} color={mutedColor} />
+            ) : (
+              <File size={14} color={mutedColor} />
+            )}
+          </View>
+          <View style={styles.itemMain}>
+            <View style={styles.itemHeader}>
+              <Text style={styles.itemLabel}>{optionLabel}</Text>
+              {removeBoltGlyphs(option.detail) ? (
+                <Text style={styles.itemDetail}>{removeBoltGlyphs(option.detail)}</Text>
+              ) : null}
+            </View>
+            {optionDescription ? (
+              <Text style={styles.itemDescription} numberOfLines={1}>
+                {optionDescription}
+              </Text>
+            ) : null}
+          </View>
+        </>
+      ) : (
+        <View style={styles.itemMainRow}>
+          <Text style={styles.itemLabel}>{optionLabel}</Text>
+          {optionDescription ? (
+            <Text style={styles.itemDescriptionInline} numberOfLines={1}>
+              {optionDescription}
+            </Text>
+          ) : null}
+        </View>
+      )}
+    </Pressable>
+  );
 }
 
 export function Autocomplete({
@@ -109,6 +191,10 @@ export function Autocomplete({
     [ensureActiveItemVisible],
   );
 
+  const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    scrollOffsetRef.current = event.nativeEvent.contentOffset.y;
+  }, []);
+
   const handleRowLayout = useCallback(
     (index: number, event: LayoutChangeEvent) => {
       rowLayoutsRef.current.set(index, {
@@ -120,9 +206,11 @@ export function Autocomplete({
     [ensureActiveItemVisible],
   );
 
+  const containerStyle = useMemo(() => [styles.container, { maxHeight }], [maxHeight]);
+
   if (isLoading) {
     return (
-      <View style={[styles.container, { maxHeight }]}>
+      <View style={containerStyle}>
         <View style={styles.emptyItem}>
           <Text style={styles.emptyText}>{loadingText}</Text>
         </View>
@@ -132,7 +220,7 @@ export function Autocomplete({
 
   if (errorMessage) {
     return (
-      <View style={[styles.container, { maxHeight }]}>
+      <View style={containerStyle}>
         <View style={styles.emptyItem}>
           <Text style={styles.emptyText}>Error: {errorMessage}</Text>
         </View>
@@ -142,7 +230,7 @@ export function Autocomplete({
 
   if (options.length === 0) {
     return (
-      <View style={[styles.container, { maxHeight }]}>
+      <View style={containerStyle}>
         <View style={styles.emptyItem}>
           <Text style={styles.emptyText}>{emptyText}</Text>
         </View>
@@ -167,14 +255,12 @@ export function Autocomplete({
           ) : null}
         </View>
       ) : null}
-      <View style={[styles.container, { maxHeight }]}>
+      <View style={containerStyle}>
         <ScrollView
           ref={scrollRef}
           onLayout={handleScrollViewLayout}
           onContentSizeChange={pinToBottom}
-          onScroll={(event) => {
-            scrollOffsetRef.current = event.nativeEvent.contentOffset.y;
-          }}
+          onScroll={handleScroll}
           scrollEventThrottle={16}
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
@@ -240,7 +326,7 @@ export function Autocomplete({
   );
 }
 
-const styles = StyleSheet.create(((theme: Theme) => ({
+const styles = StyleSheet.create((theme: Theme) => ({
   outerWrapper: {
     gap: theme.spacing[1],
   },
@@ -342,4 +428,4 @@ const styles = StyleSheet.create(((theme: Theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
   },
-})) as any) as Record<string, any>;
+})) as unknown as Record<string, object>;

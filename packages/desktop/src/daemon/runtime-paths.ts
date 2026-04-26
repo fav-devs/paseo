@@ -18,9 +18,9 @@ const CLI_PACKAGE_NAME = "@getpaseo/cli";
 const SERVER_PACKAGE_NAME = "@getpaseo/server";
 const CLI_BIN_ENTRY = `${CLI_PACKAGE_NAME}/bin/paseo`;
 
-type PackageInfo = {
+interface PackageInfo {
   root: string;
-};
+}
 
 const esmRequire = createRequire(__filename);
 
@@ -349,6 +349,7 @@ export async function runCliJsonCommand(args: string[]): Promise<unknown> {
   } catch (error) {
     throw new Error(
       `CLI command returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
 }
