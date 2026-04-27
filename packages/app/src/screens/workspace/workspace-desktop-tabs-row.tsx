@@ -24,7 +24,6 @@ import {
   Copy,
   RotateCw,
   Rows2,
-  Network,
   SquarePen,
   SquareTerminal,
   X,
@@ -63,11 +62,6 @@ import type { Theme } from "@/styles/theme";
 
 const DROPDOWN_WIDTH = 220;
 const LOADING_TAB_LABEL_SKELETON_WIDTH = 80;
-type NewTabOptionId = "__new_tab_agent__" | "__new_tab_terminal__" | "__new_tab_port_forwards__";
-type NewTabSelection = {
-  optionId: NewTabOptionId;
-  paneId?: string;
-};
 
 const ThemedActivityIndicator = withUnistyles(ActivityIndicator);
 const ThemedX = withUnistyles(X);
@@ -157,12 +151,8 @@ interface WorkspaceDesktopTabsRowProps {
   onCloseTabsToLeft: (tabId: string) => Promise<void> | void;
   onCloseTabsToRight: (tabId: string) => Promise<void> | void;
   onCloseOtherTabs: (tabId: string) => Promise<void> | void;
-  onSelectNewTabOption?: (selection: NewTabSelection) => void;
-  newTabAgentOptionId?: NewTabOptionId;
-  newTabPortForwardsOptionId?: NewTabOptionId;
-  onNewTerminalTab?: (input: { paneId?: string }) => void;
-  onCreateDraftTab?: (input: { paneId?: string }) => void;
-  onCreateTerminalTab?: (input: { paneId?: string }) => void;
+  onCreateDraftTab: (input: { paneId?: string }) => void;
+  onCreateTerminalTab: (input: { paneId?: string }) => void;
   disableCreateTerminal?: boolean;
   isWaitingOnTerminalReadiness?: boolean;
   onReorderTabs: (nextTabs: WorkspaceTabDescriptor[]) => void;
@@ -183,9 +173,6 @@ function getFallbackTabLabel(tab: WorkspaceTabDescriptor): string {
   }
   if (tab.target.kind === "terminal") {
     return "Terminal";
-  }
-  if (tab.target.kind === "port-forwards") {
-    return "Ports";
   }
   if (tab.target.kind === "file") {
     return tab.target.path.split("/").findLast(Boolean) ?? tab.target.path;
@@ -479,9 +466,6 @@ export function WorkspaceDesktopTabsRow({
   onCloseTabsToLeft,
   onCloseTabsToRight,
   onCloseOtherTabs,
-  onSelectNewTabOption,
-  newTabAgentOptionId,
-  newTabPortForwardsOptionId,
   onCreateDraftTab,
   onCreateTerminalTab,
   disableCreateTerminal = false,
@@ -683,15 +667,7 @@ export function WorkspaceDesktopTabsRow({
         <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
           <TooltipTrigger
             testID="workspace-new-agent-tab"
-            onPress={() => {
-              if (onCreateDraftTab) {
-                onCreateDraftTab({ paneId });
-                return;
-              }
-              if (onSelectNewTabOption && newTabAgentOptionId) {
-                onSelectNewTabOption({ optionId: newTabAgentOptionId, paneId });
-              }
-            }}
+            onPress={handleCreateAgentTab}
             accessibilityRole="button"
             accessibilityLabel="New agent tab"
             style={newTabActionButtonStyle}
@@ -710,16 +686,8 @@ export function WorkspaceDesktopTabsRow({
         <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
           <TooltipTrigger
             testID="workspace-new-terminal"
-            onPress={() => {
-              if (onCreateTerminalTab) {
-                onCreateTerminalTab({ paneId });
-                return;
-              }
-              if (onSelectNewTabOption) {
-                onSelectNewTabOption({ optionId: "__new_tab_terminal__", paneId });
-              }
-            }}
-            disabled={disableCreateTerminal || isWaitingOnTerminalReadiness}
+            onPress={handleCreateTerminal}
+            disabled={terminalDisabled}
             accessibilityRole="button"
             accessibilityLabel={
               isWaitingOnTerminalReadiness ? "Preparing terminal tab" : "New terminal tab"
@@ -736,32 +704,6 @@ export function WorkspaceDesktopTabsRow({
               {newTerminalKeys ? (
                 <Shortcut chord={newTerminalKeys} style={styles.newTabTooltipShortcut} />
               ) : null}
-            </View>
-          </TooltipContent>
-        </Tooltip>
-        <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-          <TooltipTrigger
-            testID="workspace-new-port-forwards-tab"
-            onPress={() => {
-              if (onSelectNewTabOption && newTabPortForwardsOptionId) {
-                onSelectNewTabOption({
-                  optionId: newTabPortForwardsOptionId,
-                  paneId,
-                });
-              }
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Open port forwards tab"
-            style={({ hovered, pressed }) => [
-              styles.newTabActionButton,
-              (hovered || pressed) && styles.newTabActionButtonHovered,
-            ]}
-          >
-            <Network size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
-          </TooltipTrigger>
-          <TooltipContent side="bottom" align="center" offset={8}>
-            <View style={styles.newTabTooltipRow}>
-              <Text style={styles.newTabTooltipText}>Open port forwards tab</Text>
             </View>
           </TooltipContent>
         </Tooltip>

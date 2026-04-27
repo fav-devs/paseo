@@ -1409,6 +1409,7 @@ function toIsoStringFromUnixMs(value: number | undefined): string | undefined {
   return new Date(value).toISOString();
 }
 
+// eslint-disable-next-line complexity
 function convertClaudeRateLimitEventQuota(event: SDKRateLimitEvent): AgentQuota | null {
   const info = event.rate_limit_info;
   const primaryStatus = mapClaudeQuotaStatus(info.status);
@@ -1417,12 +1418,14 @@ function convertClaudeRateLimitEventQuota(event: SDKRateLimitEvent): AgentQuota 
   }
 
   const overageStatus = mapClaudeQuotaStatus(info.overageStatus);
-  const effectiveStatus =
-    info.isUsingOverage && overageStatus
-      ? overageStatus
-      : primaryStatus === "blocked" && overageStatus && overageStatus !== "blocked"
-        ? overageStatus
-        : primaryStatus;
+  let effectiveStatus: typeof primaryStatus;
+  if (info.isUsingOverage && overageStatus) {
+    effectiveStatus = overageStatus;
+  } else if (primaryStatus === "blocked" && overageStatus && overageStatus !== "blocked") {
+    effectiveStatus = overageStatus;
+  } else {
+    effectiveStatus = primaryStatus;
+  }
 
   const quota: AgentQuota = {
     status: effectiveStatus,
@@ -1430,12 +1433,14 @@ function convertClaudeRateLimitEventQuota(event: SDKRateLimitEvent): AgentQuota 
 
   const primaryReset = toIsoStringFromUnixMs(info.resetsAt);
   const overageReset = toIsoStringFromUnixMs(info.overageResetsAt);
-  const resetsAt =
-    info.isUsingOverage && overageReset
-      ? overageReset
-      : primaryStatus === "blocked" && overageStatus && overageStatus !== "blocked"
-        ? (overageReset ?? primaryReset)
-        : primaryReset;
+  let resetsAt: string | undefined;
+  if (info.isUsingOverage && overageReset) {
+    resetsAt = overageReset;
+  } else if (primaryStatus === "blocked" && overageStatus && overageStatus !== "blocked") {
+    resetsAt = overageReset ?? primaryReset;
+  } else {
+    resetsAt = primaryReset;
+  }
   if (resetsAt) {
     quota.resetsAt = resetsAt;
   }
@@ -2986,7 +2991,6 @@ class ClaudeAgentSession implements AgentSession {
       case "stream_event":
         this.appendStreamEventEvents(message, events, options);
         break;
-      }
       case "rate_limit_event": {
         const quota = convertClaudeRateLimitEventQuota(message);
         if (quota) {
@@ -2999,17 +3003,9 @@ class ClaudeAgentSession implements AgentSession {
         break;
       }
       case "result": {
-        const usage = this.convertUsage(message, message.modelUsage);
-        if (message.subtype === "success") {
-          events.push({ type: "turn_completed", provider: "claude", usage });
-        } else {
-          const errorMessage =
-            "errors" in message && Array.isArray(message.errors) && message.errors.length > 0
-              ? message.errors.join("\n")
-              : "Claude run failed";
-          events.push(this.buildTurnFailedEvent(errorMessage));
-        }
+        this.appendResultEvents(message, events);
         break;
+      }
       default:
         break;
     }

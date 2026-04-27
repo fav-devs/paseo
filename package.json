@@ -48,10 +48,10 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "typecheck:daemon": "npm run typecheck --workspace=@getpaseo/relay && npm run typecheck --workspace=@getpaseo/server && npm run typecheck --workspace=@getpaseo/cli",
     "test": "npm run test --workspaces --if-present",
-    "format": "oxfmt .",
-    "format:files": "oxfmt",
-    "format:check": "oxfmt --check .",
-    "format:check:files": "oxfmt --check",
+    "format": "oxfmt --write .",
+    "format:files": "oxfmt --write",
+    "format:check": "oxfmt .",
+    "format:check:files": "oxfmt",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "knip": "knip",
@@ -111,5 +111,9 @@
     "lightningcss": "1.30.1",
     "react": "19.1.0",
     "react-dom": "19.1.0"
+  },
+  "dependencies": {
+    "@biomejs/cli-linux-x64": "^2.4.13",
+    "@borewit/text-codec": "^0.2.2"
   }
 }

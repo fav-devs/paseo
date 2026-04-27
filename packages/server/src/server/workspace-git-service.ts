@@ -32,6 +32,7 @@ import {
 import { checkoutLiteFromGitSnapshot, normalizeWorkspaceId } from "./workspace-registry-model.js";
 
 const WORKSPACE_GIT_WATCH_DEBOUNCE_MS = 500;
+const WORKSPACE_GIT_SELF_HEAL_INTERVAL_MS = 30_000;
 const BACKGROUND_GIT_FETCH_INTERVAL_MS = 180_000;
 const BACKGROUND_GIT_FETCH_MAX_CONCURRENCY = 1;
 const WORKING_TREE_WATCH_FALLBACK_REFRESH_MS = 5_000;
@@ -325,6 +326,34 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   private readonly workingTreeWatchSetups = new Map<string, Promise<WorkingTreeWatchTarget>>();
   private readonly queuedRepoFetches: RepoGitTarget[] = [];
   private activeRepoFetchCount = 0;
+  private readonly checkoutDiffCache = new Map<
+    string,
+    WorkspaceGitAuxiliaryReadCacheEntry<CheckoutDiffResult>
+  >();
+  private readonly branchValidationCache = new Map<
+    string,
+    WorkspaceGitAuxiliaryReadCacheEntry<BranchCheckoutResolution>
+  >();
+  private readonly localBranchCache = new Map<
+    string,
+    WorkspaceGitAuxiliaryReadCacheEntry<boolean>
+  >();
+  private readonly branchSuggestionsCache = new Map<
+    string,
+    WorkspaceGitAuxiliaryReadCacheEntry<BranchSuggestion[]>
+  >();
+  private readonly stashListCache = new Map<
+    string,
+    WorkspaceGitAuxiliaryReadCacheEntry<WorkspaceGitStashEntry[]>
+  >();
+  private readonly worktreeListCache = new Map<
+    string,
+    WorkspaceGitAuxiliaryReadCacheEntry<WorkspaceGitWorktreeInfo[]>
+  >();
+  private readonly defaultBranchCache = new Map<
+    string,
+    WorkspaceGitAuxiliaryReadCacheEntry<string>
+  >();
 
   constructor(options: WorkspaceGitServiceOptions) {
     this.logger = options.logger.child({ module: "workspace-git-service" });
@@ -1434,7 +1463,12 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       for (const workspaceKey of target.workspaceKeys) {
         const workspaceTarget = this.workspaceTargets.get(workspaceKey);
         if (workspaceTarget) {
-          await this.refreshWorkspaceTarget(workspaceTarget);
+          await this.refreshWorkspaceTarget(workspaceTarget, {
+            reason: "post-fetch",
+            force: false,
+            includeGitHub: false,
+            notify: true,
+          });
         }
       }
     }

@@ -13,15 +13,10 @@ import type {
   AgentProvider,
   AgentMode,
   AgentCapabilityFlags,
-  AgentModelDefinition,
-  AgentQuota,
   AgentUsage,
   AgentPersistenceHandle,
 } from "@server/server/agent/agent-sdk-types";
 import type {
-  FileDownloadTokenResponse,
-  GitSetupOptions,
-  ProjectActionPayload,
   ServerInfoStatusPayload,
   ProjectPlacementPayload,
   ServerCapabilities,
@@ -98,7 +93,6 @@ export interface Agent {
   persistence: AgentPersistenceHandle | null;
   runtimeInfo?: AgentRuntimeInfo;
   lastUsage?: AgentUsage;
-  lastQuota?: AgentQuota;
   lastError?: string | null;
   title: string | null;
   cwd: string;
@@ -124,7 +118,6 @@ export interface WorkspaceDescriptor {
   name: string;
   status: WorkspaceDescriptorPayload["status"];
   diffStat: { additions: number; deletions: number } | null;
-  projectActions: ProjectActionPayload[];
   scripts: WorkspaceDescriptorPayload["scripts"];
   gitRuntime?: WorkspaceDescriptorPayload["gitRuntime"];
   githubRuntime?: WorkspaceDescriptorPayload["githubRuntime"];
@@ -145,8 +138,9 @@ export function normalizeWorkspaceDescriptor(
     name: payload.name,
     status: payload.status,
     diffStat: payload.diffStat ?? null,
-    projectActions: payload.projectActions ?? [],
-    scripts: (payload.scripts ?? []).map((s) => ({ ...s })),
+    scripts: (payload.scripts ?? []).map((s) => Object.assign({}, s)),
+    gitRuntime: payload.gitRuntime,
+    githubRuntime: payload.githubRuntime,
   };
 }
 
@@ -168,12 +162,21 @@ function preserveWorkspaceMapIdentity(
     return existing;
   }
 
-  return {
-    ...incoming,
-    diffStat: incoming.diffStat ?? existing.diffStat,
-    projectActions: incoming.projectActions,
-    scripts: incoming.scripts,
-  };
+  const next = new Map<string, WorkspaceDescriptor>();
+  let changed = existing.size !== incoming.size;
+  const existingEntries = existing.entries();
+
+  for (const [key, workspace] of incoming) {
+    const existingWorkspace = existing.get(key);
+    const nextWorkspace = preserveWorkspaceDescriptorIdentity(workspace, existingWorkspace);
+    next.set(key, nextWorkspace);
+    const existingEntry = existingEntries.next().value;
+    if (!existingEntry || existingEntry[0] !== key || existingEntry[1] !== nextWorkspace) {
+      changed = true;
+    }
+  }
+
+  return changed ? next : existing;
 }
 
 export type ExplorerEntryKind = "file" | "directory";

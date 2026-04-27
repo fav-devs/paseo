@@ -100,33 +100,7 @@ export async function invalidateCheckoutGitQueriesForClient(
 }
 
 function invalidateCheckoutGitQueries(serverId: string, cwd: string) {
-  void queryClient.invalidateQueries({
-    queryKey: ["checkoutStatus", serverId, cwd],
-  });
-  void queryClient.invalidateQueries({
-    predicate: (query) => {
-      const key = query.queryKey;
-      return (
-        Array.isArray(key) && key[0] === "checkoutDiff" && key[1] === serverId && key[2] === cwd
-      );
-    },
-  });
-  void queryClient.invalidateQueries({
-    predicate: (query) => {
-      const key = query.queryKey;
-      return (
-        Array.isArray(key) && key[0] === "checkoutPrStatus" && key[1] === serverId && key[2] === cwd
-      );
-    },
-  });
-  void queryClient.invalidateQueries({
-    predicate: (query) => {
-      const key = query.queryKey;
-      return (
-        Array.isArray(key) && key[0] === "checkoutHistory" && key[1] === serverId && key[2] === cwd
-      );
-    },
-  });
+  return invalidateCheckoutGitQueriesForClient(appQueryClient, { serverId, cwd });
 }
 
 function invalidateWorktreeList() {
@@ -257,7 +231,7 @@ interface CheckoutGitActionsStoreState {
     actionId: CheckoutGitAsyncActionId;
   }) => CheckoutGitActionStatus;
 
-  commit: (params: { serverId: string; cwd: string; message?: string }) => Promise<void>;
+  commit: (params: { serverId: string; cwd: string }) => Promise<void>;
   pull: (params: { serverId: string; cwd: string }) => Promise<void>;
   push: (params: { serverId: string; cwd: string }) => Promise<void>;
   createPr: (params: { serverId: string; cwd: string }) => Promise<void>;
@@ -328,17 +302,14 @@ export const useCheckoutGitActionsStore = create<CheckoutGitActionsStoreState>()
     return get().statusByCheckout[key]?.[actionId] ?? "idle";
   },
 
-  commit: async ({ serverId, cwd, message }) => {
+  commit: async ({ serverId, cwd }) => {
     await runCheckoutAction({
       serverId,
       cwd,
       actionId: "commit",
       run: async () => {
         const client = resolveClient(serverId);
-        const payload = await client.checkoutCommit(cwd, {
-          addAll: true,
-          message: message?.trim() || undefined,
-        });
+        const payload = await client.checkoutCommit(cwd, { addAll: true });
         if (payload.error) {
           throw new Error(payload.error.message);
         }

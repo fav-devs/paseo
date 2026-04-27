@@ -1312,7 +1312,9 @@ export async function createAgentMcpServer(options: AgentMcpServerOptions): Prom
         ? (
             await Promise.all(
               terminalManager.listDirectories().map(async (directory) =>
-                (await terminalManager.getTerminals(directory)).map((terminal) => ({
+                (
+                  await terminalManager.getTerminals(directory)
+                ).map((terminal) => ({
                   id: terminal.id,
                   name: terminal.name,
                   cwd: terminal.cwd,
@@ -1543,6 +1545,7 @@ export async function createAgentMcpServer(options: AgentMcpServerOptions): Prom
       const resolvedCwd = resolveScopedCwd(cwd, { required: true });
       const configSnapshot: MutableDaemonConfig = daemonConfigStore?.get() ?? {
         mcp: { injectIntoAgents: true },
+        providers: {},
       };
       const policy = resolveSecretsPolicy(configSnapshot);
       const { needsApproval } = evaluateSecureExecPolicy(policy, {

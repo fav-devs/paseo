@@ -1578,6 +1578,19 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     }
   }
 
+  private handleToolCallUpdate(
+    toolCallId: string,
+    update: ToolCall | ToolCallUpdate,
+    previous: ACPToolSnapshot | undefined,
+  ): AgentStreamEvent[] {
+    let snapshot = mergeToolSnapshot(toolCallId, update, previous);
+    if (this.toolSnapshotTransformer) {
+      snapshot = this.toolSnapshotTransformer(snapshot);
+    }
+    this.toolCalls.set(toolCallId, snapshot);
+    return [this.wrapTimeline(mapToolSnapshotToTimeline(snapshot, this.terminalEntries))];
+  }
+
   private createMessageTimelineItems(
     type: "user_message" | "assistant_message" | "reasoning",
     update: Extract<

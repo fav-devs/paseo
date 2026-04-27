@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, type ReactElement, type RefObject } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   ActivityIndicator,
   FlatList,
   ListRenderItemInfo,
   Pressable,
   Text,
-  TextInput,
   View,
   type PressableStateCallbackType,
   type StyleProp,
@@ -23,16 +22,13 @@ import {
   ChevronRight,
   Copy,
   Download,
-  Folder,
   MoreVertical,
   RotateCw,
-  Search,
-  X,
 } from "lucide-react-native";
 import { getFileIconSvg } from "@/components/material-file-icons";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import type { AgentFileExplorerState, ExplorerEntry } from "@/stores/session-store";
-import { useHostRuntimeClient, useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
+import { useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { useDownloadStore } from "@/stores/download-store";
 import {
@@ -49,11 +45,6 @@ import { formatTimeAgo } from "@/utils/time";
 import { buildAbsoluteExplorerPath } from "@/utils/explorer-paths";
 import { useWebScrollViewScrollbar } from "@/components/use-web-scrollbar";
 import { isWeb } from "@/constants/platform";
-import {
-  buildFileExplorerSearchExpansionPaths,
-  buildFileExplorerSearchRows,
-  type FileExplorerSearchRow,
-} from "@/utils/file-explorer-search";
 
 const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: "name", label: "Name" },
@@ -241,7 +232,6 @@ export function FileExplorerPane({
 }: FileExplorerPaneProps) {
   const isMobile = useIsCompactFormFactor();
   const showDesktopWebScrollbar = isWeb && !isMobile;
-  const [searchQuery, setSearchQuery] = useState("");
 
   const daemons = useHosts();
   const daemonProfile = useMemo(
@@ -249,7 +239,6 @@ export function FileExplorerPane({
     [daemons, serverId],
   );
   const normalizedWorkspaceRoot = useMemo(() => workspaceRoot.trim(), [workspaceRoot]);
-  const trimmedSearchQuery = useMemo(() => searchQuery.trim(), [searchQuery]);
   const workspaceStateKey = useMemo(
     () =>
       buildWorkspaceExplorerStateKey({
@@ -285,8 +274,6 @@ export function FileExplorerPane({
     () => new Set(expandedPathsArray && expandedPathsArray.length > 0 ? expandedPathsArray : ["."]),
     [expandedPathsArray],
   );
-  const client = useHostRuntimeClient(serverId);
-  const isConnected = useHostRuntimeIsConnected(serverId);
 
   const explorerDerived = useMemo(() => deriveExplorerFields(explorerState), [explorerState]);
   const { directories, pendingRequest, isExplorerLoading, error, selectedEntryPath } =
@@ -309,41 +296,11 @@ export function FileExplorerPane({
   }, [workspaceStateKey]);
 
   useEffect(() => {
-    setSearchQuery("");
-  }, [workspaceStateKey]);
-
-  useEffect(() => {
-    if (!hasWorkspaceScope) {
-      return;
-    }
-    if (hasInitializedRef.current) {
-      return;
-    }
-    // Mark initialized eagerly so concurrent effect re-runs don't double-fetch.
-    // If the root listing fails (e.g. client not yet connected), we reset the
-    // flag so the next time requestDirectoryListing is recreated (when client
-    // becomes available) this effect retries automatically.
-    hasInitializedRef.current = true;
-    void requestDirectoryListing(".", {
-      recordHistory: false,
-      setCurrentPath: false,
-    }).then((succeeded) => {
-      if (!succeeded) {
-        hasInitializedRef.current = false;
-        return;
-      }
-      const persistedPaths =
-        usePanelStore.getState().expandedPathsByWorkspace[workspaceStateKey ?? ""];
-      if (persistedPaths) {
-        for (const path of persistedPaths) {
-          if (path !== ".") {
-            void requestDirectoryListing(path, {
-              recordHistory: false,
-              setCurrentPath: false,
-            });
-          }
-        }
-      }
+    void initializeExplorer({
+      hasWorkspaceScope,
+      hasInitializedRef,
+      workspaceStateKey,
+      requestDirectoryListing,
     });
   }, [hasWorkspaceScope, requestDirectoryListing, workspaceStateKey]);
 
@@ -446,75 +403,11 @@ export function FileExplorerPane({
     [directories, expandedPaths, sortOption],
   );
 
-    const remaining = 360 - remainder;
-    const duration = Math.max(80, Math.round((remaining / 360) * 700));
-    refreshIconRotation.value = withTiming(
-      360,
-      {
-        duration,
-        easing: Easing.linear,
-      },
-      (finished) => {
-        if (finished) {
-          refreshIconRotation.value = 0;
-        }
-      },
-    );
-  }, [isRefreshFetching, refreshIconRotation]);
-
-  const refreshIconAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${refreshIconRotation.value}deg` }],
-  }));
-
-  const currentSortLabel = SORT_OPTIONS.find((opt) => opt.value === sortOption)?.label ?? "Name";
-  const isSearchActive = trimmedSearchQuery.length > 0;
-
-  const treeRows = useMemo(() => {
-    const rootDirectory = directories.get(".");
-    if (!rootDirectory) {
-      return [];
-    }
-    return buildTreeRows({
-      directories,
-      expandedPaths,
-      sortOption,
-      path: ".",
-      depth: 0,
-    });
-  }, [directories, expandedPaths, sortOption]);
-
-  const searchResultsQuery = useQuery({
-    queryKey: ["fileExplorerSearch", serverId, normalizedWorkspaceRoot, trimmedSearchQuery],
-    queryFn: async (): Promise<FileExplorerSearchRow[]> => {
-      if (!client) {
-        throw new Error("Host is not connected");
-      }
-      const response = await client.getDirectorySuggestions({
-        cwd: normalizedWorkspaceRoot,
-        query: trimmedSearchQuery,
-        limit: 100,
-        includeFiles: true,
-        includeDirectories: true,
-      });
-      if (response.error) {
-        throw new Error(response.error);
-      }
-      return buildFileExplorerSearchRows(response.entries ?? []);
-    },
-    enabled:
-      hasWorkspaceScope &&
-      Boolean(client) &&
-      isConnected &&
-      trimmedSearchQuery.length > 0 &&
-      normalizedWorkspaceRoot.length > 0,
-    retry: false,
-    staleTime: 15_000,
-    placeholderData: keepPreviousData,
+  const showInitialLoading = resolveShowInitialLoading({
+    directories,
+    isExplorerLoading,
+    pendingRequest,
   });
-
-  const showInitialLoading =
-    !directories.has(".") &&
-    Boolean(isExplorerLoading && pendingRequest?.mode === "list" && pendingRequest?.path === ".");
   const showBackFromError = Boolean(error && selectedEntryPath);
   const errorRecoveryPath = useMemo(() => getErrorRecoveryPath(explorerState), [explorerState]);
 
@@ -538,85 +431,6 @@ export function FileExplorerPane({
       isDirectoryLoading,
       selectedEntryPath,
     ],
-  );
-
-  const handleSearchResultPress = useCallback(
-    (row: FileExplorerSearchRow) => {
-      const pathsToExpand = buildFileExplorerSearchExpansionPaths(row.path, row.kind);
-      const nextExpandedPaths = new Set(expandedPaths);
-      let didChangeExpandedPaths = false;
-
-      for (const path of pathsToExpand) {
-        if (!nextExpandedPaths.has(path)) {
-          nextExpandedPaths.add(path);
-          didChangeExpandedPaths = true;
-        }
-        if (!directories.has(path)) {
-          void requestDirectoryListing(path, {
-            recordHistory: false,
-            setCurrentPath: false,
-          });
-        }
-      }
-
-      if (workspaceStateKey && didChangeExpandedPaths) {
-        setExpandedPathsForWorkspace(workspaceStateKey, Array.from(nextExpandedPaths));
-      }
-
-      selectExplorerEntry(row.path);
-      setSearchQuery("");
-
-      if (row.kind === "file") {
-        onOpenFile?.(row.path);
-        return;
-      }
-
-      void requestDirectoryListing(row.path, {
-        recordHistory: false,
-        setCurrentPath: false,
-      });
-    },
-    [
-      directories,
-      expandedPaths,
-      onOpenFile,
-      requestDirectoryListing,
-      selectExplorerEntry,
-      setExpandedPathsForWorkspace,
-      workspaceStateKey,
-    ],
-  );
-
-  const renderSearchRow = useCallback(
-    ({ item }: ListRenderItemInfo<FileExplorerSearchRow>) => (
-      <Pressable
-        onPress={() => handleSearchResultPress(item)}
-        style={({ hovered, pressed }) => [
-          styles.entryRow,
-          styles.searchEntryRow,
-          (hovered || pressed) && styles.entryRowActive,
-        ]}
-      >
-        <View style={styles.entryInfo}>
-          <View style={styles.entryIcon}>
-            {item.kind === "directory" ? (
-              <Folder size={16} color={theme.colors.foregroundMuted} />
-            ) : (
-              <SvgXml xml={getFileIconSvg(item.name)} width={16} height={16} />
-            )}
-          </View>
-          <View style={styles.searchEntryText}>
-            <Text style={styles.entryName} numberOfLines={1}>
-              {item.name}
-            </Text>
-            <Text style={styles.searchEntryPath} numberOfLines={1}>
-              {item.path}
-            </Text>
-          </View>
-        </View>
-      </Pressable>
-    ),
-    [handleSearchResultPress, theme.colors.foregroundMuted],
   );
 
   const handleBackFromError = useCallback(() => {
@@ -766,129 +580,26 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
               <RotateCw size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
             )}
           </View>
-        </View>
-      ) : showInitialLoading ? (
-        <View style={styles.centerState}>
-          <ActivityIndicator size="small" />
-          <Text style={styles.loadingText}>Loading files…</Text>
-        </View>
-      ) : treeRows.length === 0 ? (
-        <View style={styles.centerState}>
-          <Text style={styles.emptyText}>No files</Text>
-        </View>
-      ) : (
-        <View style={[styles.treePane, styles.treePaneFill]}>
-          <View style={styles.paneHeader} testID="files-pane-header">
-            <View style={styles.paneHeaderTopRow}>
-              <Pressable
-                onPress={handleSortCycle}
-                style={({ hovered, pressed }) => [
-                  styles.sortTrigger,
-                  (hovered || pressed) && styles.sortTriggerHovered,
-                ]}
-              >
-                <Text style={styles.sortTriggerText}>{currentSortLabel}</Text>
-                <ChevronDown size={12} color={theme.colors.foregroundMuted} />
-              </Pressable>
-              <Pressable
-                onPress={handleRefresh}
-                disabled={isRefreshFetching}
-                hitSlop={8}
-                style={({ hovered, pressed }) => [
-                  styles.iconButton,
-                  (hovered || pressed) && styles.iconButtonHovered,
-                ]}
-                accessibilityRole="button"
-                accessibilityLabel="Refresh files"
-              >
-                <Animated.View style={[styles.refreshIcon, refreshIconAnimatedStyle]}>
-                  <RotateCw size={theme.iconSize.sm} color={theme.colors.foregroundMuted} />
-                </Animated.View>
-              </Pressable>
-            </View>
-            <View style={styles.searchField}>
-              <Search size={14} color={theme.colors.foregroundMuted} />
-              <TextInput
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-                placeholder="Search files"
-                placeholderTextColor={theme.colors.foregroundMuted}
-                autoCapitalize="none"
-                autoCorrect={false}
-                style={styles.searchInput}
-              />
-              {isSearchActive ? (
-                <Pressable
-                  onPress={() => setSearchQuery("")}
-                  hitSlop={8}
-                  style={({ hovered, pressed }) => [
-                    styles.iconButton,
-                    (hovered || pressed) && styles.iconButtonHovered,
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Clear file search"
-                >
-                  <X size={14} color={theme.colors.foregroundMuted} />
-                </Pressable>
-              ) : null}
-            </View>
-          </View>
-          {isSearchActive && searchResultsQuery.isLoading && !searchResultsQuery.data ? (
-            <View style={styles.centerState}>
-              <ActivityIndicator size="small" />
-              <Text style={styles.loadingText}>Searching files…</Text>
-            </View>
-          ) : isSearchActive && searchResultsQuery.error ? (
-            <View style={styles.centerState}>
-              <Text style={styles.errorText}>
-                {searchResultsQuery.error instanceof Error
-                  ? searchResultsQuery.error.message
-                  : "Failed to search files"}
-              </Text>
-            </View>
-          ) : isSearchActive && (searchResultsQuery.data?.length ?? 0) === 0 ? (
-            <View style={styles.centerState}>
-              <Text style={styles.emptyText}>No files match "{trimmedSearchQuery}"</Text>
-            </View>
-          ) : isSearchActive ? (
-            <FlatList
-              style={styles.treeList}
-              data={searchResultsQuery.data ?? []}
-              renderItem={renderSearchRow}
-              keyExtractor={(row) => row.path}
-              testID="file-explorer-search-scroll"
-              contentContainerStyle={styles.entriesContent}
-              onLayout={scrollbar.onLayout}
-              onScroll={scrollbar.onScroll}
-              onContentSizeChange={scrollbar.onContentSizeChange}
-              scrollEventThrottle={16}
-              showsVerticalScrollIndicator={!showDesktopWebScrollbar}
-              initialNumToRender={24}
-              maxToRenderPerBatch={40}
-              windowSize={12}
-            />
-          ) : (
-            <FlatList
-              ref={treeListRef}
-              style={styles.treeList}
-              data={treeRows}
-              renderItem={renderTreeRow}
-              keyExtractor={(row) => row.entry.path}
-              testID="file-explorer-tree-scroll"
-              contentContainerStyle={styles.entriesContent}
-              onLayout={scrollbar.onLayout}
-              onScroll={scrollbar.onScroll}
-              onContentSizeChange={scrollbar.onContentSizeChange}
-              scrollEventThrottle={16}
-              showsVerticalScrollIndicator={!showDesktopWebScrollbar}
-              initialNumToRender={24}
-              maxToRenderPerBatch={40}
-              windowSize={12}
-            />
-          )}
-          {scrollbar.overlay}
-        </View>
-      )}
+        </Pressable>
+      </View>
+      <FlatList
+        ref={treeListRef}
+        style={styles.treeList}
+        data={treeRows}
+        renderItem={renderTreeRow}
+        keyExtractor={treeRowKeyExtractor}
+        testID="file-explorer-tree-scroll"
+        contentContainerStyle={styles.entriesContent}
+        onLayout={scrollbar.onLayout}
+        onScroll={scrollbar.onScroll}
+        onContentSizeChange={scrollbar.onContentSizeChange}
+        scrollEventThrottle={16}
+        showsVerticalScrollIndicator={!showDesktopWebScrollbar}
+        initialNumToRender={24}
+        maxToRenderPerBatch={40}
+        windowSize={12}
+      />
+      {scrollbar.overlay}
     </View>
   );
 }
@@ -1257,23 +968,20 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
   },
   paneHeader: {
-    minHeight: WORKSPACE_SECONDARY_HEADER_HEIGHT,
-    paddingHorizontal: theme.spacing[3],
-    paddingVertical: theme.spacing[2],
-    gap: theme.spacing[2],
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-  },
-  paneHeaderTopRow: {
+    height: WORKSPACE_SECONDARY_HEADER_HEIGHT,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    paddingRight: theme.spacing[3],
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
   },
   sortTrigger: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: theme.spacing[1],
+    marginLeft: theme.spacing[3] - theme.spacing[1],
     paddingHorizontal: theme.spacing[1],
     height: 24,
     borderRadius: theme.borderRadius.base,
@@ -1284,25 +992,6 @@ const styles = StyleSheet.create((theme) => ({
   sortTriggerText: {
     fontSize: theme.fontSize.xs,
     color: theme.colors.foregroundMuted,
-  },
-  searchField: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-    minHeight: 32,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.md,
-    backgroundColor: theme.colors.surface1,
-    paddingLeft: theme.spacing[2],
-    paddingRight: theme.spacing[1],
-  },
-  searchInput: {
-    flex: 1,
-    minWidth: 0,
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.sm,
-    paddingVertical: 0,
   },
   treeList: {
     flex: 1,
@@ -1363,10 +1052,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingRight: theme.spacing[2],
     borderRadius: theme.borderRadius.md,
   },
-  searchEntryRow: {
-    paddingLeft: theme.spacing[2],
-    minHeight: 40,
-  },
   entryRowActive: {
     backgroundColor: theme.colors.surfaceSidebarHover,
   },
@@ -1401,14 +1086,6 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
-  },
-  searchEntryText: {
-    flex: 1,
-    minWidth: 0,
-  },
-  searchEntryPath: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
   },
   menuButton: {
     width: 30,

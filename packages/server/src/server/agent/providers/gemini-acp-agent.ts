@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import type { Logger } from "pino";
 
 import type { AgentCapabilityFlags, AgentMode } from "../agent-sdk-types.js";
@@ -44,10 +45,10 @@ const GEMINI_MODES: AgentMode[] = [
   },
 ];
 
-type GeminiACPAgentClientOptions = {
+interface GeminiACPAgentClientOptions {
   logger: Logger;
   runtimeSettings?: ProviderRuntimeSettings;
-};
+}
 
 export class GeminiACPAgentClient extends ACPAgentClient {
   constructor(options: GeminiACPAgentClientOptions) {
@@ -70,7 +71,7 @@ export class GeminiACPAgentClient extends ACPAgentClient {
 
       if (available) {
         try {
-          const models = await this.listModels();
+          const models = await this.listModels({ cwd: homedir(), force: false });
           modelsValue = String(models.length);
         } catch (error) {
           modelsValue = `Error - ${toDiagnosticErrorMessage(error)}`;
@@ -82,7 +83,7 @@ export class GeminiACPAgentClient extends ACPAgentClient {
 
         if (!modelsValue.startsWith("Error -")) {
           try {
-            await this.listModes();
+            await this.listModes({ cwd: homedir(), force: false });
           } catch (error) {
             status = formatDiagnosticStatus(available, {
               source: "mode fetch",

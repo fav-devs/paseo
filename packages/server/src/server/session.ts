@@ -5,8 +5,6 @@ import pMemoize from "p-memoize";
 import { realpathSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import net from "node:net";
-import { exec } from "node:child_process";
-import { promisify } from "util";
 import { resolve, sep } from "path";
 import { homedir } from "node:os";
 import { z } from "zod";
@@ -60,6 +58,7 @@ import {
   type WorkspaceStateBucket,
 } from "./messages.js";
 import type { TerminalManager, TerminalsChangedEvent } from "../terminal/terminal-manager.js";
+import { TerminalOutputCoalescer } from "../terminal/terminal-output-coalescer.js";
 import { captureTerminalLines, type TerminalSession } from "../terminal/terminal.js";
 import type {
   PortForwardManager,
@@ -105,6 +104,7 @@ import type { ScriptHealthState } from "./script-health-monitor.js";
 import { spawnWorkspaceScript } from "./worktree-bootstrap.js";
 import type { WorkspaceScriptRuntimeStore } from "./workspace-script-runtime-store.js";
 import type { DaemonConfigStore } from "./daemon-config-store.js";
+import { applyMutableProviderConfigToOverrides } from "./daemon-config-store.js";
 import type { SecureTerminalExecCoordinator } from "./secure-terminal-exec-coordinator.js";
 import { evaluateSecureExecPolicy, resolveSecretsPolicy } from "./secure-terminal-exec-policy.js";
 import { runSecureTerminalExec } from "./secure-terminal-exec-runner.js";
@@ -199,17 +199,15 @@ import { archivePersistedWorkspaceRecord } from "./workspace-archive-service.js"
 import { WorkspaceReconciliationService } from "./workspace-reconciliation-service.js";
 import type { ScriptRouteStore } from "./script-proxy.js";
 import {
-  getCheckoutDiff,
   getCheckoutHistoryGraph,
-  getCachedCheckoutShortstat,
-  getCheckoutStatus,
-  listBranchSuggestions,
+  checkoutResolvedBranch,
   commitChanges,
   mergeToBase,
   mergeFromBase,
   pullCurrentBranch,
   pushCurrentBranch,
   createPullRequest,
+  type CheckoutExistingBranchResult,
 } from "../utils/checkout-git.js";
 import { getProjectIcon } from "../utils/project-icon.js";
 import { expandTilde } from "../utils/path.js";
@@ -1746,540 +1744,8 @@ export class Session {
         "inbound message",
       );
       try {
-        switch (msg.type) {
-          case "voice_audio_chunk":
-            await this.handleAudioChunk(msg);
-            break;
-
-          case "abort_request":
-            await this.handleAbort();
-            break;
-
-          case "audio_played":
-            this.handleAudioPlayed(msg.id);
-            break;
-
-          case "fetch_agents_request":
-            await this.handleFetchAgents(msg);
-            break;
-
-          case "fetch_workspaces_request":
-            await this.handleFetchWorkspacesRequest(msg);
-            break;
-
-          case "fetch_agent_request":
-            await this.handleFetchAgent(msg.agentId, msg.requestId);
-            break;
-
-          case "delete_agent_request":
-            await this.handleDeleteAgentRequest(msg.agentId, msg.requestId);
-            break;
-
-          case "archive_agent_request":
-            await this.handleArchiveAgentRequest(msg.agentId, msg.requestId);
-            break;
-
-          case "close_items_request":
-            await this.handleCloseItemsRequest(msg);
-            break;
-
-          case "update_agent_request":
-            await this.handleUpdateAgentRequest(msg.agentId, msg.name, msg.labels, msg.requestId);
-            break;
-
-          case "set_voice_mode":
-            await this.handleSetVoiceMode(msg.enabled, msg.agentId, msg.requestId);
-            break;
-
-          case "send_agent_message_request":
-            await this.handleSendAgentMessageRequest(msg);
-            break;
-
-          case "wait_for_finish_request":
-            await this.handleWaitForFinish(msg.agentId, msg.requestId, msg.timeoutMs);
-            break;
-
-          case "get_daemon_config_request":
-            this.emit({
-              type: "get_daemon_config_response",
-              payload: {
-                requestId: msg.requestId,
-                config: this.daemonConfigStore.get(),
-              },
-            });
-            break;
-
-          case "set_daemon_config_request":
-            this.emit({
-              type: "set_daemon_config_response",
-              payload: {
-                requestId: msg.requestId,
-                config: this.daemonConfigStore.patch(msg.config),
-              },
-            });
-            break;
-
-          case "dictation_stream_start":
-            {
-              const unavailable = this.resolveVoiceFeatureUnavailableContext("dictation");
-              if (unavailable) {
-                this.emit({
-                  type: "dictation_stream_error",
-                  payload: {
-                    dictationId: msg.dictationId,
-                    error: unavailable.message,
-                    retryable: unavailable.retryable,
-                    reasonCode: unavailable.reasonCode,
-                    missingModelIds: unavailable.missingModelIds,
-                  },
-                });
-                break;
-              }
-            }
-            await this.dictationStreamManager.handleStart(msg.dictationId, msg.format);
-            break;
-
-          case "dictation_stream_chunk":
-            await this.dictationStreamManager.handleChunk({
-              dictationId: msg.dictationId,
-              seq: msg.seq,
-              audioBase64: msg.audio,
-              format: msg.format,
-            });
-            break;
-
-          case "dictation_stream_finish":
-            await this.dictationStreamManager.handleFinish(msg.dictationId, msg.finalSeq);
-            break;
-
-          case "dictation_stream_cancel":
-            this.dictationStreamManager.handleCancel(msg.dictationId);
-            break;
-
-          case "create_agent_request":
-            await this.handleCreateAgentRequest(msg);
-            break;
-
-          case "resume_agent_request":
-            await this.handleResumeAgentRequest(msg);
-            break;
-
-          case "refresh_agent_request":
-            await this.handleRefreshAgentRequest(msg);
-            break;
-
-          case "cancel_agent_request":
-            await this.handleCancelAgentRequest(msg.agentId, msg.requestId);
-            break;
-
-          case "restart_server_request":
-            await this.handleRestartServerRequest(msg.requestId, msg.reason);
-            break;
-
-          case "shutdown_server_request":
-            await this.handleShutdownServerRequest(msg.requestId);
-            break;
-
-          case "fetch_agent_timeline_request":
-            await this.handleFetchAgentTimelineRequest(msg);
-            break;
-
-          case "set_agent_mode_request":
-            await this.handleSetAgentModeRequest(msg.agentId, msg.modeId, msg.requestId);
-            break;
-
-          case "set_agent_model_request":
-            await this.handleSetAgentModelRequest(msg.agentId, msg.modelId, msg.requestId);
-            break;
-
-          case "set_agent_feature_request":
-            await this.handleSetAgentFeatureRequest(
-              msg.agentId,
-              msg.featureId,
-              msg.value,
-              msg.requestId,
-            );
-            break;
-
-          case "set_agent_thinking_request":
-            await this.handleSetAgentThinkingRequest(
-              msg.agentId,
-              msg.thinkingOptionId,
-              msg.requestId,
-            );
-            break;
-
-          case "agent_permission_response":
-            await this.handleAgentPermissionResponse(msg.agentId, msg.requestId, msg.response);
-            break;
-
-          case "checkout_status_request":
-            await this.handleCheckoutStatusRequest(msg);
-            break;
-
-          case "validate_branch_request":
-            await this.handleValidateBranchRequest(msg);
-            break;
-
-          case "branch_suggestions_request":
-            await this.handleBranchSuggestionsRequest(msg);
-            break;
-
-          case "directory_suggestions_request":
-            await this.handleDirectorySuggestionsRequest(msg);
-            break;
-
-          case "subscribe_checkout_diff_request":
-            await this.handleSubscribeCheckoutDiffRequest(msg);
-            break;
-
-          case "unsubscribe_checkout_diff_request":
-            this.handleUnsubscribeCheckoutDiffRequest(msg);
-            break;
-
-          case "checkout_switch_branch_request":
-            await this.handleCheckoutSwitchBranchRequest(msg);
-            break;
-
-          case "stash_save_request":
-            await this.handleStashSaveRequest(msg);
-            break;
-
-          case "stash_pop_request":
-            await this.handleStashPopRequest(msg);
-            break;
-
-          case "stash_list_request":
-            await this.handleStashListRequest(msg);
-            break;
-
-          case "checkout_commit_request":
-            await this.handleCheckoutCommitRequest(msg);
-            break;
-
-          case "checkout_merge_request":
-            await this.handleCheckoutMergeRequest(msg);
-            break;
-
-          case "checkout_merge_from_base_request":
-            await this.handleCheckoutMergeFromBaseRequest(msg);
-            break;
-
-          case "checkout_pull_request":
-            await this.handleCheckoutPullRequest(msg);
-            break;
-
-          case "checkout_push_request":
-            await this.handleCheckoutPushRequest(msg);
-            break;
-
-          case "checkout_pr_create_request":
-            await this.handleCheckoutPrCreateRequest(msg);
-            break;
-
-          case "checkout_pr_status_request":
-            await this.handleCheckoutPrStatusRequest(msg);
-            break;
-
-          case "github_search_request":
-            await this.handleGitHubSearchRequest(msg);
-            break;
-
-          case "paseo_worktree_list_request":
-            await this.handlePaseoWorktreeListRequest(msg);
-            break;
-
-          case "paseo_worktree_archive_request":
-            await this.handlePaseoWorktreeArchiveRequest(msg);
-            break;
-
-          case "create_paseo_worktree_request":
-            await this.handleCreatePaseoWorktreeRequest(msg);
-            break;
-
-          case "workspace_setup_status_request":
-            await this.handleWorkspaceSetupStatusRequest(msg);
-            break;
-
-          case "list_available_editors_request":
-            await this.handleListAvailableEditorsRequest(msg);
-            break;
-
-          case "open_in_editor_request":
-            await this.handleOpenInEditorRequest(msg);
-            break;
-
-          case "open_project_request":
-            await this.handleOpenProjectRequest(msg);
-            break;
-
-          case "archive_workspace_request":
-            await this.handleArchiveWorkspaceRequest(msg);
-            break;
-
-          case "file_explorer_request":
-            await this.handleFileExplorerRequest(msg);
-            break;
-
-          case "project_icon_request":
-            await this.handleProjectIconRequest(msg);
-            break;
-
-          case "file_download_token_request":
-            await this.handleFileDownloadTokenRequest(msg);
-            break;
-
-          case "list_provider_models_request":
-            await this.handleListProviderModelsRequest(msg);
-            break;
-
-          case "list_provider_modes_request":
-            await this.handleListProviderModesRequest(msg);
-            break;
-
-          case "list_provider_features_request":
-            await this.handleListProviderFeaturesRequest(msg);
-            break;
-
-          case "list_available_providers_request":
-            await this.handleListAvailableProvidersRequest(msg);
-            break;
-
-          case "get_providers_snapshot_request":
-            await this.handleGetProvidersSnapshotRequest(msg);
-            break;
-
-          case "refresh_providers_snapshot_request":
-            await this.handleRefreshProvidersSnapshotRequest(msg);
-            break;
-
-          case "provider_diagnostic_request":
-            await this.handleProviderDiagnosticRequest(msg);
-            break;
-
-          case "clear_agent_attention":
-            await this.handleClearAgentAttention(msg.agentId, msg.requestId);
-            break;
-
-          case "client_heartbeat":
-            this.handleClientHeartbeat(msg);
-            break;
-
-          case "ping": {
-            const now = Date.now();
-            this.emit({
-              type: "pong",
-              payload: {
-                requestId: msg.requestId,
-                clientSentAt: msg.clientSentAt,
-                serverReceivedAt: now,
-                serverSentAt: now,
-              },
-            });
-            break;
-          }
-
-          case "list_commands_request":
-            await this.handleListCommandsRequest(msg);
-            break;
-
-          case "register_push_token":
-            this.handleRegisterPushToken(msg.token);
-            break;
-
-          case "subscribe_terminals_request":
-            this.handleSubscribeTerminalsRequest(msg);
-            break;
-
-          case "unsubscribe_terminals_request":
-            this.handleUnsubscribeTerminalsRequest(msg);
-            break;
-
-          case "list_terminals_request":
-            await this.handleListTerminalsRequest(msg);
-            break;
-
-          case "create_terminal_request":
-            await this.handleCreateTerminalRequest(msg);
-            break;
-
-          case "start_workspace_script_request":
-            await this.handleStartWorkspaceScriptRequest(msg);
-            break;
-
-          case "subscribe_terminal_request":
-            await this.handleSubscribeTerminalRequest(msg);
-            break;
-
-          case "unsubscribe_terminal_request":
-            this.handleUnsubscribeTerminalRequest(msg);
-            break;
-
-          case "terminal_input":
-            this.handleTerminalInput(msg);
-            break;
-
-          case "kill_terminal_request":
-            await this.handleKillTerminalRequest(msg);
-            break;
-
-          case "capture_terminal_request":
-            await this.handleCaptureTerminalRequest(msg);
-            break;
-
-          case "chat/create":
-            await this.handleChatCreateRequest(msg);
-            break;
-
-          case "chat/list":
-            await this.handleChatListRequest(msg);
-            break;
-
-          case "chat/inspect":
-            await this.handleChatInspectRequest(msg);
-            break;
-
-          case "chat/delete":
-            await this.handleChatDeleteRequest(msg);
-            break;
-
-          case "chat/post":
-            await this.handleChatPostRequest(msg);
-            break;
-
-          case "chat/read":
-            await this.handleChatReadRequest(msg);
-            break;
-
-          case "chat/wait":
-            await this.handleChatWaitRequest(msg);
-            break;
-
-          case "schedule/create":
-            await this.handleScheduleCreateRequest(msg);
-            break;
-
-          case "schedule/list":
-            await this.handleScheduleListRequest(msg);
-            break;
-
-          case "schedule/inspect":
-            await this.handleScheduleInspectRequest(msg);
-            break;
-
-          case "schedule/logs":
-            await this.handleScheduleLogsRequest(msg);
-            break;
-
-          case "schedule/pause":
-            await this.handleSchedulePauseRequest(msg);
-            break;
-
-          case "schedule/resume":
-            await this.handleScheduleResumeRequest(msg);
-            break;
-
-          case "schedule/delete":
-            await this.handleScheduleDeleteRequest(msg);
-            break;
-
-          case "loop/run":
-            await this.handleLoopRunRequest(msg);
-            break;
-
-          case "loop/list":
-            await this.handleLoopListRequest(msg);
-            break;
-
-          case "loop/inspect":
-            await this.handleLoopInspectRequest(msg);
-            break;
-
-          case "loop/logs":
-            await this.handleLoopLogsRequest(msg);
-            break;
-
-          case "loop/stop":
-            await this.handleLoopStopRequest(msg);
-            break;
-
-          case "list_secret_aliases_request":
-            this.handleListSecretAliasesRequest(msg);
-            break;
-
-          case "upsert_secret_alias_request":
-            this.handleUpsertSecretAliasRequest(msg);
-            break;
-
-          case "delete_secret_alias_request":
-            this.handleDeleteSecretAliasRequest(msg);
-            break;
-
-          case "secure_terminal_exec_request":
-            await this.handleSecureTerminalExecRequest(msg);
-            break;
-
-          case "approve_secure_terminal_exec_request":
-            this.handleApproveSecureTerminalExecRequest(msg);
-            break;
-
-          case "reject_secure_terminal_exec_request":
-            this.handleRejectSecureTerminalExecRequest(msg);
-            break;
-
-          case "fork_agent_request":
-            await this.handleForkAgentRequest(msg);
-            break;
-
-          case "checkout_history_request":
-            await this.handleCheckoutHistoryRequest(msg);
-            break;
-
-          case "update_project_actions_request":
-            await this.handleUpdateProjectActionsRequest(msg);
-            break;
-
-          case "file_write_request":
-            await this.handleFileWriteRequest(msg);
-            break;
-
-          case "subscribe_port_forwards_request":
-            this.handleSubscribePortForwardsRequest(msg);
-            break;
-
-          case "unsubscribe_port_forwards_request":
-            this.handleUnsubscribePortForwardsRequest(msg);
-            break;
-
-          case "list_port_forwards_request":
-            await this.handleListPortForwardsRequest(msg);
-            break;
-
-          case "create_port_forward_request":
-            await this.handleCreatePortForwardRequest(msg);
-            break;
-
-          case "close_port_forward_request":
-            await this.handleClosePortForwardRequest(msg);
-            break;
-
-          case "pf_stream_open":
-            await this.handlePortForwardStreamOpen(msg);
-            break;
-
-          case "pf_stream_data":
-            this.handlePortForwardStreamData(msg);
-            break;
-
-          case "pf_stream_close":
-            this.handlePortForwardStreamClose(msg);
-            break;
-
-          case "system_monitor_request":
-            await this.handleSystemMonitorRequest(msg);
-            break;
-        }
-      } catch (error: any) {
+        await this.dispatchInboundMessage(msg);
+      } catch (error: unknown) {
         const err = error instanceof Error ? error : new Error(String(error));
         this.sessionLogger.error({ err }, "Error handling message");
 
@@ -2772,6 +2238,7 @@ export class Session {
     }
   }
 
+  // eslint-disable-next-line complexity
   private async dispatchMiscMessage(msg: SessionInboundMessage): Promise<void> {
     switch (msg.type) {
       case "list_commands_request":
@@ -2779,6 +2246,63 @@ export class Session {
         return;
       case "register_push_token":
         this.handleRegisterPushToken(msg.token);
+        return;
+      case "list_secret_aliases_request":
+        this.handleListSecretAliasesRequest(msg);
+        return;
+      case "upsert_secret_alias_request":
+        this.handleUpsertSecretAliasRequest(msg);
+        return;
+      case "delete_secret_alias_request":
+        this.handleDeleteSecretAliasRequest(msg);
+        return;
+      case "secure_terminal_exec_request":
+        await this.handleSecureTerminalExecRequest(msg);
+        return;
+      case "approve_secure_terminal_exec_request":
+        this.handleApproveSecureTerminalExecRequest(msg);
+        return;
+      case "reject_secure_terminal_exec_request":
+        this.handleRejectSecureTerminalExecRequest(msg);
+        return;
+      case "fork_agent_request":
+        await this.handleForkAgentRequest(msg);
+        return;
+      case "checkout_history_request":
+        await this.handleCheckoutHistoryRequest(msg);
+        return;
+      case "update_project_actions_request":
+        await this.handleUpdateProjectActionsRequest(msg);
+        return;
+      case "file_write_request":
+        await this.handleFileWriteRequest(msg);
+        return;
+      case "subscribe_port_forwards_request":
+        this.handleSubscribePortForwardsRequest(msg);
+        return;
+      case "unsubscribe_port_forwards_request":
+        this.handleUnsubscribePortForwardsRequest(msg);
+        return;
+      case "list_port_forwards_request":
+        await this.handleListPortForwardsRequest(msg);
+        return;
+      case "create_port_forward_request":
+        await this.handleCreatePortForwardRequest(msg);
+        return;
+      case "close_port_forward_request":
+        await this.handleClosePortForwardRequest(msg);
+        return;
+      case "pf_stream_open":
+        await this.handlePortForwardStreamOpen(msg);
+        return;
+      case "pf_stream_data":
+        this.handlePortForwardStreamData(msg);
+        return;
+      case "pf_stream_close":
+        this.handlePortForwardStreamClose(msg);
+        return;
+      case "system_monitor_request":
+        await this.handleSystemMonitorRequest(msg);
         return;
     }
   }
@@ -6728,6 +6252,7 @@ export class Session {
       status: "done",
       activityAt: null,
       diffStat: { additions: 0, deletions: 0 },
+      projectActions: [],
       scripts: [],
       gitRuntime: {
         currentBranch: result.worktree.branchName || null,
@@ -6789,7 +6314,6 @@ export class Session {
 
     const descriptorEntries = await Promise.all(
       workspacesToBuild.map(async (workspace) => {
-        const projectRecord = activeProjects.get(workspace.projectId) ?? null;
         const descriptor = await this.buildWorkspaceDescriptor({
           workspace,
           projectRecord: activeProjects.get(workspace.projectId) ?? null,
@@ -10399,7 +9923,7 @@ export class Session {
         type: "fork_agent_response",
         payload: { requestId, newAgentId: snapshot.id },
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.sessionLogger.error(
         { err: error, sourceAgentId, targetProvider, requestId },
         "fork_agent_request: failed",
@@ -10408,7 +9932,7 @@ export class Session {
         type: "fork_agent_response",
         payload: {
           requestId,
-          error: error?.message ?? String(error),
+          error: error instanceof Error ? error.message : String(error),
         },
       });
     }
@@ -10519,7 +10043,7 @@ export class Session {
           requestId,
         },
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.sessionLogger.error(
         { err: error, cwd, path: requestedPath },
         `Failed to write file in workspace ${cwd}`,
@@ -10529,7 +10053,7 @@ export class Session {
         payload: {
           cwd,
           path: requestedPath,
-          error: error.message,
+          error: error instanceof Error ? error.message : String(error),
           requestId,
         },
       });
@@ -10709,13 +10233,13 @@ export class Session {
           requestId: msg.requestId,
         },
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.sessionLogger.error({ err: error, cwd: msg.cwd }, "Failed to create port forward");
       this.emit({
         type: "create_port_forward_response",
         payload: {
           portForward: null,
-          error: error.message,
+          error: error instanceof Error ? error.message : String(error),
           requestId: msg.requestId,
         },
       });
@@ -10851,13 +10375,13 @@ export class Session {
           requestId,
         },
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.emit({
         type: "system_monitor_response",
         payload: {
           ports: [],
           resources: { cpuPercent: null, memUsedBytes: null, memTotalBytes: null, loadAvg1m: null },
-          error: String(error?.message ?? error),
+          error: error instanceof Error ? error.message : String(error),
           requestId,
         },
       });

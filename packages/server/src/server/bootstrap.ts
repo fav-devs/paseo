@@ -87,6 +87,7 @@ function formatListenTarget(listenTarget: ListenTarget | null): string | null {
 }
 
 import { VoiceAssistantWebSocketServer } from "./websocket-server.js";
+import type { SessionLifecycleIntent } from "./session.js";
 import { createGitHubService } from "../services/github-service.js";
 import { createPaseoWorktree } from "./paseo-worktree-service.js";
 import { createWorktreeCoreDeps } from "./worktree-core.js";
@@ -415,14 +416,137 @@ export async function createPaseoDaemon(
   });
   httpServer.on("upgrade", scriptProxyUpgradeHandler);
 
-    const terminalManager = createTerminalManager();
-    const portForwardManager = createPortForwardManager();
-    const secureTerminalExecCoordinator = new SecureTerminalExecCoordinator();
-    const github = createGitHubService();
-    const workspaceGitService = new WorkspaceGitServiceImpl({
-      logger,
-      paseoHome: config.paseoHome,
-      deps: {
+  const agentStorage = new AgentStorage(config.agentStoragePath, logger);
+  const projectRegistry = new FileBackedProjectRegistry(
+    path.join(config.paseoHome, "projects", "projects.json"),
+    logger,
+  );
+  workspaceRegistry = new FileBackedWorkspaceRegistry(
+    path.join(config.paseoHome, "projects", "workspaces.json"),
+    logger,
+  );
+  const chatService = new FileBackedChatService({
+    paseoHome: config.paseoHome,
+    logger,
+  });
+  const terminalManager = createTerminalManager();
+  const portForwardManager = createPortForwardManager();
+  const secureTerminalExecCoordinator = new SecureTerminalExecCoordinator();
+  const github = createGitHubService();
+  const workspaceGitService = new WorkspaceGitServiceImpl({
+    logger,
+    paseoHome: config.paseoHome,
+    deps: {
+      github,
+    },
+  });
+  const providerRegistry = buildProviderRegistry(logger, {
+    runtimeSettings: config.agentProviderSettings,
+    providerOverrides: config.providerOverrides,
+    workspaceGitService,
+    isDev: config.isDev === true,
+  });
+  const agentManager = new AgentManager({
+    clients: {
+      ...createClientsFromRegistry(providerRegistry, logger),
+      ...config.agentClients,
+    },
+    providerDefinitions: providerRegistry,
+    registry: agentStorage,
+    logger,
+  });
+
+  const detachAgentStoragePersistence = attachAgentStoragePersistence(
+    logger,
+    agentManager,
+    agentStorage,
+  );
+  await agentStorage.initialize();
+  logger.info({ elapsed: elapsed() }, "Agent storage initialized");
+  await bootstrapWorkspaceRegistries({
+    paseoHome: config.paseoHome,
+    agentStorage,
+    projectRegistry,
+    workspaceRegistry,
+    workspaceGitService,
+    logger,
+  });
+  logger.info({ elapsed: elapsed() }, "Workspace registries bootstrapped");
+  await chatService.initialize();
+  logger.info({ elapsed: elapsed() }, "Chat service initialized");
+  const checkoutDiffManager = new CheckoutDiffManager({
+    logger,
+    paseoHome: config.paseoHome,
+    workspaceGitService,
+  });
+  // Warm the editor targets cache in the background so the first client request
+  // doesn't have to wait 30-180s for the initial editor discovery.
+  void listAvailableEditorTargets();
+  const loopService = new LoopService({
+    paseoHome: config.paseoHome,
+    logger,
+    agentManager,
+  });
+  await loopService.initialize();
+  logger.info({ elapsed: elapsed() }, "Loop service initialized");
+  const scheduleService = new ScheduleService({
+    paseoHome: config.paseoHome,
+    logger,
+    agentManager,
+    agentStorage,
+  });
+  await scheduleService.start();
+  logger.info({ elapsed: elapsed() }, "Schedule service initialized");
+  logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
+  const persistedRecords = await agentStorage.list();
+  logger.info(
+    { elapsed: elapsed() },
+    `Agent registry loaded (${persistedRecords.length} record${persistedRecords.length === 1 ? "" : "s"}); agents will initialize on demand`,
+  );
+  logger.info(
+    "Voice mode configured for agent-scoped resume flow (no dedicated voice assistant provider)",
+  );
+  logger.info({ elapsed: elapsed() }, "Preparing voice and MCP runtime");
+  const mcpEnabled = config.mcpEnabled ?? true;
+  let agentMcpBaseUrl: string | null = null;
+  if (mcpEnabled) {
+    const agentMcpRoute = "/mcp/agents";
+    const agentMcpTransports: AgentMcpTransportMap = new Map();
+    const archiveWorkspaceRecordForMcp = async (workspaceId: string) => {
+      const sessions = wsServer?.listActiveSessions() ?? [];
+      if (sessions.length > 0) {
+        await Promise.all(
+          sessions.map((session) => session.archiveWorkspaceRecordForExternalMutation(workspaceId)),
+        );
+        return;
+      }
+
+      await archivePersistedWorkspaceRecord({
+        workspaceId,
+        workspaceRegistry,
+        projectRegistry,
+      });
+    };
+    const emitWorkspaceUpdatesForMcpArchive = async (cwds: Iterable<string>) => {
+      const cwdList = Array.from(cwds);
+      await Promise.all(
+        (wsServer?.listActiveSessions() ?? []).map((session) =>
+          session.emitWorkspaceUpdatesForExternalCwds(cwdList),
+        ),
+      );
+    };
+    const emitMcpArchiveSessionMessage = (message: SessionOutboundMessage) => {
+      wsServer?.broadcast(wrapSessionMessage(message));
+    };
+
+    const createAgentMcpTransport = async (callerAgentId?: string) => {
+      const agentMcpServer = await createAgentMcpServer({
+        agentManager,
+        agentStorage,
+        terminalManager,
+        getDaemonTcpPort: () => (boundListenTarget?.type === "tcp" ? boundListenTarget.port : null),
+        scheduleService,
+        providerRegistry,
         github,
         workspaceGitService,
         archiveWorkspaceRecord: archiveWorkspaceRecordForMcp,
@@ -456,62 +580,20 @@ export async function createPaseoDaemon(
         logger,
       });
 
-    const detachAgentStoragePersistence = attachAgentStoragePersistence(
-      logger,
-      agentManager,
-      agentStorage,
-    );
-    await agentStorage.initialize();
-    logger.info({ elapsed: elapsed() }, "Agent storage initialized");
-    await bootstrapWorkspaceRegistries({
-      paseoHome: config.paseoHome,
-      agentStorage,
-      projectRegistry,
-      workspaceRegistry,
-      workspaceGitService,
-      logger,
-    });
-    logger.info({ elapsed: elapsed() }, "Workspace registries bootstrapped");
-    await chatService.initialize();
-    logger.info({ elapsed: elapsed() }, "Chat service initialized");
-    const checkoutDiffManager = new CheckoutDiffManager({
-      logger,
-      paseoHome: config.paseoHome,
-      workspaceGitService,
-    });
-    // Warm the editor targets cache in the background so the first client request
-    // doesn't have to wait 30-180s for the initial editor discovery.
-    void listAvailableEditorTargets();
-    const loopService = new LoopService({
-      paseoHome: config.paseoHome,
-      logger,
-      agentManager,
-    });
-    await loopService.initialize();
-    logger.info({ elapsed: elapsed() }, "Loop service initialized");
-    const scheduleService = new ScheduleService({
-      paseoHome: config.paseoHome,
-      logger,
-      agentManager,
-      agentStorage,
-    });
-    await scheduleService.start();
-    logger.info({ elapsed: elapsed() }, "Schedule service initialized");
-    logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
-    const persistedRecords = await agentStorage.list();
-    logger.info(
-      { elapsed: elapsed() },
-      `Agent registry loaded (${persistedRecords.length} record${persistedRecords.length === 1 ? "" : "s"}); agents will initialize on demand`,
-    );
-    logger.info(
-      "Voice mode configured for agent-scoped resume flow (no dedicated voice assistant provider)",
-    );
-    logger.info({ elapsed: elapsed() }, "Preparing voice and MCP runtime");
-    const mcpEnabled = config.mcpEnabled ?? true;
-    let agentMcpBaseUrl: string | null = null;
-    if (mcpEnabled) {
-      const agentMcpRoute = "/mcp/agents";
-      const agentMcpTransports: AgentMcpTransportMap = new Map();
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sessionId) => {
+          agentMcpTransports.set(sessionId, transport);
+          logger.debug({ sessionId }, "Agent MCP session initialized");
+        },
+        onsessionclosed: (sessionId) => {
+          agentMcpTransports.delete(sessionId);
+          logger.debug({ sessionId }, "Agent MCP session closed");
+        },
+        // NOTE: We enforce a Vite-like host allowlist at the app/websocket layer.
+        // StreamableHTTPServerTransport's built-in check requires exact Host header matches.
+        enableDnsRebindingProtection: false,
+      });
 
       Object.assign(transport, {
         onclose: () => {
@@ -569,116 +651,7 @@ export async function createPaseoDaemon(
               },
               id: null,
             });
-            const relayEnabled = config.relayEnabled ?? true;
-            const relayEndpoint = config.relayEndpoint ?? "relay.paseo.sh:443";
-            const relayPublicEndpoint = config.relayPublicEndpoint ?? relayEndpoint;
-            const appBaseUrl = config.appBaseUrl ?? "https://app.paseo.sh";
-
-            if (boundListenTarget.type === "tcp") {
-              logger.info(
-                {
-                  host: boundListenTarget.host,
-                  port: boundListenTarget.port,
-                  elapsed: elapsed(),
-                },
-                `Server listening on http://${boundListenTarget.host}:${boundListenTarget.port}`,
-              );
-            } else {
-              logger.info(
-                { path: boundListenTarget.path, elapsed: elapsed() },
-                `Server listening on ${boundListenTarget.path}`,
-              );
-            }
-
-            wsServer = new VoiceAssistantWebSocketServer(
-              httpServer,
-              logger,
-              serverId,
-              agentManager,
-              agentStorage,
-              downloadTokenStore,
-              config.paseoHome,
-              daemonConfigStore,
-              mcpBaseUrl,
-              { allowedOrigins, hostnames: configuredHostnames },
-              speechService,
-              terminalManager,
-              portForwardManager,
-              secureTerminalExecCoordinator,
-              {
-                finalTimeoutMs: config.dictationFinalTimeoutMs,
-              },
-              config.agentProviderSettings,
-              config.providerOverrides,
-              daemonVersion,
-              (intent) => {
-                try {
-                  config.onLifecycleIntent?.(intent);
-                } catch (error) {
-                  logger.error({ err: error, intent }, "Failed to handle daemon lifecycle intent");
-                }
-              },
-              projectRegistry,
-              workspaceRegistry,
-              chatService,
-              loopService,
-              scheduleService,
-              checkoutDiffManager,
-              scriptRouteStore,
-              scriptRuntimeStore,
-              handleBranchChange,
-              () => (boundListenTarget?.type === "tcp" ? boundListenTarget.port : null),
-              () => (boundListenTarget?.type === "tcp" ? boundListenTarget.host : null),
-              (hostname) => scriptHealthMonitor.getHealthForHostname(hostname),
-              workspaceGitService,
-              github,
-            );
-
-            if (typeof process.send === "function" && process.env.PASEO_SUPERVISED === "1") {
-              process.send({
-                type: "paseo:ready",
-                listen:
-                  boundListenTarget.type === "tcp"
-                    ? `${boundListenTarget.host}:${boundListenTarget.port}`
-                    : boundListenTarget.path,
-              });
-            }
-
-            if (relayEnabled) {
-              const offer = await createConnectionOfferV2({
-                serverId,
-                daemonPublicKeyB64: daemonKeyPair.publicKeyB64,
-                relay: { endpoint: relayPublicEndpoint },
-              });
-
-              encodeOfferToFragmentUrl({ offer, appBaseUrl });
-
-              relayTransport?.stop().catch(() => undefined);
-              relayTransport = startRelayTransport({
-                logger,
-                attachSocket: (ws, metadata) => {
-                  if (!wsServer) {
-                    throw new Error("WebSocket server not initialized");
-                  }
-                  return wsServer.attachExternalSocket(ws, metadata);
-                },
-                relayEndpoint,
-                serverId,
-                daemonKeyPair: daemonKeyPair.keyPair,
-              });
-            }
-          };
-
-          logAndResolve().then(resolve, reject);
-        };
-        httpServer.once("error", onError);
-        httpServer.once("listening", onListening);
-
-        if (listenTarget.type === "tcp") {
-          httpServer.listen(listenTarget.port, listenTarget.host);
-        } else {
-          if (listenTarget.type === "socket" && existsSync(listenTarget.path)) {
-            unlinkSync(listenTarget.path);
+            return;
           }
           const callerAgentIdRaw = req.query.callerAgentId;
           let callerAgentId: string | undefined;
@@ -690,36 +663,23 @@ export async function createPaseoDaemon(
           transport = await createAgentMcpTransport(callerAgentId);
         }
 
-      // Start speech service after listening so synchronous Sherpa native
-      // model loading doesn't block the server from accepting connections.
-      speechService.start();
-      scriptHealthMonitor.start();
-    };
-
-    const stop = async () => {
-      scriptHealthMonitor.stop();
-      await closeAllAgents(logger, agentManager);
-      await agentManager.flush().catch(() => undefined);
-      detachAgentStoragePersistence();
-      await agentStorage.flush().catch(() => undefined);
-      await shutdownProviders(logger, {
-        runtimeSettings: config.agentProviderSettings,
-        providerOverrides: config.providerOverrides,
-      });
-      terminalManager.killAll();
-      await portForwardManager.closeAll().catch(() => undefined);
-      speechService.stop();
-      await scheduleService.stop().catch(() => undefined);
-      await relayTransport?.stop().catch(() => undefined);
-      if (wsServer) {
-        await wsServer.close();
-      }
-      await new Promise<void>((resolve) => {
-        httpServer.close(() => resolve());
-      });
-      // Clean up socket files
-      if (listenTarget.type === "socket" && existsSync(listenTarget.path)) {
-        unlinkSync(listenTarget.path);
+        await transport.handleRequest(
+          req as unknown as IncomingMessage,
+          res as unknown as ServerResponse,
+          req.body,
+        );
+      } catch (err) {
+        logger.error({ err }, "Failed to handle Agent MCP request");
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32603,
+              message: "Internal MCP server error",
+            },
+            id: null,
+          });
+        }
       }
     };
 
@@ -795,6 +755,8 @@ export async function createPaseoDaemon(
             { allowedOrigins, hostnames: configuredHostnames },
             speechService,
             terminalManager,
+            portForwardManager,
+            secureTerminalExecCoordinator,
             {
               finalTimeoutMs: config.dictationFinalTimeoutMs,
             },
@@ -802,7 +764,7 @@ export async function createPaseoDaemon(
             config.providerOverrides,
             config.isDev === true,
             daemonVersion,
-            (intent) => {
+            (intent: SessionLifecycleIntent) => {
               try {
                 config.onLifecycleIntent?.(intent);
               } catch (error) {
@@ -820,7 +782,7 @@ export async function createPaseoDaemon(
             handleBranchChange,
             () => (boundListenTarget?.type === "tcp" ? boundListenTarget.port : null),
             () => (boundListenTarget?.type === "tcp" ? boundListenTarget.host : null),
-            (hostname) => scriptHealthMonitor.getHealthForHostname(hostname),
+            (hostname: string) => scriptHealthMonitor.getHealthForHostname(hostname),
             workspaceGitService,
             github,
           );
@@ -892,6 +854,7 @@ export async function createPaseoDaemon(
       providerOverrides: config.providerOverrides,
     });
     terminalManager.killAll();
+    await portForwardManager.closeAll().catch(() => undefined);
     speechService.stop();
     await scheduleService.stop().catch(() => undefined);
     await relayTransport?.stop().catch(() => undefined);

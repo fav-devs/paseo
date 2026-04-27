@@ -97,6 +97,22 @@ export const SecretsMutableConfigSchema = z
 export type SecretsPolicy = z.infer<typeof SecretsPolicySchema>;
 export type SecretsMutableConfig = z.infer<typeof SecretsMutableConfigSchema>;
 
+const MutableDaemonProviderModelSchema = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().min(1),
+    description: z.string().optional(),
+    isDefault: z.boolean().optional(),
+  })
+  .passthrough();
+
+const MutableDaemonProviderConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    additionalModels: z.array(MutableDaemonProviderModelSchema).optional(),
+  })
+  .passthrough();
+
 export const MutableDaemonConfigSchema = z
   .object({
     mcp: z
@@ -104,6 +120,7 @@ export const MutableDaemonConfigSchema = z
         injectIntoAgents: z.boolean(),
       })
       .passthrough(),
+    providers: z.record(z.string(), MutableDaemonProviderConfigSchema).default({}),
     secrets: SecretsMutableConfigSchema.optional(),
   })
   .passthrough();
@@ -111,6 +128,9 @@ export const MutableDaemonConfigSchema = z
 export const MutableDaemonConfigPatchSchema = z
   .object({
     mcp: MutableDaemonConfigSchema.shape.mcp.partial().optional(),
+    providers: z
+      .record(z.string(), MutableDaemonProviderConfigSchema.partial().passthrough())
+      .optional(),
     secrets: SecretsMutableConfigSchema.partial().optional(),
   })
   .partial()
@@ -1087,6 +1107,58 @@ export const ShutdownServerRequestMessageSchema = z.object({
   requestId: z.string(),
 });
 
+export const ReadProjectConfigRequestSchema = z.object({
+  type: z.literal("read_project_config_request"),
+  requestId: z.string(),
+  repoRoot: z.string(),
+});
+
+export const WriteProjectConfigRequestSchema = z.object({
+  type: z.literal("write_project_config_request"),
+  requestId: z.string(),
+  repoRoot: z.string(),
+  config: PaseoConfigRawSchema,
+  expectedRevision: PaseoConfigRevisionSchema.nullable(),
+});
+
+export const ReadProjectConfigResponseSchema = z.object({
+  type: z.literal("read_project_config_response"),
+  payload: z.discriminatedUnion("ok", [
+    z.object({
+      ok: z.literal(true),
+      requestId: z.string(),
+      repoRoot: z.string(),
+      config: PaseoConfigRawSchema.nullable(),
+      revision: PaseoConfigRevisionSchema.nullable(),
+    }),
+    z.object({
+      ok: z.literal(false),
+      requestId: z.string(),
+      repoRoot: z.string(),
+      error: ProjectConfigRpcErrorSchema,
+    }),
+  ]),
+});
+
+export const WriteProjectConfigResponseSchema = z.object({
+  type: z.literal("write_project_config_response"),
+  payload: z.discriminatedUnion("ok", [
+    z.object({
+      ok: z.literal(true),
+      requestId: z.string(),
+      repoRoot: z.string(),
+      config: PaseoConfigRawSchema,
+      revision: PaseoConfigRevisionSchema,
+    }),
+    z.object({
+      ok: z.literal(false),
+      requestId: z.string(),
+      repoRoot: z.string(),
+      error: ProjectConfigRpcErrorSchema,
+    }),
+  ]),
+});
+
 export const ForkAgentRequestMessageSchema = z.object({
   type: z.literal("fork_agent_request"),
   /** The agent whose timeline/context will be cloned. */
@@ -1941,6 +2013,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   LoopLogsRequestSchema,
   LoopStopRequestSchema,
   ForkAgentRequestMessageSchema,
+  ReadProjectConfigRequestSchema,
+  WriteProjectConfigRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -3662,6 +3736,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentArchivedMessageSchema,
   CloseItemsResponseSchema,
   CheckoutStatusResponseSchema,
+  CheckoutStatusUpdateSchema,
   CheckoutHistoryResponseSchema,
   SubscribeCheckoutDiffResponseSchema,
   CheckoutDiffUpdateSchema,
@@ -3733,6 +3808,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   LoopStopResponseSchema,
   SystemMonitorResponseSchema,
   ForkAgentResponseMessageSchema,
+  ReadProjectConfigResponseSchema,
+  WriteProjectConfigResponseSchema,
 ]);
 
 export type SessionOutboundMessage = z.infer<typeof SessionOutboundMessageSchema>;

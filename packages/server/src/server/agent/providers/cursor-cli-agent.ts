@@ -133,7 +133,7 @@ function resolveCursorTranscriptPath(cwd: string, sessionId: string): string | n
   if (!isSafeCursorSessionId(sessionId)) {
     return null;
   }
-  const projectDir = cwd.replace(/[\\/:\.]+/g, "-").replace(/^-+|-+$/g, "");
+  const projectDir = cwd.replace(/[\\/:.]+/g, "-").replace(/^-+|-+$/g, "");
   return path.join(
     os.homedir(),
     ".cursor",
@@ -276,6 +276,7 @@ function firstToolCallKey(toolCall: unknown): string | null {
   return keys[0] ?? null;
 }
 
+// eslint-disable-next-line complexity
 function mapToolCallToTimeline(
   callId: string,
   subtype: string,
@@ -389,10 +390,10 @@ async function resolveAgentLaunchPrefix(
 
 // #region CursorCliAgentClient
 
-type CursorCliAgentClientOptions = {
+interface CursorCliAgentClientOptions {
   logger: Logger;
   runtimeSettings?: ProviderRuntimeSettings;
-};
+}
 
 export class CursorCliAgentClient implements AgentClient {
   readonly provider = CURSOR_PROVIDER;
@@ -435,7 +436,7 @@ export class CursorCliAgentClient implements AgentClient {
       throw new Error("Cursor resume requires cwd in overrides or persistence metadata");
     }
     const merged: AgentSessionConfig = {
-      ...(handle.metadata as AgentSessionConfig),
+      ...(handle.metadata as unknown as AgentSessionConfig),
       ...overrides,
       provider: CURSOR_PROVIDER,
       cwd,
@@ -528,12 +529,12 @@ export class CursorCliAgentClient implements AgentClient {
 
 // #region CursorCliAgentSession
 
-type CursorCliAgentSessionOptions = {
+interface CursorCliAgentSessionOptions {
   logger: Logger;
   runtimeSettings?: ProviderRuntimeSettings;
   resumeChatId: string | null;
   launchEnv?: Record<string, string>;
-};
+}
 
 export class CursorCliAgentSession implements AgentSession {
   readonly provider = CURSOR_PROVIDER;
@@ -781,7 +782,7 @@ export class CursorCliAgentSession implements AgentSession {
           process.env as Record<string, string | undefined>,
           this.runtimeSettings,
         ),
-        ...(this.launchEnv ?? {}),
+        ...this.launchEnv,
       },
       stdio: ["ignore", "pipe", "pipe"],
     }) as ChildProcessWithoutNullStreams;
@@ -911,12 +912,14 @@ export class CursorCliAgentSession implements AgentSession {
       const isError = Boolean(record.is_error);
       const usage = mapStreamJsonUsage(record.usage);
       if (isError) {
-        const msg =
-          typeof record.result === "string"
-            ? record.result
-            : typeof record.error === "string"
-              ? record.error
-              : "Cursor agent run failed";
+        let msg: string;
+        if (typeof record.result === "string") {
+          msg = record.result;
+        } else if (typeof record.error === "string") {
+          msg = record.error;
+        } else {
+          msg = "Cursor agent run failed";
+        }
         this.finishTurn({
           type: "turn_failed",
           provider: this.provider,

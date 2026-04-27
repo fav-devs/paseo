@@ -90,6 +90,7 @@ function workspace(input: {
     status: "done",
     activityAt: null,
     diffStat: null,
+    projectActions: [],
     scripts: [],
     gitRuntime: {
       currentBranch: "main",
@@ -101,19 +102,6 @@ function workspace(input: {
       behindOfOrigin: null,
     },
     githubRuntime: null,
-    project: {
-      projectKey: input.projectKey,
-      projectName: input.projectName,
-      checkout: {
-        cwd: input.cwd,
-        isGit: true,
-        currentBranch: "main",
-        remoteUrl: input.remoteUrl,
-        worktreeRoot: input.cwd,
-        isPaseoOwnedWorktree: false,
-        mainRepoRoot: null,
-      },
-    },
   };
 }
 

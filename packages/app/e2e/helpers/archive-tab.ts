@@ -81,7 +81,9 @@ interface ArchiveTabDaemonClientConfig {
 }
 
 async function loadDaemonClientConstructor(): Promise<
-  new (config: ArchiveTabDaemonClientConfig) => ArchiveTabDaemonClient
+  new (
+    config: ArchiveTabDaemonClientConfig,
+  ) => ArchiveTabDaemonClient
 > {
   const repoRoot = path.resolve(__dirname, "../../../../");
   const moduleUrl = pathToFileURL(

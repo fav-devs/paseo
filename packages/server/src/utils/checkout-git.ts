@@ -2002,12 +2002,14 @@ export async function getCheckoutHistoryGraph(
   const existing = checkoutHistoryInFlight.get(cacheKey);
   if (existing) return existing;
 
-  const promise = resolveCheckoutHistoryGraph(cwd, limit).then((result) => {
-    checkoutHistoryCache.set(cacheKey, result);
-    return result;
-  }).finally(() => {
-    checkoutHistoryInFlight.delete(cacheKey);
-  });
+  const promise = resolveCheckoutHistoryGraph(cwd, limit)
+    .then((result) => {
+      checkoutHistoryCache.set(cacheKey, result);
+      return result;
+    })
+    .finally(() => {
+      checkoutHistoryInFlight.delete(cacheKey);
+    });
   checkoutHistoryInFlight.set(cacheKey, promise);
   return promise;
 }
@@ -2195,6 +2197,24 @@ export async function mergeFromBase(
     });
     throw error;
   }
+}
+
+interface DetectMergeToBaseConflictInput {
+  operationCwd: string;
+  error: unknown;
+  baseRef: string;
+  currentBranch: string;
+}
+
+async function detectAndThrowMergeToBaseConflict(
+  input: DetectMergeToBaseConflictInput,
+): Promise<void> {
+  return detectAndThrowMergeFromBaseConflict({
+    cwd: input.operationCwd,
+    error: input.error,
+    baseRef: input.baseRef,
+    currentBranch: input.currentBranch,
+  });
 }
 
 interface DetectMergeFromBaseConflictInput {

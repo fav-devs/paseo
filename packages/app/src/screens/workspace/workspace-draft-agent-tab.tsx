@@ -12,11 +12,9 @@ import { useDraftAgentCreateFlow } from "@/hooks/use-draft-agent-create-flow";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { buildWorkspaceDraftAgentConfig } from "@/screens/workspace/workspace-draft-agent-config";
 import { buildDraftStoreKey } from "@/stores/draft-keys";
-import {
-  buildWorkspaceTabPersistenceKey,
-  useWorkspaceLayoutStore,
-} from "@/stores/workspace-layout-store";
-import { type Agent, useSessionStore } from "@/stores/session-store";
+import type { Agent } from "@/stores/session-store";
+import { useWorkspaceExecutionAuthority } from "@/stores/session-store-hooks";
+import { useWorkspaceDraftSubmissionStore } from "@/stores/workspace-draft-submission-store";
 import { encodeImages } from "@/utils/encode-images";
 import { shouldAutoFocusWorkspaceDraftComposer } from "@/screens/workspace/workspace-draft-pane-focus";
 import type { AgentCapabilityFlags } from "@server/server/agent/agent-sdk-types";
@@ -289,7 +287,6 @@ export function WorkspaceDraftAgentTab({
   const workspaceAuthority = useWorkspaceExecutionAuthority(serverId, workspaceId);
   const workspaceExecutionAuthority = workspaceAuthority?.ok ? workspaceAuthority.authority : null;
   const workspaceDirectory = workspaceExecutionAuthority?.workspaceDirectory ?? null;
-  const focusWorkspaceTab = useWorkspaceLayoutStore((state) => state.focusTab);
   const addImagesRef = useRef<((images: ImageAttachment[]) => void) | null>(null);
   const draftStoreKey = useMemo(
     () =>
@@ -383,11 +380,11 @@ export function WorkspaceDraftAgentTab({
 
   const isReadyForPendingAutoSubmit = Boolean(
     pendingAutoSubmit &&
-    draftInput.isHydrated &&
-    workspaceDirectory &&
-    client &&
-    !isSubmitting &&
-    !composerState.isModelLoading,
+      draftInput.isHydrated &&
+      workspaceDirectory &&
+      client &&
+      !isSubmitting &&
+      !composerState.isModelLoading,
   );
   const autoSubmitKeyRef = useRef<string | null>(null);
   useEffect(() => {
@@ -489,13 +486,6 @@ export function WorkspaceDraftAgentTab({
     },
     [composerState],
   );
-  const handleActivateTab = useCallback(() => {
-    const workspaceKey = buildWorkspaceTabPersistenceKey({ serverId, workspaceId });
-    if (!workspaceKey) {
-      return;
-    }
-    focusWorkspaceTab(workspaceKey, tabId);
-  }, [focusWorkspaceTab, serverId, tabId, workspaceId]);
 
   const inputAreaWrapperStyle = useMemo(
     () => [styles.inputAreaWrapper, { paddingBottom: insets.bottom }],

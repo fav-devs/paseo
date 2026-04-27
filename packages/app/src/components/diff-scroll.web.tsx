@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   ScrollView,
   type LayoutChangeEvent,
@@ -26,8 +27,8 @@ export function DiffScroll({
 }: DiffScrollProps) {
   const webScrollbarStyle = useWebScrollbarStyle();
   const combinedStyle = useMemo(() => [style, webScrollbarStyle], [style, webScrollbarStyle]);
-  const handleLayout = useCallback(
-    (e: LayoutChangeEvent) => onScrollViewWidthChange(e.nativeEvent.layout.width),
+  const handleLayout = useMemo(
+    () => (e: LayoutChangeEvent) => onScrollViewWidthChange(e.nativeEvent.layout.width),
     [onScrollViewWidthChange],
   );
 
@@ -39,7 +40,7 @@ export function DiffScroll({
       style={combinedStyle}
       contentContainerStyle={contentContainerStyle}
       onScroll={onScroll}
-      onLayout={(e: LayoutChangeEvent) => onScrollViewWidthChange(e.nativeEvent.layout.width)}
+      onLayout={handleLayout}
     >
       {children}
     </ScrollView>

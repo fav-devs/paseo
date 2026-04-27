@@ -157,27 +157,16 @@ function resolveThinkingOptionId(args: {
   return effectiveModel?.defaultThinkingOptionId ?? thinkingOptions[0]?.id ?? "";
 }
 
-function resolveProviderModeId(args: {
-  providerDef: AgentProviderDefinition | undefined;
-  providerPrefs: ProviderPreferences | undefined;
-  requestedModeId?: string;
-}): string {
-  const { providerDef, providerPrefs, requestedModeId } = args;
-  const validModeIds = providerDef?.modes.map((mode) => mode.id) ?? [];
-
-  if (requestedModeId && validModeIds.includes(requestedModeId)) {
-    return requestedModeId;
-  }
-
-  if (providerPrefs?.newAgentMode && validModeIds.includes(providerPrefs.newAgentMode)) {
-    return providerPrefs.newAgentMode;
-  }
-
-  if (providerPrefs?.mode && validModeIds.includes(providerPrefs.mode)) {
-    return providerPrefs.mode;
-  }
-
-  return providerDef?.defaultModeId ?? validModeIds[0] ?? "";
+function mergeSelectedComposerPreferences(args: {
+  preferences: FormPreferences;
+  provider: AgentProvider;
+  updates: Partial<ProviderPreferences>;
+}): FormPreferences {
+  return mergeProviderPreferences({
+    preferences: args.preferences,
+    provider: args.provider,
+    updates: args.updates,
+  });
 }
 
 /**
@@ -316,17 +305,23 @@ function resolveFormState(
     ? preferences?.providerPreferences?.[result.provider]
     : undefined;
 
-  // 2. Resolve modeId (depends on provider)
-  if (!userModified.modeId) {
-    result.modeId = resolveProviderModeId({
-      providerDef,
-      providerPrefs,
-      requestedModeId:
-        typeof initialValues?.modeId === "string" && initialValues.modeId.length > 0
-          ? initialValues.modeId
-          : undefined,
-    });
-  }
+  result.modeId = resolveModeId({
+    provider: result.provider,
+    userModified: userModified.modeId,
+    currentModeId: result.modeId,
+    initialValues,
+    providerDef,
+    providerPrefs,
+  });
+
+  result.model = resolveModelField({
+    provider: result.provider,
+    userModified: userModified.model,
+    currentModel: result.model,
+    initialValues,
+    providerPrefs,
+    availableModels,
+  });
 
   result.thinkingOptionId = resolveThinkingOption({
     provider: result.provider,
@@ -743,21 +738,11 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
       const providerDef = selectableProviderDefinitionMap.get(provider);
       const providerPrefs = preferences?.providerPreferences?.[provider];
 
-      const isValidModel = (m: string) => providerModels?.some((am) => am.id === m) ?? false;
-      const preferredModel = normalizeSelectedModelId(providerPrefs?.model);
-      const defaultModelId = resolveDefaultModelId(providerModels);
-      const nextModelId =
-        preferredModel && (!providerModels || isValidModel(preferredModel))
-          ? preferredModel
-          : defaultModelId;
-
-      const nextModeId = resolveProviderModeId({ providerDef, providerPrefs });
-
-      const preferredThinking = nextModelId
-        ? (providerPrefs?.thinkingByModel?.[nextModelId]?.trim() ?? "")
-        : "";
-      const nextThinkingOptionId = resolveThinkingOptionId({
-        availableModels: providerModels,
+      const nextModelId = pickNextModelForProvider({ providerModels, providerPrefs });
+      const nextModeId = pickNextModeForProvider({ providerDef, providerPrefs });
+      const nextThinkingOptionId = pickNextThinkingOptionForProvider({
+        providerModels,
+        providerPrefs,
         modelId: nextModelId,
       });
 
@@ -787,7 +772,6 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
       }
       const providerDef = selectableProviderDefinitionMap.get(provider);
       const providerModels = allProviderModels.get(provider) ?? null;
-      const providerPrefs = preferences?.providerPreferences?.[provider];
       const normalizedModelId = normalizeSelectedModelId(modelId);
       const nextModelId = normalizedModelId || resolveDefaultModelId(providerModels);
       const nextThinkingOptionId = resolveThinkingOptionId({
@@ -800,7 +784,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
         ...prev,
         provider,
         model: nextModelId,
-        modeId: resolveProviderModeId({ providerDef, providerPrefs }),
+        modeId: providerDef?.defaultModeId ?? "",
         thinkingOptionId: nextThinkingOptionId,
       }));
       setUserModified((prev) => ({ ...prev, provider: true, model: true }));
@@ -814,12 +798,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions = {}): UseAg
         }),
       );
     },
-    [
-      allProviderModels,
-      preferences?.providerPreferences,
-      selectableProviderDefinitionMap,
-      updatePreferences,
-    ],
+    [allProviderModels, selectableProviderDefinitionMap, updatePreferences],
   );
 
   const setModeFromUser = useCallback(

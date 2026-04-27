@@ -22,7 +22,6 @@ function createWorkspace(
     name: input.name ?? "main",
     status: input.status ?? "running",
     diffStat: input.diffStat ?? null,
-    projectActions: input.projectActions ?? [],
     scripts: input.scripts ?? [],
   };
 }

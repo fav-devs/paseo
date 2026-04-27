@@ -1,12 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { QueryClient } from "@tanstack/react-query";
-import type { DaemonClient } from "@server/client/daemon-client";
 import { queryClient as appQueryClient } from "@/query/query-client";
 import { useSessionStore } from "@/stores/session-store";
-import type { WorkspaceDescriptor } from "@/stores/session-store";
 import {
   __resetCheckoutGitActionsStoreForTests,
-  invalidateCheckoutGitQueriesForClient,
   useCheckoutGitActionsStore,
 } from "@/stores/checkout-git-actions-store";
 
@@ -26,22 +22,6 @@ function createDeferred<T>() {
     reject = rej;
   });
   return { promise, resolve, reject };
-}
-
-function workspace(input: Partial<WorkspaceDescriptor> & Pick<WorkspaceDescriptor, "id">) {
-  return {
-    id: input.id,
-    projectId: input.projectId ?? "project-1",
-    projectDisplayName: input.projectDisplayName ?? "Project",
-    projectRootPath: input.projectRootPath ?? "/tmp/repo",
-    workspaceDirectory: input.workspaceDirectory ?? input.id,
-    projectKind: input.projectKind ?? "git",
-    workspaceKind: input.workspaceKind ?? "worktree",
-    name: input.name ?? input.id,
-    status: input.status ?? "done",
-    diffStat: input.diffStat ?? null,
-    scripts: input.scripts ?? [],
-  } satisfies WorkspaceDescriptor;
 }
 
 describe("checkout-git-actions-store", () => {
@@ -101,17 +81,16 @@ describe("checkout-git-actions-store", () => {
     useSessionStore.setState((state) => ({
       ...state,
       sessions: {
-        ...(state.sessions as any),
-        [serverId]: { client } as any,
+        ...state.sessions,
+        [serverId]: { client } as unknown as (typeof state.sessions)[string],
       },
     }));
 
     const store = useCheckoutGitActionsStore.getState();
-    await store.commit({ serverId, cwd, message: "Add tree view" });
+    await store.commit({ serverId, cwd });
 
     expect(client.checkoutCommit).toHaveBeenCalledWith(cwd, {
       addAll: true,
-      message: "Add tree view",
     });
   });
 });

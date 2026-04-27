@@ -3,9 +3,7 @@ import { useEffect } from "react";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import type { CheckoutPrStatusResponse } from "@server/shared/messages";
 
-const CHECKOUT_PR_STATUS_STALE_TIME = 20_000;
-
-function checkoutPrStatusQueryKey(serverId: string, cwd: string) {
+export function checkoutPrStatusQueryKey(serverId: string, cwd: string) {
   return ["checkoutPrStatus", serverId, cwd] as const;
 }
 
@@ -99,8 +97,9 @@ export function useCheckoutPrStatusQuery({
       return await client.checkoutPrStatus(cwd);
     },
     enabled: !!client && isConnected && !!cwd && enabled,
-    staleTime: CHECKOUT_PR_STATUS_STALE_TIME,
-    refetchInterval: false,
+    staleTime: Infinity,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
     refetchOnWindowFocus: false,
   });
 
@@ -147,8 +146,9 @@ export function useWorkspacePrHint({
       return await client.checkoutPrStatus(cwd);
     },
     enabled: !!client && isConnected && !!cwd && enabled,
-    staleTime: CHECKOUT_PR_STATUS_STALE_TIME,
-    refetchInterval: false,
+    staleTime: Infinity,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
     refetchOnWindowFocus: false,
     select: selectWorkspacePrHint,
   });

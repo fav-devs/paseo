@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from "react";
 import { usePathname, useRouter } from "expo-router";
 import { getIsElectronRuntime } from "@/constants/layout";
 import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
-import { useSessionStore } from "@/stores/session-store";
 import { setCommandCenterFocusRestoreElement } from "@/utils/command-center-focus-restore";
 import {
   buildHostWorkspaceRoute,
@@ -25,8 +24,6 @@ import { getShortcutOs } from "@/utils/shortcut-platform";
 import { useOpenProjectPicker } from "@/hooks/use-open-project-picker";
 import { useKeyboardShortcutOverrides } from "@/hooks/use-keyboard-shortcut-overrides";
 import { isNative } from "@/constants/platform";
-import { keyboardEventToComboString } from "@/keyboard/shortcut-string";
-import { resolveProjectActionShortcutMatch } from "@/screens/workspace/project-actions";
 import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 import { getRelativeSidebarShortcutTarget } from "@/utils/sidebar-shortcuts";
 import { useActiveServerId } from "@/hooks/use-active-server-id";
@@ -41,8 +38,6 @@ function hasPayloadKey<K extends string>(
 ): payload is KeyboardShortcutPayload & Record<K, never> {
   return !!payload && typeof payload === "object" && key in payload;
 }
-
-const EMPTY_PROJECT_ACTIONS: readonly import("@server/shared/messages").ProjectActionPayload[] = [];
 
 export function useKeyboardShortcuts({
   enabled,
@@ -69,25 +64,7 @@ export function useKeyboardShortcuts({
     step: 0,
     timeoutId: null,
   });
-  const activeWorkspaceRoute = useMemo(
-    () => parseHostWorkspaceRouteFromPathname(pathname),
-    [pathname],
-  );
-  const activeServerIdFromPath = parseServerIdFromPathname(pathname);
-  const activeServerId =
-    hosts.find((host) => host.serverId === activeServerIdFromPath)?.serverId ??
-    hosts[0]?.serverId ??
-    null;
-  const activeProjectActions = useSessionStore((state) => {
-    if (!activeWorkspaceRoute) {
-      return EMPTY_PROJECT_ACTIONS;
-    }
-    return (
-      state.sessions[activeWorkspaceRoute.serverId]?.workspaces.get(
-        activeWorkspaceRoute.workspaceId,
-      )?.projectActions ?? EMPTY_PROJECT_ACTIONS
-    );
-  });
+  const activeServerId = useActiveServerId();
   const openProjectPickerAction = useOpenProjectPicker(activeServerId);
 
   useEffect(() => {
@@ -403,29 +380,6 @@ export function useKeyboardShortcuts({
       }
 
       if (!result.match) {
-        if (result.preventDefault) {
-          return;
-        }
-        const projectActionMatch =
-          focusScope === "other"
-            ? resolveProjectActionShortcutMatch({
-                actions: activeProjectActions,
-                comboString: keyboardEventToComboString(event),
-              })
-            : null;
-        if (!projectActionMatch) {
-          return;
-        }
-        const handled = keyboardActionDispatcher.dispatch({
-          id: "workspace.project-action.run",
-          scope: "workspace",
-          actionId: projectActionMatch.id,
-        });
-        if (!handled) {
-          return;
-        }
-        event.preventDefault();
-        event.stopPropagation();
         return;
       }
 
@@ -483,7 +437,6 @@ export function useKeyboardShortcuts({
     cycleTheme,
     enabled,
     isMobile,
-    activeProjectActions,
     openProjectPickerAction,
     pathname,
     resetModifiers,

@@ -42,7 +42,6 @@ describe("workspace source of truth consumption", () => {
       name: "feat/workspace-sot",
       status: "running",
       diffStat: null,
-      projectActions: [],
       scripts: [],
     };
 

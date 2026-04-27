@@ -102,6 +102,7 @@ const PROVIDER_CLIENT_FACTORIES: Record<string, ProviderClientFactory> = {
       logger,
       runtimeSettings,
     }),
+  mock: (logger) => new MockLoadTestAgentClient(logger),
 };
 
 function getProviderClientFactory(provider: string): ProviderClientFactory {

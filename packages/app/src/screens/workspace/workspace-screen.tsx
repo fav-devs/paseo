@@ -217,13 +217,10 @@ function getFallbackTabOptionDescription(tab: WorkspaceTabDescriptor): string {
   if (tab.target.kind === "terminal") {
     return "Terminal";
   }
-  if (tab.target.kind === "port-forwards") {
-    return "Port forwards";
+  if (tab.target.kind === "file") {
+    return tab.target.path;
   }
-  if (tab.target.kind === "system-monitor") {
-    return "System monitor";
-  }
-  return tab.target.path;
+  return "";
 }
 
 interface MobileWorkspaceTabSwitcherProps {

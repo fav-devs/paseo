@@ -1,6 +1,6 @@
 import { useRef, ReactNode, useCallback, useEffect } from "react";
 import { Buffer } from "buffer";
-import { Alert, AppState } from "react-native";
+import { AppState } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClientActivity } from "@/hooks/use-client-activity";
 import { usePushTokenRegistration } from "@/hooks/use-push-token-registration";
@@ -77,7 +77,6 @@ export type {
 
 const HISTORY_STALE_AFTER_MS = 60_000;
 const AUTHORITATIVE_REVALIDATION_DEBOUNCE_MS = 300;
-const WORKSPACE_HYDRATION_DEDUPE_MS = 2_000;
 
 function hasAgentUsageChanged(
   incomingUsage: Agent["lastUsage"] | undefined,
@@ -93,27 +92,6 @@ function hasAgentUsageChanged(
   ];
 
   return keys.some((key) => incomingUsage?.[key] !== currentUsage?.[key]);
-}
-
-function hasAgentQuotaChanged(
-  incomingQuota: Agent["lastQuota"] | undefined,
-  currentQuota: Agent["lastQuota"] | undefined,
-): boolean {
-  if (!incomingQuota && !currentQuota) {
-    return false;
-  }
-  if (!incomingQuota || !currentQuota) {
-    return true;
-  }
-
-  return (
-    incomingQuota.status !== currentQuota.status ||
-    incomingQuota.resetsAt !== currentQuota.resetsAt ||
-    incomingQuota.limitKind !== currentQuota.limitKind ||
-    incomingQuota.utilization !== currentQuota.utilization ||
-    JSON.stringify(incomingQuota.providerData ?? null) !==
-      JSON.stringify(currentQuota.providerData ?? null)
-  );
 }
 
 type AudioOutputPayload = Extract<SessionOutboundMessage, { type: "audio_output" }>["payload"];
@@ -518,8 +496,6 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
   const revalidationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const revalidationInFlightRef = useRef<Promise<void> | null>(null);
   const revalidationQueuedRef = useRef(false);
-  const workspaceHydrationInFlightRef = useRef<Promise<void> | null>(null);
-  const lastWorkspaceHydrationAtRef = useRef(0);
   const wasConnectedRef = useRef(isConnected);
   const audioOutputBuffersRef = useRef<Map<string, BufferedAudioChunk[]>>(new Map());
   const activeAudioGroupsRef = useRef<Set<string>>(new Set());
@@ -546,67 +522,39 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       if (!client || !isConnected) {
         return;
       }
-      const now = Date.now();
-      if (workspaceHydrationInFlightRef.current) {
-        return workspaceHydrationInFlightRef.current;
-      }
-      if (
-        !options?.subscribe &&
-        now - lastWorkspaceHydrationAtRef.current < WORKSPACE_HYDRATION_DEDUPE_MS
-      ) {
-        return;
-      }
 
-      let hydratePromise: Promise<void>;
-      hydratePromise = (async () => {
-        const workspaces = new Map<string, WorkspaceDescriptor>();
-        const existingWorkspaces = useSessionStore.getState().sessions[serverId]?.workspaces;
-        let cursor: string | null = null;
-        let includeSubscribe = options?.subscribe ?? false;
+      const workspaces = new Map<string, WorkspaceDescriptor>();
+      let cursor: string | null = null;
+      let includeSubscribe = options?.subscribe ?? false;
 
-        while (true) {
-          const payload = await client.fetchWorkspaces({
-            sort: [{ key: "activity_at", direction: "desc" }],
-            ...(includeSubscribe ? { subscribe: {} } : {}),
-            page: cursor ? { limit: 200, cursor } : { limit: 200 },
-          });
-          if (options?.isCancelled?.()) {
-            return;
-          }
-
-          for (const entry of payload.entries) {
-            const workspace = normalizeWorkspaceDescriptor(entry);
-            workspaces.set(
-              workspace.id,
-              mergeWorkspaceSnapshotWithExisting({
-                incoming: workspace,
-                existing: existingWorkspaces?.get(workspace.id),
-              }),
-            );
-          }
-
-          if (!payload.pageInfo.hasMore || !payload.pageInfo.nextCursor) {
-            break;
-          }
-          cursor = payload.pageInfo.nextCursor;
-          includeSubscribe = false;
-        }
-
+      while (true) {
+        const payload = await client.fetchWorkspaces({
+          sort: [{ key: "activity_at", direction: "desc" }],
+          ...(includeSubscribe ? { subscribe: {} } : {}),
+          page: cursor ? { limit: 200, cursor } : { limit: 200 },
+        });
         if (options?.isCancelled?.()) {
           return;
         }
 
-        setWorkspaces(serverId, workspaces);
-        setHasHydratedWorkspaces(serverId, true);
-        lastWorkspaceHydrationAtRef.current = Date.now();
-      })().finally(() => {
-        if (workspaceHydrationInFlightRef.current === hydratePromise) {
-          workspaceHydrationInFlightRef.current = null;
+        for (const entry of payload.entries) {
+          const workspace = normalizeWorkspaceDescriptor(entry);
+          workspaces.set(workspace.id, workspace);
         }
-      });
 
-      workspaceHydrationInFlightRef.current = hydratePromise;
-      return hydratePromise;
+        if (!payload.pageInfo.hasMore || !payload.pageInfo.nextCursor) {
+          break;
+        }
+        cursor = payload.pageInfo.nextCursor;
+        includeSubscribe = false;
+      }
+
+      if (options?.isCancelled?.()) {
+        return;
+      }
+
+      setWorkspaces(serverId, workspaces);
+      setHasHydratedWorkspaces(serverId, true);
     },
     [client, isConnected, serverId, setHasHydratedWorkspaces, setWorkspaces],
   );
@@ -617,13 +565,11 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         const current = prev.get(agent.id);
         if (current && agent.updatedAt.getTime() < current.updatedAt.getTime()) {
           const hasUsageUpdate = hasAgentUsageChanged(agent.lastUsage, current.lastUsage);
-          const hasQuotaUpdate = hasAgentQuotaChanged(agent.lastQuota, current.lastQuota);
-          if (hasUsageUpdate || hasQuotaUpdate) {
+          if (hasUsageUpdate) {
             const next = new Map(prev);
             next.set(agent.id, {
               ...current,
               lastUsage: agent.lastUsage,
-              lastQuota: agent.lastQuota,
             });
             return next;
           }
@@ -1356,46 +1302,6 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       });
     });
 
-    const unsubSecureExecApproval = client.on(
-      "secure_terminal_exec_approval_required",
-      (message) => {
-        if (message.type !== "secure_terminal_exec_approval_required") {
-          return;
-        }
-        const payload = message.payload;
-        const lines = [
-          payload.source === "mcp" ? "Source: agent MCP tool" : "Source: session / client",
-          payload.agentId ? `Agent: ${payload.agentId}` : null,
-          `Working directory: ${payload.cwd}`,
-          `Command: ${payload.command}`,
-          payload.secretAliases.length > 0
-            ? `Secret aliases: ${payload.secretAliases.join(", ")}`
-            : null,
-        ].filter((line): line is string => typeof line === "string" && line.length > 0);
-
-        Alert.alert(
-          "Approve secure terminal command?",
-          lines.join("\n"),
-          [
-            {
-              text: "Reject",
-              style: "destructive",
-              onPress: () => {
-                void client.rejectSecureTerminalExec({ approvalId: payload.approvalId });
-              },
-            },
-            {
-              text: "Approve",
-              onPress: () => {
-                void client.approveSecureTerminalExec(payload.approvalId);
-              },
-            },
-          ],
-          { cancelable: true },
-        );
-      },
-    );
-
     const unsubAudioOutput = client.on("audio_output", async (message) => {
       if (message.type !== "audio_output") return;
       if (!voiceAudioEngine) {
@@ -1694,7 +1600,6 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       unsubStatus();
       unsubPermissionRequest();
       unsubPermissionResolved();
-      unsubSecureExecApproval();
       unsubAudioOutput();
       unsubActivity();
       unsubChunk();

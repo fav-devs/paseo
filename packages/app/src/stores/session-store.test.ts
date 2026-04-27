@@ -24,7 +24,6 @@ function createWorkspace(
     name: input.name ?? "main",
     status: input.status ?? "done",
     diffStat: input.diffStat ?? null,
-    projectActions: input.projectActions ?? [],
     scripts: input.scripts ?? [],
   };
 }
@@ -117,50 +116,6 @@ describe("normalizeWorkspaceDescriptor", () => {
     const workspace = normalizeWorkspaceDescriptor(payload);
 
     expect(workspace.scripts).toEqual([]);
-  });
-
-  it("preserves project placement from workspace descriptor payloads", () => {
-    const workspace = normalizeWorkspaceDescriptor({
-      id: "1",
-      projectId: "remote:github.com/acme/app",
-      projectDisplayName: "acme/app",
-      projectRootPath: "/repo/app",
-      workspaceDirectory: "/repo/app",
-      projectKind: "git",
-      workspaceKind: "local_checkout",
-      name: "main",
-      status: "done",
-      activityAt: null,
-      diffStat: null,
-      scripts: [],
-      project: {
-        projectKey: "remote:github.com/acme/app",
-        projectName: "acme/app",
-        checkout: {
-          cwd: "/repo/app",
-          isGit: true,
-          currentBranch: "main",
-          remoteUrl: "https://github.com/acme/app.git",
-          worktreeRoot: "/repo/app",
-          isPaseoOwnedWorktree: false,
-          mainRepoRoot: null,
-        },
-      },
-    });
-
-    expect(workspace.project).toEqual({
-      projectKey: "remote:github.com/acme/app",
-      projectName: "acme/app",
-      checkout: {
-        cwd: "/repo/app",
-        isGit: true,
-        currentBranch: "main",
-        remoteUrl: "https://github.com/acme/app.git",
-        worktreeRoot: "/repo/app",
-        isPaseoOwnedWorktree: false,
-        mainRepoRoot: null,
-      },
-    });
   });
 });
 

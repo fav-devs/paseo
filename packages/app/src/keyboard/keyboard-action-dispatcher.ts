@@ -27,7 +27,8 @@ export type KeyboardActionId =
   | "workspace.terminal.new"
   | "workspace.project-action.run"
   | "worktree.new"
-  | "worktree.archive";
+  | "worktree.archive"
+  | "sidebar.toggle.right";
 
 export type KeyboardActionDefinition =
   | { id: "agent.interrupt"; scope: KeyboardActionScope }
@@ -56,7 +57,8 @@ export type KeyboardActionDefinition =
   | { id: "workspace.terminal.new"; scope: KeyboardActionScope }
   | { id: "workspace.project-action.run"; scope: KeyboardActionScope; actionId: string }
   | { id: "worktree.new"; scope: KeyboardActionScope }
-  | { id: "worktree.archive"; scope: KeyboardActionScope };
+  | { id: "worktree.archive"; scope: KeyboardActionScope }
+  | { id: "sidebar.toggle.right"; scope: KeyboardActionScope };
 
 export interface KeyboardActionHandler {
   handlerId: string;

@@ -130,7 +130,7 @@ function readLastQuota(snapshot: AgentSnapshotPayload): AgentInspect["LastQuota"
   };
 }
 
-/** Convert agent snapshot to inspection data */
+// eslint-disable-next-line complexity
 function toInspectData(snapshot: AgentSnapshotPayload): AgentInspect {
   const lastUsage = snapshot.lastUsage
     ? {
@@ -150,10 +150,6 @@ function toInspectData(snapshot: AgentSnapshotPayload): AgentInspect {
         McpServers: snapshot.capabilities.supportsMcpServers ?? false,
       }
     : null;
-
-  // Extract worktree and parentAgentId from labels if they exist
-  const worktree = snapshot.labels?.["paseo.worktree"] ?? null;
-  const parentAgentId = snapshot.labels?.["paseo.parent-agent-id"] ?? null;
 
   return {
     Id: snapshot.id,

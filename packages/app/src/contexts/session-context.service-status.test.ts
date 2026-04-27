@@ -19,7 +19,6 @@ function workspace(input: {
     name: "main",
     status: "running",
     diffStat: null,
-    projectActions: [],
     scripts: input.scripts ?? [],
   };
 }

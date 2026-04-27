@@ -130,7 +130,6 @@ export interface MessageInputProps {
 export interface MessageInputRef {
   focus: () => void;
   blur: () => void;
-  setSelection: (selection: { start: number; end: number }) => void;
   runKeyboardAction: (action: MessageInputKeyboardActionKind) => boolean;
   /**
    * Web-only: return the underlying DOM element for focus assertions/retries.
@@ -225,106 +224,49 @@ function AttachmentMenuList({ items }: { items: AttachmentMenuItem[] }) {
       ))}
     </>
   );
-  const isInputFocusedRef = useRef(false);
-  const webTextareaRef = useRef<HTMLElement | null>(null);
+}
 
-  useImperativeHandle(ref, () => ({
-    focus: () => {
-      textInputRef.current?.focus();
-    },
-    blur: () => {
-      textInputRef.current?.blur?.();
-    },
-    setSelection: ({ start, end }) => {
-      const clampedStart = Math.max(0, Math.trunc(start));
-      const clampedEnd = Math.max(clampedStart, Math.trunc(end));
-
-      if (isWeb) {
-        const textarea = webTextareaRef.current as HTMLTextAreaElement | null;
-        textarea?.focus?.();
-        if (textarea && typeof textarea.selectionStart === "number") {
-          textarea.selectionStart = clampedStart;
-          textarea.selectionEnd = clampedEnd;
-        }
-        return;
-      }
-
-      const input = textInputRef.current as
-        | (TextInput & {
-            setNativeProps?: (props: { selection: { start: number; end: number } }) => void;
-          })
-        | null;
-      input?.focus?.();
-      input?.setNativeProps?.({ selection: { start: clampedStart, end: clampedEnd } });
-    },
-    runKeyboardAction: (action) => {
-      if (action === "focus") {
-        textInputRef.current?.focus();
-        return true;
-      }
-
-      if (action === "send" || action === "dictation-confirm") {
-        if (isDictatingRef.current) {
-          sendAfterTranscriptRef.current = true;
-          confirmDictation();
-          return true;
-        }
-        return false;
-      }
-
-      if (action === "voice-toggle") {
-        handleToggleRealtimeVoiceShortcut();
-        return true;
-      }
-
-      if (action === "voice-mute-toggle") {
-        if (isRealtimeVoiceForCurrentAgent) {
-          voice?.toggleMute();
-        }
-        return true;
-      }
-
-      if (action === "dictation-cancel") {
-        if (isDictatingRef.current) {
-          cancelDictation();
-        }
-        return true;
-      }
-
-      if (action === "dictation-toggle") {
-        if (isDictatingRef.current) {
-          sendAfterTranscriptRef.current = true;
-          confirmDictation();
-        } else {
-          void startDictationIfAvailable();
-        }
-        return true;
-      }
-
-      return false;
-    },
-    getNativeElement: () => {
-      if (!isWeb) return null;
-      const current = textInputRef.current as (TextInput & { getNativeRef?: () => unknown }) | null;
-      const native = typeof current?.getNativeRef === "function" ? current.getNativeRef() : current;
-      return native instanceof HTMLElement ? native : null;
-    },
-  }));
-  const inputHeightRef = useRef(MIN_INPUT_HEIGHT);
-  const baselineInputHeightRef = useRef<number | null>(null);
-  const overlayTransition = useSharedValue(0);
-  const sendAfterTranscriptRef = useRef(false);
-  const valueRef = useRef(value);
-  const serverInfo = useSessionStore(
-    useCallback(
-      (state) => {
-        if (!voiceServerId) {
-          return null;
-        }
-        return state.sessions[voiceServerId]?.serverInfo ?? null;
-      },
-      [voiceServerId],
-    ),
+function AttachmentDropdown({
+  isConnected,
+  disabled,
+  attachButtonStyle,
+  renderAttachButtonIcon,
+  attachmentMenuItems,
+}: {
+  isConnected: boolean;
+  disabled: boolean;
+  attachButtonStyle: React.ComponentProps<typeof DropdownMenuTrigger>["style"];
+  renderAttachButtonIcon: (input: { hovered?: boolean }) => React.ReactElement;
+  attachmentMenuItems: AttachmentMenuItem[];
+}) {
+  return (
+    <DropdownMenu>
+      <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger
+            disabled={!isConnected || disabled}
+            accessibilityLabel="Add attachment"
+            accessibilityRole="button"
+            testID="message-input-attach-button"
+            style={attachButtonStyle}
+          >
+            {renderAttachButtonIcon}
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="top" align="center" offset={8}>
+          <Text style={styles.tooltipText}>Add attachment</Text>
+        </TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent
+        side="top"
+        align="start"
+        offset={8}
+        minWidth={220}
+        testID="message-input-attachment-menu"
+      >
+        <AttachmentMenuList items={attachmentMenuItems} />
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -515,13 +457,15 @@ function runKeyboardActionImpl(
       void h.confirmDictation();
       return true;
     }
-    if (isTextAreaLike(ref)) return ref;
-    return null;
-  }, []);
-
-  useLayoutEffect(() => {
-    if (isWeb) {
-      webTextareaRef.current = getWebTextArea() as HTMLElement | null;
+    return false;
+  }
+  if (action === "voice-toggle") {
+    h.handleToggleRealtimeVoiceShortcut();
+    return true;
+  }
+  if (action === "voice-mute-toggle") {
+    if (h.isRealtimeVoiceForCurrentAgent) {
+      h.voice?.toggleMute();
     }
     return true;
   }

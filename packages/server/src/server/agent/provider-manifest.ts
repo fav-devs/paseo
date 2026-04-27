@@ -238,6 +238,16 @@ export const AGENT_PROVIDER_DEFINITIONS: AgentProviderDefinition[] = [
   },
 ];
 
+const MOCK_LOAD_TEST_MODES: AgentProviderModeDefinition[] = [
+  {
+    id: "load-test",
+    label: "Load Test",
+    description: "Streams repeated markdown, reasoning, and tool calls for app stress testing",
+    icon: "ShieldOff",
+    colorTier: "dangerous",
+  },
+];
+
 export const DEV_AGENT_PROVIDER_DEFINITIONS: AgentProviderDefinition[] = [
   {
     id: "mock",

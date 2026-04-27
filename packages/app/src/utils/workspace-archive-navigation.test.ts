@@ -33,7 +33,6 @@ function workspace(
     name: input.name ?? input.id,
     status: input.status ?? "done",
     diffStat: input.diffStat ?? null,
-    projectActions: input.projectActions ?? [],
     scripts: input.scripts ?? [],
   };
 }

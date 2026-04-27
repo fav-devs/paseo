@@ -41,12 +41,8 @@ function project(input: {
     projectKey: input.projectKey,
     projectName: input.projectName ?? input.projectKey,
     projectKind: input.projectKind ?? "git",
-    workspaceKind: input.workspaceKind ?? "checkout",
-    name: input.name,
-    status: input.status,
-    diffStat: null,
-    projectActions: [],
-    scripts: input.scripts ?? [],
+    iconWorkingDir: input.iconWorkingDir ?? input.projectKey,
+    workspaceKeys: input.workspaceKeys,
   };
 }
 

@@ -11,7 +11,10 @@ import { useIsFocused } from "@react-navigation/native";
 import Animated, { useAnimatedStyle, useSharedValue, runOnJS } from "react-native-reanimated";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { Activity, AudioLines, Files, GitBranch, Network, X } from "lucide-react-native";
+import { X } from "lucide-react-native";
+import { GitHubIcon } from "@/components/icons/github-icon";
+import { PrPane } from "./pr-pane";
+import { usePrPaneData } from "@/hooks/use-pr-pane-data";
 import {
   usePanelStore,
   selectIsFileExplorerOpen,
@@ -23,9 +26,6 @@ import { useExplorerSidebarAnimation } from "@/contexts/explorer-sidebar-animati
 import { HEADER_INNER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout";
 import { GitDiffPane } from "./git-diff-pane";
 import { FileExplorerPane } from "./file-explorer-pane";
-import { PortForwardsPane } from "./port-forwards-pane";
-import { SpotifyPane } from "./spotify-pane";
-import { SystemMonitorPane } from "./system-monitor-pane";
 import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
 import { useWindowControlsPadding } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
@@ -408,9 +408,24 @@ function SidebarContent({
 }: SidebarContentProps) {
   const { theme } = useUnistyles();
   const padding = useWindowControlsPadding("explorerSidebar");
-  const resolvedTab: ExplorerTab = !isGit && activeTab === "changes" ? "files" : activeTab;
-  const tabIconColor = (tab: ExplorerTab) =>
-    resolvedTab === tab ? theme.colors.foreground : theme.colors.foregroundMuted;
+  const canQueryPullRequest = isGit && Boolean(workspaceRoot);
+  const prPane = usePrPaneData({
+    serverId,
+    cwd: workspaceRoot,
+    enabled: canQueryPullRequest && isOpen,
+    timelineEnabled: activeTab === "pr" && canQueryPullRequest && isOpen,
+  });
+  const hasPullRequest = prPane.prNumber !== null;
+  const requestedTab: ExplorerTab =
+    !isGit && (activeTab === "changes" || activeTab === "pr") ? "files" : activeTab;
+  const resolvedTab: ExplorerTab =
+    requestedTab === "pr" && !hasPullRequest ? "changes" : requestedTab;
+  const prTabLabel = prPane.prNumber === null ? "" : `#${prPane.prNumber}`;
+
+  const headerStyle = useMemo(
+    () => [styles.header, { paddingRight: padding.right }],
+    [padding.right],
+  );
 
   return (
     <View style={styles.sidebarContent} pointerEvents="auto">
@@ -419,47 +434,37 @@ function SidebarContent({
         <TitlebarDragRegion />
         <View style={styles.tabsContainer}>
           {isGit && (
-            <Pressable
-              accessibilityLabel="Changes"
+            <ExplorerTabButton
+              tab="changes"
+              active={resolvedTab === "changes"}
+              label="Changes"
+              onTabPress={onTabPress}
               testID="explorer-tab-changes"
-              style={[styles.tab, resolvedTab === "changes" && styles.tabActive]}
-              onPress={() => onTabPress("changes")}
-            >
-              <GitBranch size={16} color={tabIconColor("changes")} />
-            </Pressable>
+            />
           )}
-          <Pressable
-            accessibilityLabel="Files"
+          <ExplorerTabButton
+            tab="files"
+            active={resolvedTab === "files"}
+            label="Files"
+            onTabPress={onTabPress}
             testID="explorer-tab-files"
-            style={[styles.tab, resolvedTab === "files" && styles.tabActive]}
-            onPress={() => onTabPress("files")}
-          >
-            <Files size={16} color={tabIconColor("files")} />
-          </Pressable>
-          <Pressable
-            accessibilityLabel="Ports"
-            testID="explorer-tab-ports"
-            style={[styles.tab, resolvedTab === "ports" && styles.tabActive]}
-            onPress={() => onTabPress("ports")}
-          >
-            <Network size={16} color={tabIconColor("ports")} />
-          </Pressable>
-          <Pressable
-            accessibilityLabel="Spotify player"
-            testID="explorer-tab-spotify"
-            style={[styles.tab, resolvedTab === "spotify" && styles.tabActive]}
-            onPress={() => onTabPress("spotify")}
-          >
-            <AudioLines size={16} color={tabIconColor("spotify")} />
-          </Pressable>
-          <Pressable
-            accessibilityLabel="System monitor"
-            testID="explorer-tab-system-monitor"
-            style={[styles.tab, resolvedTab === "system-monitor" && styles.tabActive]}
-            onPress={() => onTabPress("system-monitor")}
-          >
-            <Activity size={16} color={tabIconColor("system-monitor")} />
-          </Pressable>
+          />
+          {isGit && hasPullRequest && (
+            <ExplorerTabButton
+              tab="pr"
+              active={resolvedTab === "pr"}
+              label={prTabLabel}
+              onTabPress={onTabPress}
+              testID="explorer-tab-pr"
+            >
+              <GitHubIcon
+                size={13}
+                color={
+                  resolvedTab === "pr" ? theme.colors.foreground : theme.colors.foregroundMuted
+                }
+              />
+            </ExplorerTabButton>
+          )}
         </View>
         <View style={styles.headerRightSection}>
           {isMobile && (
@@ -488,13 +493,7 @@ function SidebarContent({
             onOpenFile={onOpenFile}
           />
         )}
-        {resolvedTab === "ports" && (
-          <PortForwardsPane serverId={serverId} workspaceId={workspaceRoot} />
-        )}
-        {resolvedTab === "spotify" && (
-          <SpotifyPane serverId={serverId} workspaceRoot={workspaceRoot} />
-        )}
-        {resolvedTab === "system-monitor" && <SystemMonitorPane serverId={serverId} />}
+        {resolvedTab === "pr" && prPane.data && <PrPane data={prPane.data} />}
       </View>
     </View>
   );
@@ -554,14 +553,26 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
   },
   tab: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    width: 32,
-    height: 32,
+    gap: theme.spacing[2],
+    paddingVertical: theme.spacing[2],
+    paddingHorizontal: theme.spacing[3],
     borderRadius: theme.borderRadius.md,
   },
   tabActive: {
     backgroundColor: theme.colors.surfaceSidebarHover,
+  },
+  tabText: {
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.normal,
+    color: theme.colors.foregroundMuted,
+  },
+  tabTextActive: {
+    color: theme.colors.foreground,
+  },
+  tabTextMuted: {
+    opacity: 0.8,
   },
   headerRightSection: {
     flexDirection: "row",

@@ -1,5 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { buildExplorerCheckoutKey, resolveExplorerTabForCheckout } from "./explorer-tab-memory";
+import {
+  buildExplorerCheckoutKey,
+  resolveExplorerTabForCheckout,
+  type ExplorerTab,
+} from "./explorer-tab-memory";
+import {
+  usePanelStore,
+  selectPanelVisibility,
+  selectIsAgentListOpen,
+  selectIsFileExplorerOpen,
+  type PanelState,
+  type MobilePanelView,
+} from "./panel-store";
+
+function createPanelState(input: {
+  mobileView: MobilePanelView;
+  agentListOpen: boolean;
+  fileExplorerOpen: boolean;
+}): PanelState {
+  return {
+    mobileView: input.mobileView,
+    desktop: {
+      agentListOpen: input.agentListOpen,
+      fileExplorerOpen: input.fileExplorerOpen,
+      focusModeEnabled: false,
+    },
+  } as PanelState;
+}
 
 describe("panel-store explorer tab resolution", () => {
   const serverId = "server-1";
@@ -41,7 +68,7 @@ describe("panel-store explorer tab resolution", () => {
     ).toBe("files");
   });
 
-  it("restores a stored system monitor tab for git checkouts", () => {
+  it("restores a stored pr tab for git checkouts", () => {
     const key = buildExplorerCheckoutKey(serverId, cwd)!;
     expect(
       resolveExplorerTabForCheckout({
@@ -49,38 +76,10 @@ describe("panel-store explorer tab resolution", () => {
         cwd,
         isGit: true,
         explorerTabByCheckout: {
-          [key]: "system-monitor",
+          [key]: "pr",
         },
       }),
-    ).toBe("system-monitor");
-  });
-
-  it("restores a stored ports tab for git checkouts", () => {
-    const key = buildExplorerCheckoutKey(serverId, cwd)!;
-    expect(
-      resolveExplorerTabForCheckout({
-        serverId,
-        cwd,
-        isGit: true,
-        explorerTabByCheckout: {
-          [key]: "ports",
-        },
-      }),
-    ).toBe("ports");
-  });
-
-  it("restores a stored spotify tab for git checkouts", () => {
-    const key = buildExplorerCheckoutKey(serverId, cwd)!;
-    expect(
-      resolveExplorerTabForCheckout({
-        serverId,
-        cwd,
-        isGit: true,
-        explorerTabByCheckout: {
-          [key]: "spotify",
-        },
-      }),
-    ).toBe("spotify");
+    ).toBe("pr");
   });
 
   it("falls back to default when stored tab is invalid", () => {
@@ -111,7 +110,7 @@ describe("panel-store explorer tab resolution", () => {
     ).toBe("files");
   });
 
-  it("preserves system monitor for non-git checkouts", () => {
+  it("preserves pr for non-git checkouts", () => {
     const key = buildExplorerCheckoutKey(serverId, cwd)!;
     expect(
       resolveExplorerTabForCheckout({
@@ -119,13 +118,13 @@ describe("panel-store explorer tab resolution", () => {
         cwd,
         isGit: false,
         explorerTabByCheckout: {
-          [key]: "system-monitor",
+          [key]: "pr",
         },
       }),
-    ).toBe("system-monitor");
+    ).toBe("pr");
   });
 
-  it("preserves ports for non-git checkouts", () => {
+  it("preserves files for non-git checkouts", () => {
     const key = buildExplorerCheckoutKey(serverId, cwd)!;
     expect(
       resolveExplorerTabForCheckout({
@@ -133,24 +132,10 @@ describe("panel-store explorer tab resolution", () => {
         cwd,
         isGit: false,
         explorerTabByCheckout: {
-          [key]: "ports",
+          [key]: "files",
         },
       }),
-    ).toBe("ports");
-  });
-
-  it("preserves spotify for non-git checkouts", () => {
-    const key = buildExplorerCheckoutKey(serverId, cwd)!;
-    expect(
-      resolveExplorerTabForCheckout({
-        serverId,
-        cwd,
-        isGit: false,
-        explorerTabByCheckout: {
-          [key]: "spotify",
-        },
-      }),
-    ).toBe("spotify");
+    ).toBe("files");
   });
 });
 

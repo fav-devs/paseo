@@ -32,6 +32,7 @@ import { DownloadToast } from "@/components/download-toast";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
 import { LeftSidebar } from "@/components/left-sidebar";
 import { ProjectPickerModal } from "@/components/project-picker-modal";
+import { SpotifyBackgroundManager } from "@/components/spotify-background-manager";
 import { WorkspaceSetupDialog } from "@/components/workspace-setup-dialog";
 import { WorkspaceShortcutTargetsSubscriber } from "@/components/workspace-shortcut-targets-subscriber";
 import { getIsElectronRuntime, useIsCompactFormFactor } from "@/constants/layout";
@@ -40,13 +41,20 @@ import {
   HorizontalScrollProvider,
   useHorizontalScrollOptional,
 } from "@/contexts/horizontal-scroll-context";
-import { getIsElectronRuntime, useIsCompactFormFactor } from "@/constants/layout";
-import { CommandCenter } from "@/components/command-center";
-import { ProjectPickerModal } from "@/components/project-picker-modal";
-import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
-import { SpotifyBackgroundManager } from "@/components/spotify-background-manager";
-import { WorkspaceSetupDialog } from "@/components/workspace-setup-dialog";
-import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { SessionProvider } from "@/contexts/session-context";
+import {
+  SidebarAnimationProvider,
+  useSidebarAnimation,
+} from "@/contexts/sidebar-animation-context";
+import { SidebarCalloutProvider } from "@/contexts/sidebar-callout-context";
+import { ToastProvider } from "@/contexts/toast-context";
+import { VoiceProvider } from "@/contexts/voice-context";
+import { initializeHostRuntime, type StartupNavigationTarget } from "@/app/host-runtime-bootstrap";
+import { shouldUseDesktopDaemon } from "@/desktop/daemon/desktop-daemon";
+import { listenToDesktopEvent } from "@/desktop/electron/events";
+import { updateDesktopWindowControls } from "@/desktop/electron/window";
+import { getDesktopHost } from "@/desktop/host";
+import { UpdateCalloutSource } from "@/desktop/updates/update-callout-source";
 import { useActiveWorktreeNewAction } from "@/hooks/use-active-worktree-new-action";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useFaviconStatus } from "@/hooks/use-favicon-status";

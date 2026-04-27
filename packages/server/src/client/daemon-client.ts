@@ -32,7 +32,6 @@ import type {
   CheckoutPushResponse,
   CheckoutPrCreateResponse,
   CheckoutPrStatusResponse,
-  PullRequestTimelineResponse,
   CheckoutSwitchBranchResponse,
   StashSaveResponse,
   StashPopResponse,
@@ -77,6 +76,8 @@ import type {
   SystemMonitorResponse,
   ForkAgentResponseMessage,
   ProjectActionPayload,
+  PaseoConfigRaw,
+  PaseoConfigRevision,
 } from "../shared/messages.js";
 import type {
   AgentPermissionRequest,
@@ -108,7 +109,6 @@ import {
   type DaemonTransportFactory,
   type WebSocketFactory,
 } from "./daemon-client-transport.js";
-import { DaemonClientRuntimeMetrics } from "./daemon-client-runtime-metrics.js";
 
 export interface Logger {
   debug(obj: object, msg?: string): void;
@@ -119,15 +119,10 @@ export interface Logger {
 
 const consoleLogger: Logger = {
   debug: () => {},
-  info: (obj, msg) => console.log(msg, obj),
+  info: (obj, msg) => console.info(msg, obj),
   warn: (obj, msg) => console.warn(msg, obj),
   error: (obj, msg) => console.error(msg, obj),
 };
-
-const perfNow: () => number =
-  typeof performance !== "undefined" && typeof performance.now === "function"
-    ? () => performance.now()
-    : () => Date.now();
 
 export type {
   DaemonTransport,
@@ -220,8 +215,6 @@ export interface DaemonClientConfig {
     baseDelayMs?: number;
     maxDelayMs?: number;
   };
-  runtimeMetricsIntervalMs?: number;
-  runtimeMetricsWindowMs?: number;
 }
 
 export interface SendMessageOptions {
@@ -248,12 +241,13 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   labels?: Record<string, string>;
 }
 
-export interface CreatePaseoWorktreeInput extends Pick<
-  CreatePaseoWorktreeRequest,
-  "cwd" | "worktreeSlug" | "attachments" | "refName" | "action" | "githubPrNumber"
-> {}
+export interface CreatePaseoWorktreeInput
+  extends Pick<
+    CreatePaseoWorktreeRequest,
+    "cwd" | "worktreeSlug" | "attachments" | "refName" | "action" | "githubPrNumber"
+  > {}
 
-export type ForkAgentOptions = {
+export interface ForkAgentOptions {
   /** ID of the agent whose conversation will be used as context. */
   sourceAgentId: string;
   /** Provider for the new agent. */
@@ -273,7 +267,7 @@ export type ForkAgentOptions = {
   /** Optional first message sent to the new agent immediately after creation. */
   initialPrompt?: string;
   requestId?: string;
-};
+}
 
 type ForkAgentResponsePayload = ForkAgentResponseMessage["payload"];
 
@@ -291,7 +285,6 @@ type CheckoutPullPayload = CheckoutPullResponse["payload"];
 type CheckoutPushPayload = CheckoutPushResponse["payload"];
 type CheckoutPrCreatePayload = CheckoutPrCreateResponse["payload"];
 type CheckoutPrStatusPayload = CheckoutPrStatusResponse["payload"];
-type PullRequestTimelinePayload = PullRequestTimelineResponse["payload"];
 type CheckoutSwitchBranchPayload = CheckoutSwitchBranchResponse["payload"];
 type StashSavePayload = StashSaveResponse["payload"];
 type StashPopPayload = StashPopResponse["payload"];
@@ -325,17 +318,17 @@ type WriteProjectConfigPayload = Extract<
   SessionOutboundMessage,
   { type: "write_project_config_response" }
 >["payload"];
-type ListCommandsPayload = ListCommandsResponse["payload"];
-type ListCommandsDraftConfig = Pick<
-  AgentSessionConfig,
-  "provider" | "cwd" | "modeId" | "model" | "thinkingOptionId" | "featureValues"
->;
 export interface WriteProjectConfigInput {
   repoRoot: string;
   config: PaseoConfigRaw;
   expectedRevision: PaseoConfigRevision | null;
   requestId?: string;
 }
+type ListCommandsPayload = ListCommandsResponse["payload"];
+type ListCommandsDraftConfig = Pick<
+  AgentSessionConfig,
+  "provider" | "cwd" | "modeId" | "model" | "thinkingOptionId" | "featureValues"
+>;
 interface ListCommandsOptions {
   requestId?: string;
   draftConfig?: ListCommandsDraftConfig;
@@ -735,7 +728,8 @@ export class DaemonClient {
     Set<(message: SessionOutboundMessage) => void>
   > = new Map();
   private eventListeners: Set<DaemonEventHandler> = new Set();
-  private waiters: Set<Waiter<unknown>> = new Set();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private waiters: Set<Waiter<any>> = new Set();
   private checkoutStatusInFlight: Map<string, Promise<CheckoutStatusPayload>> = new Map();
   private connectionListeners: Set<(status: ConnectionState) => void> = new Set();
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -767,8 +761,6 @@ export class DaemonClient {
   private readonly logClientIdHash: string;
   private readonly logGeneration: number | null;
   private lastServerInfoMessage: ServerInfoStatusPayload | null = null;
-  private runtimeMetricsInterval: ReturnType<typeof setInterval> | null = null;
-  private runtimeMetrics: DaemonClientRuntimeMetrics | null = null;
 
   constructor(private config: DaemonClientConfig) {
     this.logger = config.logger ?? consoleLogger;
@@ -792,28 +784,6 @@ export class DaemonClient {
       Number.isFinite(this.config.runtimeGeneration)
         ? this.config.runtimeGeneration
         : null;
-    const runtimeMetricsIntervalMs =
-      typeof config.runtimeMetricsIntervalMs === "number" && config.runtimeMetricsIntervalMs > 0
-        ? config.runtimeMetricsIntervalMs
-        : 0;
-    if (runtimeMetricsIntervalMs > 0) {
-      const runtimeMetricsWindowMs =
-        typeof config.runtimeMetricsWindowMs === "number" && config.runtimeMetricsWindowMs > 0
-          ? Math.max(config.runtimeMetricsWindowMs, runtimeMetricsIntervalMs)
-          : undefined;
-      this.runtimeMetrics = new DaemonClientRuntimeMetrics(
-        this.logger,
-        {
-          connectionPath: this.logConnectionPath,
-          serverId: this.logServerId,
-          getConnectionStatus: () => this.connectionState.status,
-        },
-        runtimeMetricsWindowMs ? { windowMs: runtimeMetricsWindowMs } : undefined,
-      );
-      this.runtimeMetricsInterval = setInterval(() => {
-        this.runtimeMetrics?.flush();
-      }, runtimeMetricsIntervalMs);
-    }
   }
 
   // ============================================================================
@@ -1024,12 +994,6 @@ export class DaemonClient {
     this.rejectPendingSendQueue(new Error("Daemon client closed"));
     this.clearTerminalSlots();
     this.lastServerInfoMessage = null;
-    if (this.runtimeMetricsInterval) {
-      clearInterval(this.runtimeMetricsInterval);
-      this.runtimeMetricsInterval = null;
-      this.runtimeMetrics?.flush({ final: true });
-      this.runtimeMetrics = null;
-    }
     this.updateConnectionState(
       { status: "disposed" },
       { event: "DISPOSE", reason: "Client closed", reasonCode: "disposed" },
@@ -1447,7 +1411,6 @@ export class DaemonClient {
     const message = SessionInboundMessageSchema.parse({
       type: "fetch_agents_request",
       requestId: resolvedRequestId,
-      ...(options?.scope ? { scope: options.scope } : {}),
       ...(options?.filter ? { filter: options.filter } : {}),
       ...(options?.sort ? { sort: options.sort } : {}),
       ...(options?.page ? { page: options.page } : {}),
@@ -2748,7 +2711,9 @@ export class DaemonClient {
   async pullRequestTimeline(
     input: { cwd: string; prNumber: number; repoOwner: string; repoName: string },
     requestId?: string,
-  ): Promise<PullRequestTimelinePayload> {
+  ): Promise<
+    Extract<SessionOutboundMessage, { type: "pull_request_timeline_response" }>["payload"]
+  > {
     return this.sendCorrelatedSessionRequest({
       requestId,
       message: {
@@ -3268,6 +3233,32 @@ export class DaemonClient {
     });
   }
 
+  async readProjectConfig(repoRoot: string, requestId?: string): Promise<ReadProjectConfigPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "read_project_config_request",
+        repoRoot,
+      },
+      responseType: "read_project_config_response",
+      timeout: 10000,
+    });
+  }
+
+  async writeProjectConfig(input: WriteProjectConfigInput): Promise<WriteProjectConfigPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: input.requestId,
+      message: {
+        type: "write_project_config_request",
+        repoRoot: input.repoRoot,
+        config: input.config,
+        expectedRevision: input.expectedRevision,
+      },
+      responseType: "write_project_config_response",
+      timeout: 10000,
+    });
+  }
+
   async refreshProvidersSnapshot(options?: {
     cwd?: string;
     providers?: AgentProvider[];
@@ -3446,6 +3437,9 @@ export class DaemonClient {
 
       unsubscribe = this.on("agent_update", (message) => {
         if (settled) {
+          return;
+        }
+        if (message.type !== "agent_update") {
           return;
         }
         if (message.payload.kind !== "upsert") {
@@ -4209,6 +4203,7 @@ export class DaemonClient {
     }
   }
 
+  // eslint-disable-next-line complexity
   private handleTransportMessageImpl(data: unknown): void {
     const rawData =
       data && typeof data === "object" && "data" in data ? (data as { data: unknown }).data : data;
@@ -4226,6 +4221,7 @@ export class DaemonClient {
           } catch (error) {
             this.onTransportMessageError(error);
           }
+          return undefined;
         })
         .catch((error) => {
           this.onTransportMessageError(error);
@@ -4234,15 +4230,17 @@ export class DaemonClient {
     }
 
     const rawBytes = asUint8Array(rawData);
-    if (rawBytes && this.tryHandleBinaryFrame(rawBytes)) {
-      return;
+    if (rawBytes) {
+      const frame = decodeTerminalStreamFrame(rawBytes);
+      if (frame) {
+        this.handleBinaryFrame(frame);
+        return;
+      }
     }
     const payload = decodeMessageData(rawData);
     if (!payload) {
       return;
     }
-    this.handleJsonPayload(payload, rawBytes?.byteLength);
-  }
 
     if (payload.length > DaemonClient.MAX_WS_TEXT_PAYLOAD_CHARS) {
       throw new Error("WebSocket text message too large");
@@ -4256,6 +4254,7 @@ export class DaemonClient {
       if (msg.includes("stack") || msg.includes("Maximum call stack")) {
         throw new Error(
           "Server sent JSON the client could not parse (payload may be too deeply nested).",
+          { cause: error },
         );
       }
       return;
@@ -4282,37 +4281,10 @@ export class DaemonClient {
     }
 
     if (parsed.data.type === "pong") {
-      this.runtimeMetrics?.recordMessage("pong", bytes, perfNow() - startMs);
       return;
     }
 
     this.handleSessionMessage(parsed.data.message);
-    const msgType = parsed.data.message.type;
-    this.runtimeMetrics?.recordMessage(msgType, bytes, perfNow() - startMs);
-    if (parsed.data.message.type === "agent_stream") {
-      this.runtimeMetrics?.recordAgentStream(parsed.data.message.payload);
-    }
-  }
-
-  private tryHandleBinaryFrame(rawBytes: Uint8Array): boolean {
-    const frame = decodeTerminalStreamFrame(rawBytes);
-    if (!frame) {
-      return false;
-    }
-    const binaryStartMs = perfNow();
-    this.handleBinaryFrame(frame);
-    let frameKind: "output" | "snapshot" | "other" = "other";
-    if (frame.opcode === TerminalStreamOpcode.Output) {
-      frameKind = "output";
-    } else if (frame.opcode === TerminalStreamOpcode.Snapshot) {
-      frameKind = "snapshot";
-    }
-    this.runtimeMetrics?.recordBinaryFrame(
-      frameKind,
-      rawBytes.byteLength,
-      perfNow() - binaryStartMs,
-    );
-    return true;
   }
 
   private handleBinaryFrame(frame: TerminalStreamFrame): void {
@@ -4390,6 +4362,7 @@ export class DaemonClient {
     this.config = { ...this.config, reconnect: { ...this.config.reconnect, enabled } };
   }
 
+  // eslint-disable-next-line complexity
   private scheduleReconnect(input?: {
     reason?: string;
     event?: string;
@@ -4417,19 +4390,6 @@ export class DaemonClient {
       this.rejectConnect(new Error(reason ?? "Daemon client is disposed"));
       return;
     }
-    this.emitDisconnectedStateForReconnect(reason, input);
-    if (!this.shouldReconnect || this.config.reconnect?.enabled === false) {
-      this.rejectConnect(new Error(reason ?? "Transport disconnected before connect"));
-      return;
-    }
-
-    this.armReconnectTimer();
-  }
-
-  private emitDisconnectedStateForReconnect(
-    reason: string | undefined,
-    input: { reason?: string; event?: string; reasonCode?: string } | undefined,
-  ): void {
     this.updateConnectionState(
       {
         status: "disconnected",
@@ -4441,9 +4401,11 @@ export class DaemonClient {
         ...(input?.reasonCode ? { reasonCode: input.reasonCode } : {}),
       },
     );
-  }
+    if (!this.shouldReconnect || this.config.reconnect?.enabled === false) {
+      this.rejectConnect(new Error(reason ?? "Transport disconnected before connect"));
+      return;
+    }
 
-  private armReconnectTimer(): void {
     const attempt = this.reconnectAttempt;
     const baseDelay = this.config.reconnect?.baseDelayMs ?? DEFAULT_RECONNECT_BASE_DELAY_MS;
     const maxDelay = this.config.reconnect?.maxDelayMs ?? DEFAULT_RECONNECT_MAX_DELAY_MS;
@@ -4637,7 +4599,7 @@ export class DaemonClient {
         timeout > 0
           ? setTimeout(() => {
               if (waiter) {
-                this.waiters.delete(waiter as Waiter<unknown>);
+                this.waiters.delete(waiter);
               }
               wrappedReject(timeoutError);
             }, timeout)
@@ -4649,7 +4611,7 @@ export class DaemonClient {
         reject: wrappedReject,
         timeoutHandle,
       };
-      this.waiters.add(waiter as Waiter<unknown>);
+      this.waiters.add(waiter);
     });
 
     const cancel = (error: Error) => {
@@ -4658,7 +4620,7 @@ export class DaemonClient {
       }
 
       if (waiter) {
-        this.waiters.delete(waiter as Waiter<unknown>);
+        this.waiters.delete(waiter);
         if (waiter.timeoutHandle) {
           clearTimeout(waiter.timeoutHandle);
         }

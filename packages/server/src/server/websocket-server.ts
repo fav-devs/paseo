@@ -408,6 +408,7 @@ export class VoiceAssistantWebSocketServer {
   private unsubscribeSpeechReadiness: (() => void) | null = null;
   private unsubscribeDaemonConfigChange: (() => void) | null = null;
 
+  // eslint-disable-next-line complexity
   constructor(
     server: HTTPServer,
     logger: pino.Logger,
@@ -490,6 +491,14 @@ export class VoiceAssistantWebSocketServer {
     this.dictation = dictation ?? null;
     this.agentProviderRuntimeSettings = agentProviderRuntimeSettings;
     this.providerOverrides = providerOverrides;
+    this.isDev = isDev === true;
+    this.onLifecycleIntent = onLifecycleIntent ?? null;
+    this.onBranchChanged = onBranchChanged ?? null;
+    this.scriptRouteStore = scriptRouteStore ?? null;
+    this.scriptRuntimeStore = scriptRuntimeStore ?? null;
+    this.getDaemonTcpPort = getDaemonTcpPort ?? null;
+    this.getDaemonTcpHost = getDaemonTcpHost ?? null;
+    this.resolveScriptHealth = resolveScriptHealth ?? null;
     const providerSnapshotLogger = this.logger.child({ module: "provider-snapshot-manager" });
     this.providerSnapshotManager = new ProviderSnapshotManager(
       buildProviderRegistry(providerSnapshotLogger, {
@@ -536,38 +545,6 @@ export class VoiceAssistantWebSocketServer {
     this.startRuntimeMetricsInterval();
 
     this.logger.info("WebSocket server initialized on /ws");
-  }
-
-  private assignOptionalServices(params: {
-    speech: SpeechService | null | undefined;
-    terminalManager: TerminalManager | null | undefined;
-    dictation: { finalTimeoutMs?: number } | undefined;
-    agentProviderRuntimeSettings: AgentProviderRuntimeSettingsMap | undefined;
-    providerOverrides: Record<string, ProviderOverride> | undefined;
-    isDev: boolean | undefined;
-    onLifecycleIntent: ((intent: SessionLifecycleIntent) => void) | undefined;
-    scriptRouteStore: ScriptRouteStore | null | undefined;
-    scriptRuntimeStore: WorkspaceScriptRuntimeStore | null | undefined;
-    onBranchChanged:
-      | ((workspaceId: string, oldBranch: string | null, newBranch: string | null) => void)
-      | undefined;
-    getDaemonTcpPort: (() => number | null) | undefined;
-    getDaemonTcpHost: (() => string | null) | undefined;
-    resolveScriptHealth: ((hostname: string) => ScriptHealthState | null) | undefined;
-  }): void {
-    this.speech = params.speech ?? null;
-    this.terminalManager = params.terminalManager ?? null;
-    this.dictation = params.dictation ?? null;
-    this.agentProviderRuntimeSettings = params.agentProviderRuntimeSettings;
-    this.providerOverrides = params.providerOverrides;
-    this.isDev = params.isDev === true;
-    this.onLifecycleIntent = params.onLifecycleIntent ?? null;
-    this.scriptRouteStore = params.scriptRouteStore ?? null;
-    this.scriptRuntimeStore = params.scriptRuntimeStore ?? null;
-    this.onBranchChanged = params.onBranchChanged ?? null;
-    this.getDaemonTcpPort = params.getDaemonTcpPort ?? null;
-    this.getDaemonTcpHost = params.getDaemonTcpHost ?? null;
-    this.resolveScriptHealth = params.resolveScriptHealth ?? null;
   }
 
   private createWebSocketServer(

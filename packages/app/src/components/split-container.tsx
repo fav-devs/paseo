@@ -89,18 +89,8 @@ interface SplitContainerProps {
   onCloseTabsToLeft: (tabId: string, paneTabs: WorkspaceTabDescriptor[]) => Promise<void> | void;
   onCloseTabsToRight: (tabId: string, paneTabs: WorkspaceTabDescriptor[]) => Promise<void> | void;
   onCloseOtherTabs: (tabId: string, paneTabs: WorkspaceTabDescriptor[]) => Promise<void> | void;
-  onSelectNewTabOption?: (selection: {
-    optionId: "__new_tab_agent__" | "__new_tab_terminal__" | "__new_tab_port_forwards__";
-    paneId?: string;
-  }) => void;
-  onNewTerminalTab?: (input: { paneId?: string }) => void;
-  newTabAgentOptionId?: "__new_tab_agent__" | "__new_tab_terminal__" | "__new_tab_port_forwards__";
-  newTabPortForwardsOptionId?:
-    | "__new_tab_agent__"
-    | "__new_tab_terminal__"
-    | "__new_tab_port_forwards__";
-  onCreateDraftTab?: (input: { paneId?: string }) => void;
-  onCreateTerminalTab?: (input: { paneId?: string }) => void;
+  onCreateDraftTab: (input: { paneId?: string }) => void;
+  onCreateTerminalTab: (input: { paneId?: string }) => void;
   buildPaneContentModel: (input: {
     paneId: string;
     tab: WorkspaceTabDescriptor;
@@ -143,16 +133,17 @@ interface SplitNodeViewProps extends Omit<SplitContainerProps, "layout" | "onMov
   tabDropPreview: TabDropPreview | null;
 }
 
-interface SplitPaneViewProps extends Omit<
-  SplitNodeViewProps,
-  | "node"
-  | "workspaceKey"
-  | "focusedPaneId"
-  | "activeDragTabId"
-  | "showDropZones"
-  | "dropPreview"
-  | "onResizeSplit"
-> {
+interface SplitPaneViewProps
+  extends Omit<
+    SplitNodeViewProps,
+    | "node"
+    | "workspaceKey"
+    | "focusedPaneId"
+    | "activeDragTabId"
+    | "showDropZones"
+    | "dropPreview"
+    | "onResizeSplit"
+  > {
   pane: SplitPane;
   uiTabs: WorkspaceTab[];
   isFocused: boolean;
@@ -347,10 +338,6 @@ export function SplitContainer({
   onCloseTabsToLeft,
   onCloseTabsToRight,
   onCloseOtherTabs,
-  onSelectNewTabOption,
-  onNewTerminalTab,
-  newTabAgentOptionId = "__new_tab_agent__",
-  newTabPortForwardsOptionId = "__new_tab_port_forwards__",
   onCreateDraftTab,
   onCreateTerminalTab,
   buildPaneContentModel,
@@ -569,10 +556,6 @@ export function SplitContainer({
         onCloseTabsToLeft={onCloseTabsToLeft}
         onCloseTabsToRight={onCloseTabsToRight}
         onCloseOtherTabs={onCloseOtherTabs}
-        onSelectNewTabOption={onSelectNewTabOption}
-        onNewTerminalTab={onNewTerminalTab}
-        newTabAgentOptionId={newTabAgentOptionId}
-        newTabPortForwardsOptionId={newTabPortForwardsOptionId}
         onCreateDraftTab={onCreateDraftTab}
         onCreateTerminalTab={onCreateTerminalTab}
         buildPaneContentModel={buildPaneContentModel}
@@ -710,10 +693,6 @@ function SplitNodeView({
   onCloseTabsToLeft,
   onCloseTabsToRight,
   onCloseOtherTabs,
-  onSelectNewTabOption,
-  onNewTerminalTab,
-  newTabAgentOptionId,
-  newTabPortForwardsOptionId,
   onCreateDraftTab,
   onCreateTerminalTab,
   buildPaneContentModel,
@@ -764,10 +743,6 @@ function SplitNodeView({
         onCloseTabsToLeft={onCloseTabsToLeft}
         onCloseTabsToRight={onCloseTabsToRight}
         onCloseOtherTabs={onCloseOtherTabs}
-        onSelectNewTabOption={onSelectNewTabOption}
-        onNewTerminalTab={onNewTerminalTab}
-        newTabAgentOptionId={newTabAgentOptionId}
-        newTabPortForwardsOptionId={newTabPortForwardsOptionId}
         onCreateDraftTab={onCreateDraftTab}
         onCreateTerminalTab={onCreateTerminalTab}
         buildPaneContentModel={buildPaneContentModel}
@@ -860,10 +835,6 @@ function SplitPaneView({
   onCloseTabsToLeft,
   onCloseTabsToRight,
   onCloseOtherTabs,
-  onSelectNewTabOption,
-  onNewTerminalTab,
-  newTabAgentOptionId,
-  newTabPortForwardsOptionId,
   onCreateDraftTab,
   onCreateTerminalTab,
   buildPaneContentModel,
@@ -1002,13 +973,9 @@ function SplitPaneView({
           onCopyResumeCommand={onCopyResumeCommand}
           onCopyAgentId={onCopyAgentId}
           onReloadAgent={onReloadAgent}
-          onCloseTabsToLeft={(tabId) => onCloseTabsToLeft(tabId, paneTabs)}
-          onCloseTabsToRight={(tabId) => onCloseTabsToRight(tabId, paneTabs)}
-          onCloseOtherTabs={(tabId) => onCloseOtherTabs(tabId, paneTabs)}
-          onSelectNewTabOption={onSelectNewTabOption}
-          onNewTerminalTab={onNewTerminalTab}
-          newTabAgentOptionId={newTabAgentOptionId ?? "__new_tab_agent__"}
-          newTabPortForwardsOptionId={newTabPortForwardsOptionId ?? "__new_tab_port_forwards__"}
+          onCloseTabsToLeft={handleCloseTabsToLeft}
+          onCloseTabsToRight={handleCloseTabsToRight}
+          onCloseOtherTabs={handleCloseOtherTabs}
           onCreateDraftTab={onCreateDraftTab}
           onCreateTerminalTab={onCreateTerminalTab}
           onReorderTabs={handleReorderTabs}
