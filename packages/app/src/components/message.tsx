@@ -79,7 +79,6 @@ import {
 } from "@/utils/inline-path";
 import { getMarkdownListMarker } from "@/utils/markdown-list";
 import { openExternalUrl } from "@/utils/open-external-url";
-import { markScrollInvestigationEvent } from "@/utils/scroll-jank";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
 import {
   getAssistantImageMetadata,
@@ -102,29 +101,6 @@ import { isWeb, isNative } from "@/constants/platform";
 export type { InlinePathTarget } from "@/utils/inline-path";
 
 type MarkdownStyles = Record<string, TextStyle & ViewStyle & { [key: string]: unknown }>;
-
-function useMessageRenderTracker(
-  label: string,
-  identity: string,
-  watched: Record<string, unknown>,
-): void {
-  const renderCountRef = useRef(0);
-  const prevRef = useRef<Record<string, unknown> | null>(null);
-  renderCountRef.current += 1;
-  const changed: string[] = [];
-  if (prevRef.current !== null) {
-    for (const key of Object.keys(watched)) {
-      if (!Object.is(prevRef.current[key], watched[key])) {
-        changed.push(key);
-      }
-    }
-  }
-  prevRef.current = { ...watched };
-  console.log(`[${label}]`, identity, `render #${renderCountRef.current}`, {
-    isFirst: renderCountRef.current === 1,
-    changed,
-  });
-}
 
 interface UserMessageProps {
   message: string;
@@ -342,6 +318,7 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
     flexDirection: "row",
     justifyContent: "flex-end",
     paddingHorizontal: theme.spacing[2],
+    userSelect: isWeb ? "text" : "auto",
   },
   content: {
     alignItems: "flex-end",
@@ -425,13 +402,6 @@ export const UserMessage = memo(function UserMessage({
   isLastInGroup = true,
   disableOuterSpacing,
 }: UserMessageProps) {
-  useMessageRenderTracker("UserMessage", `${(message ?? "").slice(0, 16)}`, {
-    message,
-    images,
-    isFirstInGroup,
-    isLastInGroup,
-    disableOuterSpacing,
-  });
   const isCompact = useIsCompactFormFactor();
   const [messageHovered, setMessageHovered] = useState(false);
   const [copyButtonHovered, setCopyButtonHovered] = useState(false);
@@ -523,6 +493,7 @@ export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
   container: {
     paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[3],
+    userSelect: isWeb ? "text" : "auto",
   },
   containerCompactTop: {
     paddingTop: 0,
@@ -1060,7 +1031,6 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     color: "transparent",
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
-    flexShrink: 1,
   },
   spacer: {
     flex: 1,
@@ -1074,6 +1044,10 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     padding: theme.spacing[1],
     borderRadius: theme.borderRadius.md,
     flexShrink: 0,
+  },
+  openFileButtonPlaceholderIcon: {
+    width: 14,
+    height: 14,
   },
   chevronExpanded: {
     transform: [{ rotate: "90deg" }],
@@ -1380,19 +1354,6 @@ export const AssistantMessage = memo(function AssistantMessage({
   disableOuterSpacing,
   spacing = "default",
 }: AssistantMessageProps) {
-  useMessageRenderTracker(
-    "AssistantMessage",
-    `${serverId ?? "?"}/${(message ?? "").slice(0, 16)}`,
-    {
-      message,
-      onInlinePathPress,
-      workspaceRoot,
-      serverId,
-      client,
-      disableOuterSpacing,
-      spacing,
-    },
-  );
   const resolvedDisableOuterSpacing = useDisableOuterSpacing(
     disableOuterSpacing ?? spacing !== "default",
   );
@@ -2138,6 +2099,7 @@ interface ExpandableBadgeWebShimmerOverlayProps {
   secondaryLabel?: string;
   shimmerLabelTextStyle: StyleProp<TextStyle>;
   shimmerSecondaryTextStyle: StyleProp<TextStyle>;
+  showOpenFileButton: boolean;
 }
 
 function ExpandableBadgeWebShimmerOverlay({
@@ -2145,6 +2107,7 @@ function ExpandableBadgeWebShimmerOverlay({
   secondaryLabel,
   shimmerLabelTextStyle,
   shimmerSecondaryTextStyle,
+  showOpenFileButton,
 }: ExpandableBadgeWebShimmerOverlayProps) {
   return (
     <View style={expandableBadgeStylesheet.shimmerOverlay} pointerEvents="none">
@@ -2155,9 +2118,15 @@ function ExpandableBadgeWebShimmerOverlay({
         <Text style={shimmerSecondaryTextStyle} numberOfLines={1}>
           {secondaryLabel}
         </Text>
-      ) : (
+      ) : null}
+      {showOpenFileButton ? (
+        <View style={expandableBadgeStylesheet.openFileButton}>
+          <View style={expandableBadgeStylesheet.openFileButtonPlaceholderIcon} />
+        </View>
+      ) : null}
+      {!secondaryLabel && !showOpenFileButton ? (
         <View style={expandableBadgeStylesheet.spacer} />
-      )}
+      ) : null}
     </View>
   );
 }
@@ -2254,6 +2223,7 @@ function ExpandableBadgeLabelRow({
           secondaryLabel={secondaryLabel}
           shimmerLabelTextStyle={shimmerLabelTextStyle}
           shimmerSecondaryTextStyle={shimmerSecondaryTextStyle}
+          showOpenFileButton={showOpenFileButton}
         />
       ) : null}
       {isNativeShimmer ? (
@@ -2361,9 +2331,8 @@ function computeShimmerMetrics(input: {
 function useDetailWheelPropagationBlocker(input: {
   detailWrapperRef: React.RefObject<View | null>;
   enabled: boolean;
-  wheelInvestigationComponentId: string;
 }): void {
-  const { detailWrapperRef, enabled, wheelInvestigationComponentId } = input;
+  const { detailWrapperRef, enabled } = input;
   useEffect(() => {
     if (!enabled) {
       return;
@@ -2377,13 +2346,11 @@ function useDetailWheelPropagationBlocker(input: {
         event.stopPropagation();
       }
     };
-    markScrollInvestigationEvent(wheelInvestigationComponentId, "wheelAttach");
     node.addEventListener("wheel", stopWheelPropagation, { passive: true });
     return () => {
-      markScrollInvestigationEvent(wheelInvestigationComponentId, "wheelDetach");
       node.removeEventListener("wheel", stopWheelPropagation);
     };
-  }, [detailWrapperRef, enabled, wheelInvestigationComponentId]);
+  }, [detailWrapperRef, enabled]);
 }
 
 const SHIMMER_GRADIENT =
@@ -2438,7 +2405,6 @@ const ExpandableBadge = memo(function ExpandableBadge({
   const hasDetailContent = Boolean(renderDetails);
   const detailContent = hasDetailContent && isExpanded ? renderDetails?.() : null;
   const detailWrapperRef = useRef<View | null>(null);
-  const wheelInvestigationComponentId = `ExpandableBadgeWheel:${testID ?? label}`;
 
   const handleHoverIn = useCallback(() => setIsHovered(true), []);
   const handleHoverOut = useCallback(() => {
@@ -2542,7 +2508,6 @@ const ExpandableBadge = memo(function ExpandableBadge({
   useDetailWheelPropagationBlocker({
     detailWrapperRef,
     enabled: !isNative && isExpanded && hasDetailContent,
-    wheelInvestigationComponentId,
   });
 
   const shimmerLabelStyle = useMemo(
@@ -2785,21 +2750,6 @@ export const ToolCall = memo(function ToolCall({
   onInlineDetailsExpandedChange,
   onOpenFilePath,
 }: ToolCallProps) {
-  useMessageRenderTracker("ToolCall", `${toolName}/${status}`, {
-    toolName,
-    args,
-    result,
-    error,
-    status,
-    detail,
-    cwd,
-    metadata,
-    isLastInSequence,
-    disableOuterSpacing,
-    onInlineDetailsHoverChange,
-    onInlineDetailsExpandedChange,
-    onOpenFilePath,
-  });
   const { openToolCall } = useToolCallSheet();
   const [isExpanded, setIsExpanded] = useState(false);
 

@@ -1,27 +1,49 @@
 # Changelog
 
-## 0.1.63-beta.3 - 2026-04-26
+## 0.1.64 - 2026-04-28
+
+### Added
+
+- OpenCode now has a Full Access mode that auto-approves tool calls. ([#595](https://github.com/getpaseo/paseo/pull/595) by [@tmih06](https://github.com/tmih06))
+- OpenCode supports executable slash commands. ([#597](https://github.com/getpaseo/paseo/pull/597) by [@tmih06](https://github.com/tmih06))
+
+### Improved
+
+- `@`-mention stays responsive on very large projects. ([#600](https://github.com/getpaseo/paseo/pull/600) by [@yuruiz](https://github.com/yuruiz))
+
+### Fixed
+
+- Workspaces still load when `paseo.json` has a parse error.
+
+## 0.1.63 - 2026-04-28
 
 ### Added
 
 - Project settings page with a built-in `paseo.json` editor.
 - Cold start restores your last open workspace.
 - Tool call badges have a button to open the referenced file directly.
+- Open the current branch on GitHub from a workspace's open menu. ([#583](https://github.com/getpaseo/paseo/pull/583) by [@Myriad-Dreamin](https://github.com/Myriad-Dreamin))
 - Enable or disable providers from Settings without editing config files.
 - Paseo prompts you to configure a worktree setup script when one is missing.
+- Choose whether the daemon shuts down when you close the desktop app.
 
 ### Improved
 
-- Provider settings and model selection have been redesigned, with switches replacing toggle buttons.
+- Provider settings and model selection have been redesigned.
+- Voice mode transcription endpoint is configurable for OpenAI-compatible providers. ([#570](https://github.com/getpaseo/paseo/pull/570) by [@yuruiz](https://github.com/yuruiz))
 - Adding a project no longer waits for GitHub PR status to load.
 - Startup splash screen is cleaner — just the logo with a subtle shimmer.
-- Desktop quit flow is smoother with a clearer shutdown dialog.
 - `paseo.json` setup and teardown accept a single command string, not just an array.
 - Archiving a worktree is instant instead of waiting for the backend to confirm.
 - Agent timelines and git diff lists no longer jump around while loading or streaming.
 
 ### Fixed
 
+- `paseo loop run` and `paseo run` now respect the `--provider` and `--model` flags. ([#594](https://github.com/getpaseo/paseo/pull/594) by [@VincenzoRocchi](https://github.com/VincenzoRocchi))
+- Pi provider shows up when only DeepSeek or other non-OpenAI/Anthropic/OpenRouter API keys are set.
+- Custom models from `additionalModels` and `profileModels` are honored when picking a default for new agents.
+- File preview line numbers stay on one line past line 99.
+- Cmd+Q on macOS quits the desktop app instead of leaving it running in the background.
 - Terminal sessions recover cleanly after rendering hiccups, including the initial resize for nvim.
 - Terminal protocol query responses no longer leak into the browser.
 - Assistant link color matches the theme again.
@@ -31,6 +53,10 @@
 - Agents from disabled or unavailable providers stay visible in history.
 - New CLI agents now require a provider instead of failing silently.
 - Git diff headers no longer truncate.
+- Provider diagnostic modal scrolls on short screens.
+- Provider diagnostics show the real error and underlying child-process output instead of a generic message.
+- Archived workspaces no longer interfere with working-directory resolution.
+- Triple-click on a message no longer extends the selection into adjacent bubbles.
 - The packaged desktop app preserves your zsh prompt.
 
 ## 0.1.62 - 2026-04-23

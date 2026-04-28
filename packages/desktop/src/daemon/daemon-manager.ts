@@ -356,11 +356,20 @@ async function startDaemon(): Promise<DesktopDaemonStatus> {
     daemonRunnerExecArgv: daemonRunner.execArgv,
     command: invocation.command,
     args: invocation.args,
+    electronRunAsNode: invocation.env.ELECTRON_RUN_AS_NODE ?? null,
+    parentExecPath: process.execPath,
+    parentElectronRunAsNode: process.env.ELECTRON_RUN_AS_NODE ?? null,
+    electronVersion: process.versions.electron ?? null,
+    nodeVersion: process.versions.node,
+    platform: process.platform,
+    arch: process.arch,
   });
 
   const child: ChildProcess = spawnProcess(invocation.command, invocation.args, {
     detached: true,
-    env: { ...invocation.env, PASEO_DESKTOP_MANAGED: "1" },
+    envMode: "internal",
+    env: invocation.env,
+    envOverlay: { PASEO_DESKTOP_MANAGED: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -408,13 +417,13 @@ async function startDaemon(): Promise<DesktopDaemonStatus> {
   logDesktopDaemonLifecycle("detached startup grace period completed", {
     childPid: child.pid ?? null,
     exitedEarly: result.exitedEarly,
+    stdout: stdout.slice(0, 2000),
+    stderr: stderr.slice(0, 2000),
     ...(result.exitedEarly
       ? {
           exitCode: result.code,
           signal: result.signal,
           error: result.error?.message ?? null,
-          stdout: stdout.slice(0, 2000),
-          stderr: stderr.slice(0, 2000),
         }
       : {}),
   });

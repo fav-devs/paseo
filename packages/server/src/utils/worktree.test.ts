@@ -11,6 +11,7 @@ import {
   isServiceScript,
   isPaseoOwnedWorktreeCwd,
   listPaseoWorktrees,
+  readPaseoConfig,
   resolveWorktreeRuntimeEnv,
   type WorktreeSetupCommandProgressEvent,
   runWorktreeSetupCommands,
@@ -18,6 +19,12 @@ import {
   type CreateWorktreeOptions,
   type WorktreeConfig,
 } from "./worktree";
+import type { PaseoConfig } from "./paseo-config-schema.js";
+
+function loadConfigForTest(repoRoot: string): PaseoConfig | null {
+  const result = readPaseoConfig(repoRoot);
+  return result.ok ? result.config : null;
+}
 import { getPaseoWorktreeMetadataPath } from "./worktree-metadata.js";
 import { execSync } from "child_process";
 import {
@@ -707,7 +714,7 @@ describe.skipIf(process.platform === "win32")("createWorktree", () => {
       }),
     );
 
-    const scriptConfigs = getScriptConfigs(repoDir);
+    const scriptConfigs = getScriptConfigs(loadConfigForTest(repoDir));
     const typecheck = scriptConfigs.get("typecheck");
 
     expect(typecheck).toEqual({
@@ -731,7 +738,7 @@ describe.skipIf(process.platform === "win32")("createWorktree", () => {
       }),
     );
 
-    const scriptConfigs = getScriptConfigs(repoDir);
+    const scriptConfigs = getScriptConfigs(loadConfigForTest(repoDir));
     const server = scriptConfigs.get("server");
 
     expect(server).toEqual({
@@ -771,13 +778,73 @@ describe.skipIf(process.platform === "win32")("createWorktree", () => {
       }),
     );
 
-    expect(getScriptConfigs(repoDir)).toEqual(
+    expect(getScriptConfigs(loadConfigForTest(repoDir))).toEqual(
       new Map([
         ["valid", { command: "npm run valid" }],
         ["invalidType", { command: "npm run worker" }],
         ["invalidPort", { type: "service", command: "npm run dev" }],
       ]),
     );
+  });
+
+  it("seeds an uncommitted paseo.json from the main repo into a new worktree", async () => {
+    writeFileSync(
+      join(repoDir, "paseo.json"),
+      JSON.stringify({ scripts: { dev: { command: "echo hi" } } }),
+    );
+
+    const result = await createLegacyWorktreeForTest({
+      cwd: repoDir,
+      worktreeSlug: "seed-uncommitted",
+      source: { kind: "branch-off", baseBranch: "main", newBranchName: "feature/seed" },
+      runSetup: false,
+      paseoHome,
+    });
+
+    const worktreeConfigPath = join(result.worktreePath, "paseo.json");
+    expect(existsSync(worktreeConfigPath)).toBe(true);
+    expect(JSON.parse(readFileSync(worktreeConfigPath, "utf8"))).toEqual({
+      scripts: { dev: { command: "echo hi" } },
+    });
+  });
+
+  it("does not overwrite a committed paseo.json with uncommitted edits in the main repo", async () => {
+    writeFileSync(
+      join(repoDir, "paseo.json"),
+      JSON.stringify({ scripts: { dev: { command: "committed" } } }),
+    );
+    execSync("git add paseo.json", { cwd: repoDir });
+    execSync('git -c commit.gpgsign=false commit -m "add paseo.json"', { cwd: repoDir });
+
+    writeFileSync(
+      join(repoDir, "paseo.json"),
+      JSON.stringify({ scripts: { dev: { command: "uncommitted" } } }),
+    );
+
+    const result = await createLegacyWorktreeForTest({
+      cwd: repoDir,
+      worktreeSlug: "preserve-committed",
+      source: { kind: "branch-off", baseBranch: "main", newBranchName: "feature/preserve" },
+      runSetup: false,
+      paseoHome,
+    });
+
+    const worktreeConfigPath = join(result.worktreePath, "paseo.json");
+    expect(JSON.parse(readFileSync(worktreeConfigPath, "utf8"))).toEqual({
+      scripts: { dev: { command: "committed" } },
+    });
+  });
+
+  it("creates a worktree without error when no paseo.json exists in the main repo", async () => {
+    const result = await createLegacyWorktreeForTest({
+      cwd: repoDir,
+      worktreeSlug: "no-config",
+      source: { kind: "branch-off", baseBranch: "main", newBranchName: "feature/no-config" },
+      runSetup: false,
+      paseoHome,
+    });
+
+    expect(existsSync(join(result.worktreePath, "paseo.json"))).toBe(false);
   });
 });
 

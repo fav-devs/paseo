@@ -9,8 +9,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol } from "electron";
-import { registerDaemonManager } from "./daemon/daemon-manager.js";
+import { app, BrowserWindow, ipcMain, nativeImage, net, protocol } from "electron";
+import { createDaemonCommandHandlers, registerDaemonManager } from "./daemon/daemon-manager.js";
 import {
   parseCliPassthroughArgsFromArgv,
   runCliPassthroughCommand,
@@ -47,6 +47,8 @@ import {
 const DEV_SERVER_URL = process.env.EXPO_DEV_URL ?? "http://localhost:8081";
 const APP_SCHEME = "paseo";
 const OPEN_PROJECT_EVENT = "paseo:event:open-project";
+const DESKTOP_SMOKE_ENV = "PASEO_DESKTOP_SMOKE";
+const DESKTOP_SMOKE_STOP_REQUEST = "paseo-smoke-stop";
 app.setName("Paseo");
 
 // In dev mode, detect git worktrees and isolate each instance so multiple
@@ -82,6 +84,13 @@ if (forcedUserDataDir) {
   } catch {
     devWorktreeName = null;
   }
+}
+
+// AppImage runtimes mount the app from /tmp under the user's UID, so the SUID
+// chrome-sandbox helper we ship in .deb/.rpm cannot work there. Disable the
+// sandbox only in that case; .deb/.rpm keep the sandbox on, matching VS Code.
+if (process.platform === "linux" && process.env.APPIMAGE) {
+  app.commandLine.appendSwitch("no-sandbox");
 }
 
 // Allow users to pass Chromium flags via PASEO_ELECTRON_FLAGS for debugging
@@ -216,7 +225,6 @@ async function createMainWindow(): Promise<void> {
     const { loadReactDevTools } = await import("./features/react-devtools.js");
     await loadReactDevTools();
     await mainWindow.loadURL(DEV_SERVER_URL);
-    mainWindow.webContents.openDevTools({ mode: "detach" });
     return;
   }
 
@@ -288,6 +296,53 @@ async function runCliPassthroughIfRequested(): Promise<boolean> {
   return true;
 }
 
+async function runDesktopSmokeIfRequested(): Promise<boolean> {
+  if (process.env[DESKTOP_SMOKE_ENV] !== "1") {
+    return false;
+  }
+
+  const handlers = createDaemonCommandHandlers();
+  const startStatus = await handlers.start_desktop_daemon();
+  process.stdout.write(
+    `[paseo-smoke] ${JSON.stringify({
+      type: "desktop-daemon-smoke-started",
+      status: startStatus,
+    })}\n`,
+  );
+
+  await waitForDesktopSmokeStopRequest();
+
+  const stopStatus = await handlers.stop_desktop_daemon();
+  process.stdout.write(
+    `[paseo-smoke] ${JSON.stringify({
+      type: "desktop-daemon-smoke-stopped",
+      stopStatus,
+    })}\n`,
+  );
+
+  app.exit(0);
+  return true;
+}
+
+function waitForDesktopSmokeStopRequest(): Promise<void> {
+  return new Promise((resolve) => {
+    let buffer = "";
+    const stop = () => {
+      process.stdin.off("data", onData);
+      resolve();
+    };
+    const onData = (chunk: Buffer | string) => {
+      buffer += chunk.toString();
+      if (buffer.includes(DESKTOP_SMOKE_STOP_REQUEST)) {
+        stop();
+      }
+    };
+
+    process.stdin.on("data", onData);
+    process.stdin.resume();
+  });
+}
+
 async function bootstrap(): Promise<void> {
   if (!pendingOpenProjectPath && (await runCliPassthroughIfRequested())) {
     return;
@@ -329,6 +384,9 @@ async function bootstrap(): Promise<void> {
   applyAppIcon();
   setupApplicationMenu();
   ensureNotificationCenterRegistration();
+  if (await runDesktopSmokeIfRequested()) {
+    return;
+  }
   registerDaemonManager();
   registerWindowManager();
   registerDialogHandlers();
@@ -350,13 +408,9 @@ void bootstrap().catch((error) => {
 });
 
 function showDaemonShutdownDialog(): void {
-  void dialog.showMessageBox({
-    type: "info",
-    message: "Shutting down Paseo daemon…",
-    detail: "Paseo will quit once the local daemon has stopped.",
-    buttons: [],
-    noLink: true,
-  });
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send("paseo:event:quitting", {});
+  }
 }
 
 app.on(

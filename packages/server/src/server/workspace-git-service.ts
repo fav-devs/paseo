@@ -23,6 +23,7 @@ import {
 import { createGitHubService, type GitHubService } from "../services/github-service.js";
 import { parseGitRevParsePath } from "../utils/git-rev-parse-path.js";
 import { runGitCommand } from "../utils/run-git-command.js";
+import { resolveGitHubRemote, type GitHubRemoteIdentity } from "../utils/github-remote.js";
 import { listPaseoWorktrees, type PaseoWorktreeInfo } from "../utils/worktree.js";
 import { READ_ONLY_GIT_ENV } from "./checkout-git-utils.js";
 import {
@@ -255,6 +256,7 @@ interface WorkspaceGitTarget {
   latestFingerprint: string | null;
   lastShellOutAtMs: number | null;
   repoGitRoot: string | null;
+  cachedGitHubRemote: { remoteUrl: string; identity: GitHubRemoteIdentity | null } | null;
   observationSetupPromise: Promise<void> | null;
   observationSetupComplete: boolean;
   closed: boolean;
@@ -496,7 +498,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     return this.readAuxiliaryCache(this.localBranchCache, key, options, async () => {
       const result = await this.deps.runGitCommand(["rev-parse", "--verify", "--quiet", ref], {
         cwd: normalizedCwd,
-        env: READ_ONLY_GIT_ENV,
+        envOverlay: READ_ONLY_GIT_ENV,
         acceptExitCodes: [0, 1],
       });
       return result.exitCode === 0;
@@ -528,7 +530,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     return this.readAuxiliaryCache(this.stashListCache, key, readOptions, async () => {
       const { stdout } = await this.deps.runGitCommand(["stash", "list", "--format=%gd%x00%s"], {
         cwd: normalizedCwd,
-        env: READ_ONLY_GIT_ENV,
+        envOverlay: READ_ONLY_GIT_ENV,
       });
       return parseWorkspaceGitStashList(stdout, { paseoOnly });
     });
@@ -757,6 +759,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       latestFingerprint: null,
       lastShellOutAtMs: null,
       repoGitRoot: null,
+      cachedGitHubRemote: null,
       observationSetupPromise: null,
       observationSetupComplete: false,
       closed: false,
@@ -900,7 +903,7 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     try {
       const { stdout } = await this.deps.runGitCommand(["rev-parse", "--show-toplevel"], {
         cwd,
-        env: READ_ONLY_GIT_ENV,
+        envOverlay: READ_ONLY_GIT_ENV,
       });
       return parseGitRevParsePath(stdout);
     } catch {
@@ -1061,7 +1064,10 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     }
 
     const headRef = snapshot.git.currentBranch;
-    if (!headRef || !hasGitHubRemoteUrl(snapshot.git.remoteUrl)) {
+    const hasGitHubRemote =
+      target.cachedGitHubRemote?.remoteUrl === snapshot.git.remoteUrl &&
+      target.cachedGitHubRemote.identity !== null;
+    if (!headRef || !hasGitHubRemote) {
       this.stopGitHubPollForTarget(target);
       return;
     }
@@ -1332,6 +1338,22 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     );
   }
 
+  private async resolveGitHubRemoteForTarget(
+    target: WorkspaceGitTarget,
+    remoteUrl: string | null,
+  ): Promise<GitHubRemoteIdentity | null> {
+    if (!remoteUrl) {
+      target.cachedGitHubRemote = null;
+      return null;
+    }
+    if (target.cachedGitHubRemote?.remoteUrl === remoteUrl) {
+      return target.cachedGitHubRemote.identity;
+    }
+    const identity = await resolveGitHubRemote({ remoteUrl });
+    target.cachedGitHubRemote = { remoteUrl, identity };
+    return identity;
+  }
+
   private shouldThrottleNonForcedRefresh(
     target: WorkspaceGitTarget,
   ): target is WorkspaceGitTarget & {
@@ -1404,15 +1426,49 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     if (forceGitHub) {
       this.deps.github.invalidate({ cwd: target.cwd });
     }
-    const snapshot = await loadWorkspaceGitRuntimeSnapshot(
-      target.cwd,
-      { paseoHome: this.paseoHome },
-      now,
-      this.deps,
-      { force: request.force, forceGitHub, reason: request.reason },
-    );
+
+    const cwd = target.cwd;
+    const context: CheckoutContext = { paseoHome: this.paseoHome };
+    const checkoutStatus = await this.deps.getCheckoutStatus(cwd, context);
+    if (!checkoutStatus.isGit) {
+      target.latestSnapshotLoadedAtMs = now.getTime();
+      return buildNotGitSnapshot(cwd);
+    }
+
+    const githubRemote = await this.resolveGitHubRemoteForTarget(target, checkoutStatus.remoteUrl);
+
+    const [diffStat, github] = await Promise.all([
+      this.deps.getCheckoutShortstat(cwd, context, { force: request.force }).catch(() => null),
+      loadGitHubSnapshot({
+        cwd,
+        githubRemote,
+        now,
+        deps: this.deps,
+        force: forceGitHub,
+        reason: request.reason,
+      }),
+    ]);
+
     target.latestSnapshotLoadedAtMs = now.getTime();
-    return snapshot;
+    return {
+      cwd,
+      git: {
+        isGit: true,
+        repoRoot: checkoutStatus.repoRoot,
+        mainRepoRoot: checkoutStatus.mainRepoRoot,
+        currentBranch: checkoutStatus.currentBranch,
+        remoteUrl: checkoutStatus.remoteUrl,
+        isPaseoOwnedWorktree: checkoutStatus.isPaseoOwnedWorktree,
+        isDirty: checkoutStatus.isDirty,
+        baseRef: checkoutStatus.baseRef,
+        aheadBehind: checkoutStatus.aheadBehind,
+        aheadOfOrigin: checkoutStatus.aheadOfOrigin,
+        behindOfOrigin: checkoutStatus.behindOfOrigin,
+        hasRemote: checkoutStatus.hasRemote,
+        diffStat,
+      },
+      github,
+    };
   }
 
   private rememberSnapshot(
@@ -1599,63 +1655,15 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   }
 }
 
-async function loadWorkspaceGitRuntimeSnapshot(
-  cwd: string,
-  context: CheckoutContext,
-  now: Date,
-  deps: Pick<
-    WorkspaceGitServiceDependencies,
-    "getCheckoutStatus" | "getCheckoutShortstat" | "getPullRequestStatus" | "github"
-  >,
-  options?: { force?: boolean; forceGitHub?: boolean; reason?: string },
-): Promise<WorkspaceGitRuntimeSnapshot> {
-  const checkoutStatus = await deps.getCheckoutStatus(cwd, context);
-  if (!checkoutStatus.isGit) {
-    return buildNotGitSnapshot(cwd);
-  }
-
-  const [diffStat, github] = await Promise.all([
-    deps.getCheckoutShortstat(cwd, context, { force: options?.force }).catch(() => null),
-    loadGitHubSnapshot({
-      cwd,
-      remoteUrl: checkoutStatus.remoteUrl,
-      now,
-      deps,
-      force: options?.forceGitHub,
-      reason: options?.reason,
-    }),
-  ]);
-
-  return {
-    cwd,
-    git: {
-      isGit: true,
-      repoRoot: checkoutStatus.repoRoot,
-      mainRepoRoot: checkoutStatus.mainRepoRoot,
-      currentBranch: checkoutStatus.currentBranch,
-      remoteUrl: checkoutStatus.remoteUrl,
-      isPaseoOwnedWorktree: checkoutStatus.isPaseoOwnedWorktree,
-      isDirty: checkoutStatus.isDirty,
-      baseRef: checkoutStatus.baseRef,
-      aheadBehind: checkoutStatus.aheadBehind,
-      aheadOfOrigin: checkoutStatus.aheadOfOrigin,
-      behindOfOrigin: checkoutStatus.behindOfOrigin,
-      hasRemote: checkoutStatus.hasRemote,
-      diffStat,
-    },
-    github,
-  };
-}
-
 async function loadGitHubSnapshot(options: {
   cwd: string;
-  remoteUrl: string | null;
+  githubRemote: GitHubRemoteIdentity | null;
   now: Date;
   deps: Pick<WorkspaceGitServiceDependencies, "getPullRequestStatus" | "github">;
   force?: boolean;
   reason?: string;
 }): Promise<WorkspaceGitRuntimeSnapshot["github"]> {
-  if (!hasGitHubRemoteUrl(options.remoteUrl)) {
+  if (!options.githubRemote) {
     return {
       featuresEnabled: false,
       pullRequest: null,
@@ -1692,18 +1700,6 @@ async function loadGitHubSnapshot(options: {
       },
     };
   }
-}
-
-function hasGitHubRemoteUrl(remoteUrl: string | null): boolean {
-  if (!remoteUrl) {
-    return false;
-  }
-
-  return (
-    remoteUrl.includes("github.com/") ||
-    remoteUrl.startsWith("git@github.com:") ||
-    remoteUrl.startsWith("ssh://git@github.com/")
-  );
 }
 
 function parseWorkspaceGitStashList(
@@ -1771,10 +1767,7 @@ function buildNotGitSnapshot(cwd: string): WorkspaceGitRuntimeSnapshot {
 async function runGitFetch(cwd: string): Promise<void> {
   await runGitCommand(["fetch", "origin", "--prune"], {
     cwd,
-    env: {
-      ...process.env,
-      GIT_TERMINAL_PROMPT: "0",
-    },
+    envOverlay: { GIT_TERMINAL_PROMPT: "0" },
     timeout: 120_000,
   });
 }

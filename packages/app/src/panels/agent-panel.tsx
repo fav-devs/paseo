@@ -14,7 +14,7 @@ import { FileDropZone } from "@/components/file-drop-zone";
 import type { ImageAttachment } from "@/components/message-input";
 import { getProviderIcon } from "@/components/provider-icons";
 import { ToastViewport, useToastHost } from "@/components/toast-host";
-import { isNative } from "@/constants/platform";
+import { isNative, isWeb } from "@/constants/platform";
 import { useAgentAttentionClear } from "@/hooks/use-agent-attention-clear";
 import { useAgentInitialization } from "@/hooks/use-agent-initialization";
 import { useAgentInputDraft } from "@/hooks/use-agent-input-draft";
@@ -305,8 +305,6 @@ const EMPTY_PENDING_PERMISSION_LIST: PendingPermission[] = [];
 type RouteBottomAnchorRequest = ReturnType<typeof deriveRouteBottomAnchorRequest>;
 type PendingCreateByDraftId = ReturnType<typeof useCreateFlowStore.getState>["pendingByDraftId"];
 type PendingCreateAttempt = PendingCreateByDraftId[string];
-
-function logWebStickyBottom(_event: string, _details: Record<string, unknown>): void {}
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -815,14 +813,10 @@ function ChatAgentContent({
   );
 
   const handleComposerHeightChange = useCallback(
-    (height: number) => {
+    (_height: number) => {
       if (!agentId) {
         return;
       }
-      logWebStickyBottom("screen_composer_height_change", {
-        agentId,
-        height,
-      });
       streamViewRef.current?.prepareForViewportChange();
     },
     [agentId],
@@ -832,9 +826,6 @@ function ChatAgentContent({
     if (!agentId) {
       return;
     }
-    logWebStickyBottom("screen_message_sent_scroll_to_bottom", {
-      agentId,
-    });
     streamViewRef.current?.scrollToBottom("message-sent");
   }, [agentId]);
 
@@ -1358,6 +1349,7 @@ const styles = StyleSheet.create((theme) => ({
   contentContainer: {
     flex: 1,
     overflow: "hidden",
+    ...(isWeb ? { userSelect: "none" as const } : {}),
   },
   content: {
     flex: 1,

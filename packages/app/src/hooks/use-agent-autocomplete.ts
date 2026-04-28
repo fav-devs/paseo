@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import type { AutocompleteOption } from "@/components/ui/autocomplete";
 import { useAgentCommandsQuery, type DraftCommandConfig } from "./use-agent-commands-query";
@@ -104,12 +104,16 @@ function mapDirectorySuggestionsToEntries(payload: {
   }));
 }
 
-type AutocompleteMode = "command" | "file" | null;
+type AutocompleteMode = "command" | "file" | "env" | null;
 
 function resolveAutocompleteMode(args: {
+  showEnvAutocomplete: boolean;
   showFileAutocomplete: boolean;
   showCommandAutocomplete: boolean;
 }): AutocompleteMode {
+  if (args.showEnvAutocomplete) {
+    return "env";
+  }
   if (args.showFileAutocomplete) {
     return "file";
   }
@@ -131,6 +135,9 @@ function resolveAutocompleteIsVisible(args: {
   if (args.mode === "file") {
     return Boolean(args.serverId) && args.autocompleteCwd.length > 0;
   }
+  if (args.mode === "env") {
+    return Boolean(args.serverId) && args.autocompleteCwd.length > 0;
+  }
   return false;
 }
 
@@ -139,10 +146,15 @@ function resolveAutocompleteIsLoading(args: {
   isCommandsLoading: boolean;
   fileSuggestionsIsPending: boolean;
   fileSuggestionsIsLoading: boolean;
+  secretAliasesIsPending: boolean;
+  secretAliasesIsLoading: boolean;
   optionsLength: number;
 }): boolean {
   if (args.mode === "command") {
     return args.isCommandsLoading;
+  }
+  if (args.mode === "env") {
+    return args.secretAliasesIsPending || (args.secretAliasesIsLoading && args.optionsLength === 0);
   }
   if (args.mode === "file") {
     return (
@@ -156,10 +168,14 @@ function resolveAutocompleteErrorMessage(args: {
   mode: AutocompleteMode;
   isCommandError: boolean;
   commandError: Error | null;
+  secretAliasesError: unknown;
   fileSuggestionsError: unknown;
 }): string | undefined {
   if (args.mode === "command") {
     return args.isCommandError ? (args.commandError?.message ?? "Failed to load") : undefined;
+  }
+  if (args.mode === "env") {
+    return args.secretAliasesError instanceof Error ? args.secretAliasesError.message : undefined;
   }
   if (args.mode === "file") {
     return args.fileSuggestionsError instanceof Error
@@ -167,6 +183,41 @@ function resolveAutocompleteErrorMessage(args: {
       : undefined;
   }
   return undefined;
+}
+
+function resolveAutocompleteLoadingText(mode: AutocompleteMode): string {
+  if (mode === "file") {
+    return "Searching workspace...";
+  }
+  if (mode === "env") {
+    return "Loading secret aliases...";
+  }
+  return "Loading commands...";
+}
+
+function resolveAutocompleteEmptyText(mode: AutocompleteMode): string {
+  if (mode === "file") {
+    return "No files or directories found";
+  }
+  if (mode === "env") {
+    return "No secret aliases found";
+  }
+  return "No commands found";
+}
+
+function resolveAutocompleteQuery(args: {
+  mode: AutocompleteMode;
+  commandFilterQuery: string;
+  envFilterQuery: string;
+  fileFilterQuery: string;
+}): string {
+  if (args.mode === "command") {
+    return args.commandFilterQuery;
+  }
+  if (args.mode === "env") {
+    return args.envFilterQuery;
+  }
+  return args.fileFilterQuery;
 }
 
 export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAutocompleteResult {
@@ -212,6 +263,12 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
     }
     return "";
   }, [activeEnvMention]);
+  const [debouncedFileFilterQuery, setDebouncedFileFilterQuery] = useState(fileFilterQuery);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedFileFilterQuery(fileFilterQuery), 180);
+    return () => clearTimeout(timer);
+  }, [fileFilterQuery]);
 
   const normalizedDraftConfig = useMemo(
     () => normalizeDraftCommandConfig(draftConfig),
@@ -236,19 +293,17 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
   const isConnected = useHostRuntimeIsConnected(serverId);
 
   const showEnvAutocomplete = activeEnvMention !== null;
-  const mode: "command" | "file" | "env" | null = showEnvAutocomplete
-    ? "env"
-    : showFileAutocomplete
-      ? "file"
-      : showCommandAutocomplete
-        ? "command"
-        : null;
-  const isVisible =
-    mode === "command"
-      ? canLoadCommands
-      : mode === "file" || mode === "env"
-        ? Boolean(serverId) && autocompleteCwd.length > 0
-        : false;
+  const mode = resolveAutocompleteMode({
+    showEnvAutocomplete,
+    showFileAutocomplete,
+    showCommandAutocomplete,
+  });
+  const isVisible = resolveAutocompleteIsVisible({
+    mode,
+    canLoadCommands,
+    serverId,
+    autocompleteCwd,
+  });
 
   const {
     commands,
@@ -283,14 +338,21 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
   });
 
   const fileSuggestionsQuery = useQuery({
-    queryKey: ["directorySuggestions", serverId, autocompleteCwd, fileFilterQuery, true, true],
+    queryKey: [
+      "directorySuggestions",
+      serverId,
+      autocompleteCwd,
+      debouncedFileFilterQuery,
+      true,
+      true,
+    ],
     queryFn: async (): Promise<DirectorySuggestionEntry[]> => {
       if (!client) {
         throw new Error("Daemon client unavailable");
       }
       const response = await client.getDirectorySuggestions({
         cwd: autocompleteCwd,
-        query: fileFilterQuery,
+        query: debouncedFileFilterQuery,
         limit: 50,
         includeFiles: true,
         includeDirectories: true,
@@ -408,48 +470,35 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
   const { selectedIndex, onKeyPress } = useAutocomplete({
     isVisible,
     options,
-    query:
-      mode === "command" ? commandFilterQuery : mode === "env" ? envFilterQuery : fileFilterQuery,
+    query: resolveAutocompleteQuery({
+      mode,
+      commandFilterQuery,
+      envFilterQuery,
+      fileFilterQuery,
+    }),
     onSelectOption,
     onEscape: mode === "command" ? () => setUserInput("") : undefined,
   });
 
-  const isLoading =
-    mode === "command"
-      ? isCommandsLoading
-      : mode === "env"
-        ? secretAliasesQuery.isPending || (secretAliasesQuery.isLoading && options.length === 0)
-        : mode === "file"
-          ? fileSuggestionsQuery.isPending ||
-            (fileSuggestionsQuery.isLoading && options.length === 0)
-          : false;
-  const errorMessage =
-    mode === "command"
-      ? isError
-        ? (error?.message ?? "Failed to load")
-        : undefined
-      : mode === "env"
-        ? secretAliasesQuery.error instanceof Error
-          ? secretAliasesQuery.error.message
-          : undefined
-        : mode === "file"
-          ? fileSuggestionsQuery.error instanceof Error
-            ? fileSuggestionsQuery.error.message
-            : undefined
-          : undefined;
+  const isLoading = resolveAutocompleteIsLoading({
+    mode,
+    isCommandsLoading,
+    secretAliasesIsPending: secretAliasesQuery.isPending,
+    secretAliasesIsLoading: secretAliasesQuery.isLoading,
+    fileSuggestionsIsPending: fileSuggestionsQuery.isPending,
+    fileSuggestionsIsLoading: fileSuggestionsQuery.isLoading,
+    optionsLength: options.length,
+  });
+  const errorMessage = resolveAutocompleteErrorMessage({
+    mode,
+    isCommandError: isError,
+    commandError: error,
+    secretAliasesError: secretAliasesQuery.error,
+    fileSuggestionsError: fileSuggestionsQuery.error,
+  });
 
-  const loadingText =
-    mode === "file"
-      ? "Searching workspace..."
-      : mode === "env"
-        ? "Loading secret aliases..."
-        : "Loading commands...";
-  const emptyText =
-    mode === "file"
-      ? "No files or directories found"
-      : mode === "env"
-        ? "No secret aliases found"
-        : "No commands found";
+  const loadingText = resolveAutocompleteLoadingText(mode);
+  const emptyText = resolveAutocompleteEmptyText(mode);
 
   return {
     isVisible,

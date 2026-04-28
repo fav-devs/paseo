@@ -1,16 +1,17 @@
 import { z } from "zod";
 import type { GitHubSearchKind } from "../shared/messages.js";
 import { findExecutable } from "../utils/executable.js";
+import { resolveGitHubRemote } from "../utils/github-remote.js";
+import { runGitCommand } from "../utils/run-git-command.js";
 import { execCommand } from "../utils/spawn.js";
 
 const DEFAULT_GITHUB_CACHE_TTL_MS = 30_000;
 export const GITHUB_POLL_FAST_INTERVAL_MS = 20_000;
 export const GITHUB_POLL_SLOW_INTERVAL_MS = 120_000;
 export const GITHUB_POLL_ERROR_BACKOFF_CAP_MS = 300_000;
-const GITHUB_ENV: NodeJS.ProcessEnv = {
-  ...process.env,
+const GITHUB_ENV = {
   GIT_TERMINAL_PROMPT: "0",
-};
+} as const;
 
 const LabelSchema = z.object({
   name: z.string().optional(),
@@ -1165,7 +1166,7 @@ async function runGhCommand(
 ): Promise<GitHubCommandResult> {
   return execCommand("gh", args, {
     cwd: options.cwd,
-    env: GITHUB_ENV,
+    envOverlay: GITHUB_ENV,
     maxBuffer: 10 * 1024 * 1024,
   });
 }
@@ -1866,46 +1867,15 @@ function mapReviewDecision(value: unknown): PullRequestReviewDecision {
   return null;
 }
 
-export interface GitHubRepoRemoteUrlResolver {
-  resolveRepoRemoteUrl(cwd: string, options?: GitHubReadOptions): Promise<string | null>;
-}
-
-export async function resolveGitHubRepo(
-  cwd: string,
-  options: { workspaceGitService: GitHubRepoRemoteUrlResolver; readOptions?: GitHubReadOptions },
-): Promise<string | null> {
+export async function resolveGitHubRepo(cwd: string): Promise<string | null> {
   try {
-    const remoteUrl = await options.workspaceGitService.resolveRepoRemoteUrl(
+    const { stdout } = await runGitCommand(["config", "--get", "remote.origin.url"], {
       cwd,
-      options.readOptions,
-    );
-    return parseGitHubRepoFromRemote(remoteUrl?.trim() ?? "");
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    });
+    const remote = await resolveGitHubRemote({ remoteUrl: stdout.trim() });
+    return remote?.repo ?? null;
   } catch {
     return null;
   }
-}
-
-function parseGitHubRepoFromRemote(url: string): string | null {
-  if (!url) {
-    return null;
-  }
-  let cleaned = url;
-  if (cleaned.startsWith("git@github.com:")) {
-    cleaned = cleaned.slice("git@github.com:".length);
-  } else if (cleaned.startsWith("https://github.com/")) {
-    cleaned = cleaned.slice("https://github.com/".length);
-  } else if (cleaned.startsWith("http://github.com/")) {
-    cleaned = cleaned.slice("http://github.com/".length);
-  } else {
-    const marker = "github.com/";
-    const index = cleaned.indexOf(marker);
-    if (index === -1) {
-      return null;
-    }
-    cleaned = cleaned.slice(index + marker.length);
-  }
-  if (cleaned.endsWith(".git")) {
-    cleaned = cleaned.slice(0, -".git".length);
-  }
-  return cleaned.includes("/") ? cleaned : null;
 }

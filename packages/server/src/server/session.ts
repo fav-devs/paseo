@@ -5,7 +5,7 @@ import pMemoize from "p-memoize";
 import { realpathSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import net from "node:net";
-import { resolve, sep } from "path";
+import { basename, resolve, sep } from "path";
 import { homedir } from "node:os";
 import { z } from "zod";
 import type { ToolSet } from "ai";
@@ -98,7 +98,10 @@ import { sendPromptToAgent, unarchiveAgentState } from "./agent/mcp-shared.js";
 import { experimental_createMCPClient } from "ai";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { VoiceCallerContext, VoiceSpeakHandler } from "./voice-types.js";
-import { buildWorkspaceScriptPayloads } from "./script-status-projection.js";
+import {
+  buildWorkspaceScriptPayloads,
+  readPaseoConfigForProjection,
+} from "./script-status-projection.js";
 import { deriveProjectSlug } from "./workspace-git-metadata.js";
 import type { ScriptHealthState } from "./script-health-monitor.js";
 import { spawnWorkspaceScript } from "./worktree-bootstrap.js";
@@ -5004,7 +5007,9 @@ export class Session {
       const message = branchLabel
         ? `${Session.PASEO_STASH_PREFIX} ${branchLabel}`
         : `${Session.PASEO_STASH_PREFIX} unnamed`;
-      await execCommand("git", ["stash", "push", "--include-untracked", "-m", message], { cwd });
+      await execCommand("git", ["stash", "push", "--include-untracked", "-m", message], {
+        cwd,
+      });
       await this.notifyGitMutation(cwd, "stash-push");
       this.checkoutDiffManager.scheduleRefreshForCwd(cwd);
       this.emit({
@@ -5024,7 +5029,9 @@ export class Session {
   ): Promise<void> {
     const { cwd, stashIndex, requestId } = msg;
     try {
-      await execCommand("git", ["stash", "pop", `stash@{${stashIndex}}`], { cwd });
+      await execCommand("git", ["stash", "pop", `stash@{${stashIndex}}`], {
+        cwd,
+      });
       await this.notifyGitMutation(cwd, "stash-pop");
       this.checkoutDiffManager.scheduleRefreshForCwd(cwd);
       this.emit({
@@ -5290,7 +5297,6 @@ export class Session {
           base: msg.baseRef,
         },
         this.github,
-        this.workspaceGitService,
       );
       await this.notifyGitMutation(cwd, "create-pr", { invalidateGithub: true });
 
@@ -6171,6 +6177,7 @@ export class Session {
           ? buildWorkspaceScriptPayloads({
               workspaceId: workspace.workspaceId,
               workspaceDirectory: workspace.cwd,
+              paseoConfig: readPaseoConfigForProjection(workspace.cwd, this.sessionLogger),
               routeStore: this.scriptRouteStore,
               runtimeStore: this.scriptRuntimeStore,
               daemonPort: this.getDaemonTcpPort?.() ?? null,
@@ -6363,8 +6370,11 @@ export class Session {
       return exact.workspaceId;
     }
 
+    const userHome = homedir();
     let bestMatch: PersistedWorkspaceRecord | null = null;
     for (const workspace of workspaces) {
+      if (workspace.cwd === userHome) continue;
+      if (workspace.archivedAt) continue;
       const prefix = workspace.cwd.endsWith(sep) ? workspace.cwd : `${workspace.cwd}${sep}`;
       if (!normalizedCwd.startsWith(prefix)) {
         continue;
@@ -6666,11 +6676,36 @@ export class Session {
   }
 
   private async findOrCreateWorkspaceForDirectory(cwd: string): Promise<PersistedWorkspaceRecord> {
+    const inputCwd = normalizePersistedWorkspaceId(cwd);
     const normalizedCwd = await this.resolveWorkspaceDirectory(cwd);
     const existingWorkspace = await this.findExactWorkspaceByDirectory(normalizedCwd, {
       refreshGit: false,
     });
     if (existingWorkspace) {
+      if (existingWorkspace.archivedAt && inputCwd !== normalizedCwd) {
+        const timestamp = new Date().toISOString();
+        const displayName = basename(inputCwd) || inputCwd;
+        const projectRecord = createPersistedProjectRecord({
+          projectId: inputCwd,
+          rootPath: inputCwd,
+          kind: "non_git",
+          displayName,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+        await this.projectRegistry.upsert(projectRecord);
+        const workspaceRecord = createPersistedWorkspaceRecord({
+          workspaceId: inputCwd,
+          projectId: projectRecord.projectId,
+          cwd: inputCwd,
+          kind: "directory",
+          displayName,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+        await this.workspaceRegistry.upsert(workspaceRecord);
+        return workspaceRecord;
+      }
       return this.reclassifyOrUnarchiveWorkspaceForDirectory({
         workspace: existingWorkspace,
         project: await this.projectRegistry.get(existingWorkspace.projectId),
@@ -7211,6 +7246,7 @@ export class Session {
     return buildWorkspaceScriptPayloads({
       workspaceId,
       workspaceDirectory,
+      paseoConfig: readPaseoConfigForProjection(workspaceDirectory, this.sessionLogger),
       routeStore: this.scriptRouteStore,
       runtimeStore: this.scriptRuntimeStore,
       daemonPort: this.getDaemonTcpPort?.() ?? null,

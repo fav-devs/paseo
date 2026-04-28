@@ -113,4 +113,4 @@ const styles = StyleSheet.create((theme: Theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
   },
-})) as any) as Record<string, any>;
+}));

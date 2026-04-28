@@ -688,6 +688,7 @@ const GitDiffFileBody = memo(function GitDiffFileBody({
   onBodyHeightChange,
   testID,
 }: GitDiffFileBodyProps) {
+  const { theme } = useUnistyles();
   const [armedLineKey, setArmedLineKey] = useState<string | null>(null);
   const [scrollViewWidth, setScrollViewWidth] = useState(0);
   const [bodyWidth, setBodyWidth] = useState(0);
@@ -696,8 +697,8 @@ const GitDiffFileBody = memo(function GitDiffFileBody({
     for (const hunk of file.hunks) {
       maxLineNo = Math.max(maxLineNo, hunk.oldStart + hunk.oldCount, hunk.newStart + hunk.newCount);
     }
-    return lineNumberGutterWidth(maxLineNo);
-  }, [file]);
+    return lineNumberGutterWidth(maxLineNo, theme.fontSize.xs);
+  }, [file, theme.fontSize.xs]);
   const splitRows = useMemo(() => buildSplitDiffRows(file), [file]);
   const unifiedRows = useMemo<UnifiedDiffRenderRow[]>(() => {
     const rows: UnifiedDiffRenderRow[] = [];

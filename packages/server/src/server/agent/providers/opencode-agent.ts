@@ -41,7 +41,7 @@ import type {
   ToolCallTimelineItem,
 } from "../agent-sdk-types.js";
 import {
-  applyProviderEnv,
+  createProviderEnvSpec,
   resolveProviderCommandPrefix,
   type ProviderRuntimeSettings,
 } from "../provider-launch-config.js";
@@ -67,9 +67,12 @@ const OPENCODE_CAPABILITIES: AgentCapabilityFlags = {
   supportsToolInvocations: true,
 };
 
+const OPENCODE_BUILD_MODE_ID = "build";
+const OPENCODE_FULL_ACCESS_MODE_ID = "full-access";
+
 const DEFAULT_MODES: AgentMode[] = [
   {
-    id: "build",
+    id: OPENCODE_BUILD_MODE_ID,
     label: "Build",
     description: "Allows edits and tool execution for implementation work",
   },
@@ -77,6 +80,11 @@ const DEFAULT_MODES: AgentMode[] = [
     id: "plan",
     label: "Plan",
     description: "Read-only planning mode that avoids file edits",
+  },
+  {
+    id: OPENCODE_FULL_ACCESS_MODE_ID,
+    label: "Full Access",
+    description: "Automatically approves all tool permission prompts for the session",
   },
 ];
 
@@ -99,6 +107,10 @@ type OpenCodeMcpConfig =
 
 const MCP_ALREADY_PRESENT_ERROR_TOKENS = ["already", "exists", "connected"] as const;
 const OPENCODE_PROVIDER_LIST_TIMEOUT_MS = 30_000;
+const OPENCODE_HANDLED_BUILTIN_SLASH_COMMANDS: AgentSlashCommand[] = [
+  { name: "compact", description: "Compact the current session", argumentHint: "" },
+  { name: "summarize", description: "Compact the current session", argumentHint: "" },
+];
 const OPENCODE_FATAL_RETRY_MESSAGE_TOKENS = [
   "insufficient balance",
   "no resource package",
@@ -225,22 +237,6 @@ function toOpenCodeMcpConfig(config: McpServerConfig): OpenCodeMcpConfig {
   };
 }
 
-function stringifyUnknownError(error: unknown): string {
-  if (typeof error === "string") {
-    return error;
-  }
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
-}
-
-function normalizeTurnFailureError(error: unknown): string {
-  const normalized = stringifyUnknownError(error).trim();
-  return normalized.length > 0 ? normalized : "Unknown error";
-}
-
 type TerminalTurnEvent = Extract<
   AgentStreamEvent,
   { type: "turn_completed" | "turn_failed" | "turn_canceled" }
@@ -251,7 +247,7 @@ function toTerminalTurnEvent(event: AgentStreamEvent): TerminalTurnEvent | null 
     return {
       type: "turn_failed",
       provider: "opencode",
-      error: normalizeTurnFailureError(event.error),
+      error: toDiagnosticErrorMessage(event.error),
     };
   }
   if (event.type === "turn_completed" || event.type === "turn_canceled") {
@@ -286,7 +282,7 @@ async function reconcileOpenCodeSessionClose(params: {
       logger.warn(
         {
           sessionId,
-          error: normalizeTurnFailureError(response.error),
+          error: toDiagnosticErrorMessage(response.error),
         },
         "Failed to abort OpenCode session during close",
       );
@@ -295,7 +291,7 @@ async function reconcileOpenCodeSessionClose(params: {
     logger.warn(
       {
         sessionId,
-        error: normalizeTurnFailureError(error),
+        error: toDiagnosticErrorMessage(error),
       },
       "Failed to abort OpenCode session during close",
     );
@@ -311,7 +307,7 @@ async function reconcileOpenCodeSessionClose(params: {
       logger.warn(
         {
           sessionId,
-          error: normalizeTurnFailureError(response.error),
+          error: toDiagnosticErrorMessage(response.error),
         },
         "Failed to archive OpenCode session during close",
       );
@@ -320,7 +316,7 @@ async function reconcileOpenCodeSessionClose(params: {
     logger.warn(
       {
         sessionId,
-        error: normalizeTurnFailureError(error),
+        error: toDiagnosticErrorMessage(error),
       },
       "Failed to archive OpenCode session during close",
     );
@@ -345,7 +341,7 @@ function isOpenCodeHeadersTimeoutFailure(error: unknown): boolean {
       continue;
     }
 
-    const normalized = stringifyUnknownError(current).trim().toLowerCase();
+    const normalized = toDiagnosticErrorMessage(current).trim().toLowerCase();
     if (normalized) {
       diagnostics.add(normalized);
     }
@@ -380,7 +376,7 @@ function isOpenCodeHeadersTimeoutFailure(error: unknown): boolean {
 }
 
 function isAlreadyPresentMcpError(error: unknown): boolean {
-  const normalized = stringifyUnknownError(error).toLowerCase();
+  const normalized = toDiagnosticErrorMessage(error).toLowerCase();
   return MCP_ALREADY_PRESENT_ERROR_TOKENS.some((token) => normalized.includes(token));
 }
 
@@ -416,9 +412,24 @@ function resolvePartDedupeKey(
 function normalizeOpenCodeModeId(modeId: string | null | undefined): string {
   const trimmed = typeof modeId === "string" ? modeId.trim() : "";
   if (!trimmed || trimmed === "default") {
-    return "build";
+    return OPENCODE_BUILD_MODE_ID;
   }
   return trimmed;
+}
+
+function resolveOpenCodeRuntimeAgentId(modeId: string | null | undefined): string {
+  const normalizedModeId = normalizeOpenCodeModeId(modeId);
+  return normalizedModeId === OPENCODE_FULL_ACCESS_MODE_ID
+    ? OPENCODE_BUILD_MODE_ID
+    : normalizedModeId;
+}
+
+function mergeOpenCodeModes(discoveredModes: AgentMode[]): AgentMode[] {
+  const modesById = new Map(DEFAULT_MODES.map((mode) => [mode.id, mode]));
+  for (const mode of discoveredModes) {
+    modesById.set(mode.id, mode);
+  }
+  return sortOpenCodeModes(Array.from(modesById.values()));
 }
 
 function sortOpenCodeModes(modes: AgentMode[]): AgentMode[] {
@@ -868,19 +879,42 @@ export class OpenCodeServerManager {
         [...launchPrefix.args, "serve", "--port", String(port)],
         {
           stdio: ["ignore", "pipe", "pipe"],
-          env: applyProviderEnv(process.env, this.runtimeSettings),
+          ...createProviderEnvSpec({ runtimeSettings: this.runtimeSettings }),
         },
       );
 
       let started = false;
+      let stderrBuffer = "";
+      let stdoutBuffer = "";
+      const STARTUP_BUFFER_CAP = 8192;
+      const appendCapped = (current: string, chunk: string): string => {
+        if (current.length >= STARTUP_BUFFER_CAP) {
+          return current;
+        }
+        const remaining = STARTUP_BUFFER_CAP - current.length;
+        return current + chunk.slice(0, remaining);
+      };
+      const buildStartupErrorMessage = (headline: string): string => {
+        const sections = [headline];
+        const stderrTrimmed = stderrBuffer.trim();
+        if (stderrTrimmed.length > 0) {
+          sections.push(`stderr: ${stderrTrimmed}`);
+        }
+        const stdoutTrimmed = stdoutBuffer.trim();
+        if (stdoutTrimmed.length > 0) {
+          sections.push(`stdout: ${stdoutTrimmed}`);
+        }
+        return sections.join("\n");
+      };
       const timeout = setTimeout(() => {
         if (!started) {
-          reject(new Error("OpenCode server startup timeout"));
+          reject(new Error(buildStartupErrorMessage("OpenCode server startup timeout")));
         }
       }, 30_000);
 
       serverProcess.stdout?.on("data", (data: Buffer) => {
         const output = data.toString();
+        stdoutBuffer = appendCapped(stdoutBuffer, output);
         if (output.includes("listening on") && !started) {
           started = true;
           clearTimeout(timeout);
@@ -895,18 +929,21 @@ export class OpenCodeServerManager {
       });
 
       serverProcess.stderr?.on("data", (data: Buffer) => {
-        this.logger.error({ stderr: data.toString().trim() }, "OpenCode server stderr");
+        const output = data.toString();
+        stderrBuffer = appendCapped(stderrBuffer, output);
+        this.logger.error({ stderr: output.trim() }, "OpenCode server stderr");
       });
 
       serverProcess.on("error", (error) => {
         clearTimeout(timeout);
-        reject(error);
+        const headline = error instanceof Error ? error.message : String(error);
+        reject(new Error(buildStartupErrorMessage(headline)));
       });
 
       serverProcess.on("exit", (code) => {
         if (!started) {
           clearTimeout(timeout);
-          reject(new Error(`OpenCode server exited with code ${code}`));
+          reject(new Error(buildStartupErrorMessage(`OpenCode server exited with code ${code}`)));
         }
         if (this.currentServer?.process === serverProcess) {
           this.currentServer = null;
@@ -1162,7 +1199,7 @@ export class OpenCodeAgentClient implements AgentClient {
               : DEFAULT_MODES.find((mode) => mode.id === agent.name)?.description,
         }));
 
-      return discovered.length > 0 ? sortOpenCodeModes(discovered) : DEFAULT_MODES;
+      return mergeOpenCodeModes(discovered);
     } finally {
       acquisition.release();
     }
@@ -1195,7 +1232,7 @@ export class OpenCodeAgentClient implements AgentClient {
         const { url } = await this.serverManager.ensureRunning();
         serverStatus = `Running (${url})`;
       } catch (error) {
-        serverStatus = `Unavailable (${normalizeTurnFailureError(error)})`;
+        serverStatus = `Unavailable (${toDiagnosticErrorMessage(error)})`;
       }
 
       if (available) {
@@ -1504,7 +1541,7 @@ export function translateOpenCodeEvent(
         events.push({
           type: "turn_failed",
           provider: "opencode",
-          error: normalizeTurnFailureError(event.properties.error),
+          error: toDiagnosticErrorMessage(event.properties.error),
         });
       }
       break;
@@ -1821,7 +1858,7 @@ function appendOpenCodeSessionStatus(
     events.push({
       type: "turn_failed",
       provider: "opencode",
-      error: normalizeTurnFailureError(status.message),
+      error: toDiagnosticErrorMessage(status.message),
     });
   }
   // "retry" and "busy" are transient — no terminal event.
@@ -2017,7 +2054,7 @@ class OpenCodeAgentSession implements AgentSession {
     const model = this.parseModel(this.config.model);
     const thinkingOptionId = this.config.thinkingOptionId;
     const effectiveVariant = thinkingOptionId ?? undefined;
-    const effectiveMode = normalizeOpenCodeModeId(this.currentMode);
+    const effectiveMode = resolveOpenCodeRuntimeAgentId(this.currentMode);
 
     const turnId = this.createTurnId();
     this.activeForegroundTurnId = turnId;
@@ -2025,6 +2062,44 @@ class OpenCodeAgentSession implements AgentSession {
 
     const slashCommand = await this.resolveSlashCommandInvocation(prompt);
     if (slashCommand) {
+      if (slashCommand.commandName === "compact" || slashCommand.commandName === "summarize") {
+        void this.client.session
+          .summarize({
+            sessionID: this.sessionId,
+            directory: this.config.cwd,
+            ...(model ? { providerID: model.providerID, modelID: model.modelID } : {}),
+          })
+          .then((response) => {
+            if (response.error) {
+              this.finishForegroundTurn(
+                {
+                  type: "turn_failed",
+                  provider: "opencode",
+                  error: toDiagnosticErrorMessage(response.error),
+                },
+                turnId,
+              );
+            } else {
+              this.finishForegroundTurn(
+                { type: "turn_completed", provider: "opencode", usage: undefined },
+                turnId,
+              );
+            }
+            return;
+          })
+          .catch((error) => {
+            this.finishForegroundTurn(
+              {
+                type: "turn_failed",
+                provider: "opencode",
+                error: toDiagnosticErrorMessage(error),
+              },
+              turnId,
+            );
+          });
+        return { turnId };
+      }
+
       // command() blocks until the server finishes processing. OpenCode's SSE
       // endpoint does NOT replay past events, so if the command completes before
       // our SSE reader connects, we miss `session.idle` and the turn hangs.
@@ -2054,7 +2129,7 @@ class OpenCodeAgentSession implements AgentSession {
               );
               return;
             }
-            const errorMsg = normalizeTurnFailureError(response.error);
+            const errorMsg = toDiagnosticErrorMessage(response.error);
             this.finishForegroundTurn(
               { type: "turn_failed", provider: "opencode", error: errorMsg },
               turnId,
@@ -2080,7 +2155,7 @@ class OpenCodeAgentSession implements AgentSession {
             return;
           }
           this.finishForegroundTurn(
-            { type: "turn_failed", provider: "opencode", error: normalizeTurnFailureError(err) },
+            { type: "turn_failed", provider: "opencode", error: toDiagnosticErrorMessage(err) },
             turnId,
           );
         });
@@ -2109,7 +2184,7 @@ class OpenCodeAgentSession implements AgentSession {
               {
                 type: "turn_failed",
                 provider: "opencode",
-                error: normalizeTurnFailureError(promptResponse.error),
+                error: toDiagnosticErrorMessage(promptResponse.error),
               },
               turnId,
             );
@@ -2121,7 +2196,7 @@ class OpenCodeAgentSession implements AgentSession {
             {
               type: "turn_failed",
               provider: "opencode",
-              error: normalizeTurnFailureError(error),
+              error: toDiagnosticErrorMessage(error),
             },
             turnId,
           );
@@ -2153,7 +2228,7 @@ class OpenCodeAgentSession implements AgentSession {
           break;
         }
 
-        const translated = this.translateEvent(event);
+        const translated = await this.translateEvent(event);
         for (const e of translated) {
           if (this.activeForegroundTurnId !== turnId) {
             return;
@@ -2186,7 +2261,7 @@ class OpenCodeAgentSession implements AgentSession {
           {
             type: "turn_failed",
             provider: "opencode",
-            error: normalizeTurnFailureError(error),
+            error: toDiagnosticErrorMessage(error),
           },
           turnId,
         );
@@ -2348,23 +2423,20 @@ class OpenCodeAgentSession implements AgentSession {
     const response = await this.client.app.agents({
       directory: this.config.cwd,
     });
+    const agents = response.error || !response.data ? [] : response.data;
 
-    const discoveredModes =
-      response.error || !response.data
-        ? []
-        : response.data
-            .filter((agent) => agent.mode === "primary" && agent.hidden !== true)
-            .map((agent) => ({
-              id: agent.name,
-              label: agent.name.charAt(0).toUpperCase() + agent.name.slice(1),
-              description:
-                typeof agent.description === "string" && agent.description.trim().length > 0
-                  ? agent.description.trim()
-                  : DEFAULT_MODES.find((mode) => mode.id === agent.name)?.description,
-            }));
+    const discoveredModes = agents
+      .filter((agent) => agent.mode === "primary" && agent.hidden !== true)
+      .map((agent) => ({
+        id: agent.name,
+        label: agent.name.charAt(0).toUpperCase() + agent.name.slice(1),
+        description:
+          typeof agent.description === "string" && agent.description.trim().length > 0
+            ? agent.description.trim()
+            : DEFAULT_MODES.find((mode) => mode.id === agent.name)?.description,
+      }));
 
-    this.availableModesCache =
-      discoveredModes.length > 0 ? sortOpenCodeModes(discoveredModes) : DEFAULT_MODES;
+    this.availableModesCache = mergeOpenCodeModes(discoveredModes);
     return this.availableModesCache;
   }
 
@@ -2376,14 +2448,22 @@ class OpenCodeAgentSession implements AgentSession {
     const result = await this.client.command.list({
       directory: this.config.cwd,
     });
+
+    const commandsByName = new Map(
+      OPENCODE_HANDLED_BUILTIN_SLASH_COMMANDS.map((command) => [command.name, command]),
+    );
     if (result.error || !result.data) {
-      return [];
+      return Array.from(commandsByName.values());
     }
-    return result.data.map((cmd) => ({
-      name: cmd.name,
-      description: cmd.description ?? "",
-      argumentHint: cmd.hints?.length ? cmd.hints.join(" ") : "",
-    }));
+
+    for (const cmd of result.data) {
+      commandsByName.set(cmd.name, {
+        name: cmd.name,
+        description: cmd.description ?? "",
+        argumentHint: cmd.hints?.length ? cmd.hints.join(" ") : "",
+      });
+    }
+    return Array.from(commandsByName.values());
   }
 
   async setMode(modeId: string): Promise<void> {
@@ -2585,11 +2665,11 @@ class OpenCodeAgentSession implements AgentSession {
     }
 
     throw new Error(
-      `Failed to ${operation} OpenCode MCP server '${name}': ${stringifyUnknownError(error)}`,
+      `Failed to ${operation} OpenCode MCP server '${name}': ${toDiagnosticErrorMessage(error)}`,
     );
   }
 
-  private translateEvent(event: OpenCodeEvent): AgentStreamEvent[] {
+  private async translateEvent(event: OpenCodeEvent): Promise<AgentStreamEvent[]> {
     const translated = translateOpenCodeEvent(event, {
       sessionId: this.sessionId,
       messageRoles: this.messageRoles,
@@ -2606,8 +2686,14 @@ class OpenCodeAgentSession implements AgentSession {
       },
     });
 
+    const events: AgentStreamEvent[] = [];
+
     for (const translatedEvent of translated) {
       if (translatedEvent.type === "permission_requested") {
+        const autoApproved = await this.tryAutoApproveToolPermission(translatedEvent.request);
+        if (autoApproved) {
+          continue;
+        }
         this.pendingPermissions.set(translatedEvent.request.id, translatedEvent.request);
       }
       if (translatedEvent.type === "turn_completed") {
@@ -2618,9 +2704,31 @@ class OpenCodeAgentSession implements AgentSession {
         this.accumulatedUsage =
           contextWindowMaxTokens !== undefined ? { contextWindowMaxTokens } : {};
       }
+      events.push(translatedEvent);
     }
 
-    return translated;
+    return events;
+  }
+
+  private async tryAutoApproveToolPermission(request: AgentPermissionRequest): Promise<boolean> {
+    if (this.currentMode !== OPENCODE_FULL_ACCESS_MODE_ID || request.kind !== "tool") {
+      return false;
+    }
+
+    try {
+      await this.client.permission.reply({
+        requestID: request.id,
+        directory: this.config.cwd,
+        reply: "once",
+      });
+      return true;
+    } catch (error) {
+      this.logger.warn(
+        { err: error, requestId: request.id },
+        "Failed to auto-approve OpenCode tool permission",
+      );
+      return false;
+    }
   }
 
   private resolveSelectedModelContextWindowMaxTokens(): number | undefined {

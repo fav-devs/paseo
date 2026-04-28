@@ -11,17 +11,15 @@ import {
   GitHubCommandError,
   createGitHubService,
   resolveGitHubRepo,
-  type GitHubRepoRemoteUrlResolver,
   type GitHubService,
 } from "../services/github-service.js";
 import { parseGitRevParsePath, resolveGitRevParsePath } from "./git-rev-parse-path.js";
 import { runGitCommand } from "./run-git-command.js";
 import { isPaseoOwnedWorktreeCwd } from "./worktree.js";
 import { readPaseoWorktreeMetadata } from "./worktree-metadata.js";
-const READ_ONLY_GIT_ENV: NodeJS.ProcessEnv = {
-  ...process.env,
+const READ_ONLY_GIT_ENV = {
   GIT_OPTIONAL_LOCKS: "0",
-};
+} as const;
 
 const DEFAULT_PULL_REQUEST_STATUS_CACHE_TTL_MS = 30_000;
 const PULL_REQUEST_STATUS_CACHE_MAX = 1_000;
@@ -178,7 +176,7 @@ async function listGitRefs(cwd: string, refPrefix: string): Promise<GitRef[]> {
       "--format=%(refname)%09%(committerdate:unix)",
       refPrefix,
     ],
-    { cwd, env: READ_ONLY_GIT_ENV },
+    { cwd, envOverlay: READ_ONLY_GIT_ENV },
   );
   return stdout
     .split("\n")
@@ -326,7 +324,7 @@ export async function resolveBranchCheckout(
   const localRef = `refs/heads/${normalized}`;
   const localResult = await runGitCommand(["rev-parse", "--verify", "--quiet", localRef], {
     cwd,
-    env: READ_ONLY_GIT_ENV,
+    envOverlay: READ_ONLY_GIT_ENV,
     acceptExitCodes: [0, 1],
   });
   const hasLocal = localResult.exitCode === 0;
@@ -338,7 +336,7 @@ export async function resolveBranchCheckout(
   const remoteRefPath = `refs/remotes/${remoteRef}`;
   const remoteResult = await runGitCommand(["rev-parse", "--verify", "--quiet", remoteRefPath], {
     cwd,
-    env: READ_ONLY_GIT_ENV,
+    envOverlay: READ_ONLY_GIT_ENV,
     acceptExitCodes: [0, 1],
   });
   const hasRemote = remoteResult.exitCode === 0;
@@ -399,7 +397,7 @@ async function listCheckoutFileChanges(
       ignoreWhitespace,
       extra: ["--name-status", ...getCheckoutDiffRefArgs(refs)],
     }),
-    { cwd, env: READ_ONLY_GIT_ENV },
+    { cwd, envOverlay: READ_ONLY_GIT_ENV },
   );
   for (const line of nameStatusOut
     .split("\n")
@@ -441,7 +439,7 @@ async function listCheckoutFileChanges(
       ["ls-files", "--others", "--exclude-standard"],
       {
         cwd,
-        env: READ_ONLY_GIT_ENV,
+        envOverlay: READ_ONLY_GIT_ENV,
       },
     );
     for (const file of untrackedOut
@@ -481,7 +479,7 @@ async function readGitFileContentAtRef(
   try {
     const { stdout } = await runGitCommand(["show", `${ref}:${path}`], {
       cwd,
-      env: READ_ONLY_GIT_ENV,
+      envOverlay: READ_ONLY_GIT_ENV,
     });
     return stdout;
   } catch {
@@ -493,7 +491,7 @@ async function tryResolveMergeBase(cwd: string, baseRef: string): Promise<string
   try {
     const { stdout } = await runGitCommand(["merge-base", baseRef, "HEAD"], {
       cwd,
-      env: READ_ONLY_GIT_ENV,
+      envOverlay: READ_ONLY_GIT_ENV,
     });
     const sha = stdout.trim();
     return sha.length > 0 ? sha : null;
@@ -538,7 +536,7 @@ async function getTrackedNumstatByPath(
     }),
     {
       cwd,
-      env: READ_ONLY_GIT_ENV,
+      envOverlay: READ_ONLY_GIT_ENV,
       maxOutputBytes: TRACKED_DIFF_NUMSTAT_MAX_BYTES,
       acceptExitCodes: [0],
     },
@@ -710,7 +708,7 @@ function isGitError(error: unknown): boolean {
 
 async function requireGitRepo(cwd: string): Promise<void> {
   try {
-    await runGitCommand(["rev-parse", "--git-dir"], { cwd, env: READ_ONLY_GIT_ENV });
+    await runGitCommand(["rev-parse", "--git-dir"], { cwd, envOverlay: READ_ONLY_GIT_ENV });
   } catch {
     throw new NotGitRepoError(cwd);
   }
@@ -720,7 +718,7 @@ export async function getCurrentBranch(cwd: string): Promise<string | null> {
   try {
     const { stdout } = await runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], {
       cwd,
-      env: READ_ONLY_GIT_ENV,
+      envOverlay: READ_ONLY_GIT_ENV,
     });
     const branch = stdout.trim();
     if (branch === "HEAD") {
@@ -739,7 +737,7 @@ async function getRebaseHeadBranch(cwd: string): Promise<string | null> {
       try {
         const { stdout } = await runGitCommand(["rev-parse", "--git-path", path], {
           cwd,
-          env: READ_ONLY_GIT_ENV,
+          envOverlay: READ_ONLY_GIT_ENV,
         });
         const headName = (await readFile(resolve(cwd, stdout.trim()), "utf8")).trim();
         if (headName.startsWith("refs/heads/")) {
@@ -758,7 +756,7 @@ async function getWorktreeRoot(cwd: string): Promise<string | null> {
   try {
     const { stdout } = await runGitCommand(["rev-parse", "--show-toplevel"], {
       cwd,
-      env: READ_ONLY_GIT_ENV,
+      envOverlay: READ_ONLY_GIT_ENV,
     });
     return parseGitRevParsePath(stdout);
   } catch {
@@ -769,7 +767,7 @@ async function getWorktreeRoot(cwd: string): Promise<string | null> {
 export async function getMainRepoRoot(cwd: string): Promise<string> {
   const { stdout: commonDirOut } = await runGitCommand(["rev-parse", "--git-common-dir"], {
     cwd,
-    env: READ_ONLY_GIT_ENV,
+    envOverlay: READ_ONLY_GIT_ENV,
   });
   const commonDir = resolveGitRevParsePath(cwd, commonDirOut);
   if (!commonDir) {
@@ -783,7 +781,7 @@ export async function getMainRepoRoot(cwd: string): Promise<string> {
 
   const { stdout: worktreeOut } = await runGitCommand(["worktree", "list", "--porcelain"], {
     cwd,
-    env: READ_ONLY_GIT_ENV,
+    envOverlay: READ_ONLY_GIT_ENV,
   });
   const worktrees = parseWorktreeList(worktreeOut);
   const nonBareNonPaseo = worktrees.filter((wt) => !wt.isBare && !isPaseoWorktreePath(wt.path));
@@ -849,7 +847,7 @@ async function getWorktreePathForBranch(cwd: string, branchName: string): Promis
   try {
     const { stdout } = await runGitCommand(["worktree", "list", "--porcelain"], {
       cwd,
-      env: READ_ONLY_GIT_ENV,
+      envOverlay: READ_ONLY_GIT_ENV,
     });
     const entries = parseWorktreeList(stdout);
     const ref = branchName.startsWith("refs/heads/") ? branchName : `refs/heads/${branchName}`;
@@ -946,7 +944,7 @@ async function resolveBaseRefForCwd(
 async function isWorkingTreeDirty(cwd: string): Promise<boolean> {
   const { stdout } = await runGitCommand(["status", "--porcelain"], {
     cwd,
-    env: READ_ONLY_GIT_ENV,
+    envOverlay: READ_ONLY_GIT_ENV,
   });
   return stdout.trim().length > 0;
 }
@@ -955,7 +953,7 @@ export async function getOriginRemoteUrl(cwd: string): Promise<string | null> {
   try {
     const { stdout } = await runGitCommand(["config", "--get", "remote.origin.url"], {
       cwd,
-      env: READ_ONLY_GIT_ENV,
+      envOverlay: READ_ONLY_GIT_ENV,
     });
     const url = stdout.trim();
     return url.length > 0 ? url : null;
@@ -973,7 +971,7 @@ async function getGitConfigValue(cwd: string, key: string): Promise<string | nul
   try {
     const { stdout } = await runGitCommand(["config", "--get", key], {
       cwd,
-      env: READ_ONLY_GIT_ENV,
+      envOverlay: READ_ONLY_GIT_ENV,
     });
     const value = stdout.trim();
     return value.length > 0 ? value : null;
@@ -1019,7 +1017,7 @@ export async function resolveAbsoluteGitDir(cwd: string): Promise<string | null>
   try {
     const { stdout } = await runGitCommand(["rev-parse", "--absolute-git-dir"], {
       cwd,
-      env: READ_ONLY_GIT_ENV,
+      envOverlay: READ_ONLY_GIT_ENV,
     });
     const gitDir = stdout.trim();
     return gitDir.length > 0 ? gitDir : null;
@@ -1061,7 +1059,7 @@ export async function resolveRepositoryDefaultBranch(repoRoot: string): Promise<
       ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
       {
         cwd: repoRoot,
-        env: READ_ONLY_GIT_ENV,
+        envOverlay: READ_ONLY_GIT_ENV,
       },
     );
     const ref = stdout.trim();
@@ -1075,7 +1073,7 @@ export async function resolveRepositoryDefaultBranch(repoRoot: string): Promise<
       try {
         await runGitCommand(["show-ref", "--verify", "--quiet", `refs/heads/${localName}`], {
           cwd: repoRoot,
-          env: READ_ONLY_GIT_ENV,
+          envOverlay: READ_ONLY_GIT_ENV,
         });
         return localName;
       } catch {
@@ -1088,7 +1086,7 @@ export async function resolveRepositoryDefaultBranch(repoRoot: string): Promise<
 
   const { stdout } = await runGitCommand(["branch", "--format=%(refname:short)"], {
     cwd: repoRoot,
-    env: READ_ONLY_GIT_ENV,
+    envOverlay: READ_ONLY_GIT_ENV,
   });
   const branches = new Set(
     stdout
@@ -1137,7 +1135,7 @@ function normalizeComparisonBaseRefName(input: string): ComparisonBaseRefName {
 async function doesGitRefExist(cwd: string, fullRef: string): Promise<boolean> {
   const result = await runGitCommand(["show-ref", "--verify", "--quiet", fullRef], {
     cwd,
-    env: READ_ONLY_GIT_ENV,
+    envOverlay: READ_ONLY_GIT_ENV,
     acceptExitCodes: [0, 1],
   });
   return result.exitCode === 0;
@@ -1182,7 +1180,7 @@ async function resolveMostAheadBaseRef(cwd: string, normalizedBaseRef: string): 
 
   const { stdout } = await runGitCommand(
     ["rev-list", "--left-right", "--count", `${normalizedBaseRef}...origin/${normalizedBaseRef}`],
-    { cwd, env: READ_ONLY_GIT_ENV },
+    { cwd, envOverlay: READ_ONLY_GIT_ENV },
   );
   const [localOnlyRaw, originOnlyRaw] = stdout.trim().split(/\s+/);
   const localOnly = Number.parseInt(localOnlyRaw ?? "0", 10);
@@ -1209,7 +1207,7 @@ async function getAheadBehind(
   const comparisonBaseRef = await resolveBestComparisonBaseRef(cwd, baseRef);
   const { stdout } = await runGitCommand(
     ["rev-list", "--left-right", "--count", `${comparisonBaseRef}...${currentBranch}`],
-    { cwd, env: READ_ONLY_GIT_ENV },
+    { cwd, envOverlay: READ_ONLY_GIT_ENV },
   );
   const [behindRaw, aheadRaw] = stdout.trim().split(/\s+/);
   const behind = Number.parseInt(behindRaw ?? "0", 10);
@@ -1227,7 +1225,7 @@ async function getAheadOfOrigin(cwd: string, currentBranch: string): Promise<num
   try {
     const { stdout } = await runGitCommand(
       ["rev-list", "--count", `origin/${currentBranch}..${currentBranch}`],
-      { cwd, env: READ_ONLY_GIT_ENV },
+      { cwd, envOverlay: READ_ONLY_GIT_ENV },
     );
     const count = Number.parseInt(stdout.trim(), 10);
     return Number.isNaN(count) ? null : count;
@@ -1235,7 +1233,7 @@ async function getAheadOfOrigin(cwd: string, currentBranch: string): Promise<num
     try {
       const { stdout } = await runGitCommand(["rev-list", "--count", currentBranch], {
         cwd,
-        env: READ_ONLY_GIT_ENV,
+        envOverlay: READ_ONLY_GIT_ENV,
       });
       const count = Number.parseInt(stdout.trim(), 10);
       return Number.isNaN(count) ? null : count;
@@ -1252,7 +1250,7 @@ async function getBehindOfOrigin(cwd: string, currentBranch: string): Promise<nu
   try {
     const { stdout } = await runGitCommand(
       ["rev-list", "--count", `${currentBranch}..origin/${currentBranch}`],
-      { cwd, env: READ_ONLY_GIT_ENV },
+      { cwd, envOverlay: READ_ONLY_GIT_ENV },
     );
     const count = Number.parseInt(stdout.trim(), 10);
     return Number.isNaN(count) ? null : count;
@@ -1396,7 +1394,7 @@ async function getUntrackedDiffText(
     }),
     {
       cwd,
-      env: READ_ONLY_GIT_ENV,
+      envOverlay: READ_ONLY_GIT_ENV,
       maxOutputBytes: PER_FILE_DIFF_MAX_BYTES,
       acceptExitCodes: [0, 1],
     },
@@ -1545,7 +1543,7 @@ async function getCheckoutShortstatUncached(
   try {
     const { stdout: mergeBaseOut } = await runGitCommand(["merge-base", "HEAD", comparisonRef], {
       cwd,
-      env: READ_ONLY_GIT_ENV,
+      envOverlay: READ_ONLY_GIT_ENV,
     });
     const mergeBase = mergeBaseOut.trim();
     if (!mergeBase) {
@@ -1554,7 +1552,7 @@ async function getCheckoutShortstatUncached(
 
     const { stdout } = await runGitCommand(["diff", "--shortstat", mergeBase], {
       cwd,
-      env: READ_ONLY_GIT_ENV,
+      envOverlay: READ_ONLY_GIT_ENV,
     });
     return parseCheckoutShortstat(stdout);
   } catch {
@@ -1888,7 +1886,7 @@ export async function getCheckoutDiff(
       }),
       {
         cwd,
-        env: READ_ONLY_GIT_ENV,
+        envOverlay: READ_ONLY_GIT_ENV,
         maxOutputBytes: TOTAL_DIFF_MAX_BYTES,
       },
     );
@@ -2173,7 +2171,7 @@ export async function mergeFromBase(
   if (requireCleanTarget) {
     const { stdout } = await runGitCommand(["status", "--porcelain"], {
       cwd,
-      env: READ_ONLY_GIT_ENV,
+      envOverlay: READ_ONLY_GIT_ENV,
     });
     if (stdout.trim().length > 0) {
       throw new Error("Working directory has uncommitted changes.");
@@ -2356,11 +2354,10 @@ export async function createPullRequest(
   cwd: string,
   options: CreatePullRequestOptions,
   github: GitHubService = createGitHubService(),
-  workspaceGitService: GitHubRepoRemoteUrlResolver,
   context?: CheckoutContext,
 ): Promise<{ url: string; number: number }> {
   await requireGitRepo(cwd);
-  const repo = await resolveGitHubRepo(cwd, { workspaceGitService });
+  const repo = await resolveGitHubRepo(cwd);
   if (!repo) {
     throw new Error("Unable to determine GitHub repo from git remote");
   }

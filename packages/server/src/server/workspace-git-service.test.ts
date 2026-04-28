@@ -136,8 +136,9 @@ function createDirent(name: string, isDirectory: boolean) {
 }
 
 async function flushPromises(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 6; i++) {
+    await Promise.resolve();
+  }
 }
 
 function createDeferred<T>() {
@@ -337,7 +338,7 @@ describe("WorkspaceGitServiceImpl", () => {
     service.dispose();
   });
 
-  test("cold getSnapshot calls share one workspace target and cache the snapshot", async () => {
+  test("cold getSnapshot calls share one workspace target setup and cache the snapshot", async () => {
     const checkoutStatusDeferred = createDeferred<CheckoutStatusGit>();
     const getCheckoutStatus = vi.fn(async () => checkoutStatusDeferred.promise);
     const getPullRequestStatus = vi.fn(async () => createPullRequestStatusResult());
@@ -469,9 +470,9 @@ describe("WorkspaceGitServiceImpl", () => {
       peakConcurrentFetches = Math.max(peakConcurrentFetches, inFlightFetches.size);
       const deferred = createDeferred<void>();
       deferredByRepo.set(cwd, deferred);
-      return deferred.promise.finally(() => {
-        inFlightFetches.delete(cwd);
-      });
+      const clearInFlightFetch = () => inFlightFetches.delete(cwd);
+      void deferred.promise.then(clearInFlightFetch, clearInFlightFetch);
+      return deferred.promise;
     });
     const hasOriginRemote = vi.fn(async () => true);
     const resolveAbsoluteGitDir = vi.fn(async (cwd: string) => path.join(cwd, ".git"));
