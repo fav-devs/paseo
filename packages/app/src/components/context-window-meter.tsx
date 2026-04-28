@@ -9,7 +9,7 @@ interface ContextWindowMeterProps {
   usedTokens: number;
   /** Optional label for the tooltip title (e.g. Claude). */
   providerLabel?: string;
-};
+}
 
 const SVG_SIZE = 16;
 const CENTER = SVG_SIZE / 2;
