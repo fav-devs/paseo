@@ -608,6 +608,25 @@ export class AgentManager {
       .slice(0, limit);
   }
 
+  async findPersistedAgent(
+    provider: AgentProvider,
+    sessionId: string,
+  ): Promise<PersistedAgentDescriptor | null> {
+    const client = this.requireClient(provider);
+    if (!client.listPersistedAgents) {
+      return null;
+    }
+
+    const descriptors = await client.listPersistedAgents({ limit: 200 });
+    return (
+      descriptors.find((descriptor) => {
+        return (
+          descriptor.sessionId === sessionId || descriptor.persistence.nativeHandle === sessionId
+        );
+      }) ?? null
+    );
+  }
+
   async listProviderAvailability(): Promise<ProviderAvailability[]> {
     const checks = Array.from(this.clients.keys()).map(async (provider) => {
       const client = this.clients.get(provider);
@@ -2524,6 +2543,37 @@ export class AgentManager {
         return undefined;
       case "usage_updated":
         agent.lastUsage = event.usage;
+        this.emitState(agent);
+        return undefined;
+      case "mode_changed":
+        agent.currentModeId = event.currentModeId;
+        agent.availableModes = event.availableModes;
+        if (agent.runtimeInfo) {
+          agent.runtimeInfo = { ...agent.runtimeInfo, modeId: event.currentModeId };
+        }
+        flags.shouldDispatchEvent = false;
+        this.emitState(agent);
+        return undefined;
+      case "model_changed":
+        agent.runtimeInfo = event.runtimeInfo;
+        if (!agent.persistence && event.runtimeInfo.sessionId) {
+          agent.persistence = attachPersistenceCwd(
+            { provider: agent.provider, sessionId: event.runtimeInfo.sessionId },
+            agent.cwd,
+          );
+        }
+        agent.currentModeId = event.runtimeInfo.modeId ?? agent.currentModeId;
+        flags.shouldDispatchEvent = false;
+        this.emitState(agent);
+        return undefined;
+      case "thinking_option_changed":
+        if (agent.runtimeInfo) {
+          agent.runtimeInfo = {
+            ...agent.runtimeInfo,
+            thinkingOptionId: event.thinkingOptionId,
+          };
+        }
+        flags.shouldDispatchEvent = false;
         this.emitState(agent);
         return undefined;
       case "timeline":

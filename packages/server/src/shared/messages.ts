@@ -775,9 +775,38 @@ export const GitHubIssueAttachmentSchema = z.object({
   body: z.string().nullable().optional(),
 });
 
+export const ReviewAttachmentContextLineSchema = z.object({
+  oldLineNumber: z.number().int().positive().nullable(),
+  newLineNumber: z.number().int().positive().nullable(),
+  type: z.enum(["add", "remove", "context"]),
+  content: z.string(),
+});
+
+export const ReviewAttachmentCommentSchema = z.object({
+  filePath: z.string(),
+  side: z.enum(["old", "new"]),
+  lineNumber: z.number().int().positive(),
+  body: z.string(),
+  context: z.object({
+    hunkHeader: z.string(),
+    targetLine: ReviewAttachmentContextLineSchema,
+    lines: z.array(ReviewAttachmentContextLineSchema),
+  }),
+});
+
+export const ReviewAttachmentSchema = z.object({
+  type: z.literal("review"),
+  mimeType: z.literal("application/paseo-review"),
+  cwd: z.string(),
+  mode: z.enum(["uncommitted", "base"]),
+  baseRef: z.string().nullable().optional(),
+  comments: z.array(ReviewAttachmentCommentSchema),
+});
+
 export const AgentAttachmentSchema = z.discriminatedUnion("type", [
   GitHubPrAttachmentSchema,
   GitHubIssueAttachmentSchema,
+  ReviewAttachmentSchema,
 ]);
 
 function normalizeAgentAttachments(input: unknown): AgentAttachment[] {
@@ -1081,6 +1110,15 @@ export const ResumeAgentRequestMessageSchema = z.object({
   type: z.literal("resume_agent_request"),
   handle: AgentPersistenceHandleSchema,
   overrides: AgentSessionConfigSchema.partial().optional(),
+  requestId: z.string(),
+});
+
+export const ImportAgentRequestMessageSchema = z.object({
+  type: z.literal("import_agent_request"),
+  provider: AgentProviderSchema,
+  sessionId: z.string(),
+  cwd: z.string().optional(),
+  labels: z.record(z.string()).optional(),
   requestId: z.string(),
 });
 
@@ -1516,6 +1554,7 @@ export const CreatePaseoWorktreeRequestSchema = z.object({
   type: z.literal("create_paseo_worktree_request"),
   cwd: z.string(),
   worktreeSlug: z.string().optional(),
+  nameContext: z.string().optional(),
   attachments: AgentAttachmentsSchema,
   refName: z.string().min(1).optional(),
   action: z.enum(["branch-off", "checkout"]).optional(),
@@ -1926,6 +1965,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   RefreshProvidersSnapshotRequestMessageSchema,
   ProviderDiagnosticRequestMessageSchema,
   ResumeAgentRequestMessageSchema,
+  ImportAgentRequestMessageSchema,
   RefreshAgentRequestMessageSchema,
   CancelAgentRequestMessageSchema,
   ShutdownServerRequestMessageSchema,
@@ -2433,30 +2473,36 @@ export const ProjectActionPayloadSchema = z.object({
   runOnWorkspaceCreate: z.boolean().optional().default(false),
 });
 
-export const WorkspaceDescriptorPayloadSchema = z.object({
-  id: z.string(),
-  projectId: z.string(),
-  projectDisplayName: z.string(),
-  projectRootPath: z.string(),
-  workspaceDirectory: z.string(),
-  projectKind: z.enum(["git", "non_git", "directory"]),
-  // COMPAT(workspaces): keep legacy directory workspace kind parseable.
-  workspaceKind: z.enum(["directory", "local_checkout", "checkout", "worktree"]),
-  name: z.string(),
-  status: WorkspaceStateBucketSchema,
-  activityAt: z.string().nullable(),
-  diffStat: z
-    .object({
-      additions: z.number(),
-      deletions: z.number(),
-    })
-    .nullable()
-    .optional(),
-  projectActions: z.array(ProjectActionPayloadSchema).optional().default([]),
-  scripts: z.array(WorkspaceScriptPayloadSchema).default([]),
-  gitRuntime: WorkspaceGitRuntimePayloadSchema,
-  githubRuntime: WorkspaceGitHubRuntimePayloadSchema,
-});
+export const WorkspaceDescriptorPayloadSchema = z
+  .object({
+    id: z.string(),
+    projectId: z.string(),
+    projectDisplayName: z.string(),
+    projectRootPath: z.string(),
+    workspaceDirectory: z.string().optional(),
+    projectKind: z.enum(["git", "non_git", "directory"]),
+    // COMPAT(workspaces): keep legacy directory workspace kind parseable.
+    workspaceKind: z.enum(["directory", "local_checkout", "checkout", "worktree"]),
+    name: z.string(),
+    archivingAt: z.string().nullable().optional().default(null),
+    status: WorkspaceStateBucketSchema,
+    activityAt: z.string().nullable(),
+    diffStat: z
+      .object({
+        additions: z.number(),
+        deletions: z.number(),
+      })
+      .nullable()
+      .optional(),
+    scripts: z.array(WorkspaceScriptPayloadSchema).default([]),
+    gitRuntime: WorkspaceGitRuntimePayloadSchema,
+    githubRuntime: WorkspaceGitHubRuntimePayloadSchema,
+    project: ProjectPlacementPayloadSchema.optional(),
+  })
+  .transform((workspace) => ({
+    ...workspace,
+    workspaceDirectory: workspace.workspaceDirectory ?? workspace.projectRootPath,
+  }));
 
 export const AgentUpdateMessageSchema = z.object({
   type: z.literal("agent_update"),
@@ -3960,6 +4006,7 @@ export type RejectSecureTerminalExecRequestMessage = z.infer<
 >;
 export type CreateAgentRequestMessage = z.infer<typeof CreateAgentRequestMessageSchema>;
 export type AgentAttachment = z.infer<typeof AgentAttachmentSchema>;
+export type ReviewAttachment = z.infer<typeof ReviewAttachmentSchema>;
 export type ListProviderModelsRequestMessage = z.infer<
   typeof ListProviderModelsRequestMessageSchema
 >;

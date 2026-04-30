@@ -1,253 +1,293 @@
 import type { DiffLine, ParsedDiffFile } from "@/hooks/use-checkout-diff-query";
-import { buildDiffRangeChatReference } from "./chat-reference-token";
-import {
-  buildChangeBlockReferenceRange,
-  buildContextReferenceRange,
-  buildHunkLinePositions,
-  type DiffHunkLinePosition,
-} from "./diff-chat-reference";
+
+type ReviewSide = "old" | "new";
+type ReviewableLineType = "add" | "remove" | "context";
+
+export interface ReviewableDiffTargetKeyInput {
+  filePath: string;
+  side: ReviewSide;
+  lineNumber: number;
+}
+
+export interface ReviewableDiffTarget {
+  key: string;
+  filePath: string;
+  hunkHeader: string;
+  hunkIndex: number;
+  lineIndex: number;
+  oldLineNumber: number | null;
+  newLineNumber: number | null;
+  side: ReviewSide;
+  lineNumber: number;
+  lineType: ReviewableLineType;
+  content: string;
+}
+
+export function buildReviewableDiffTargetKey(input: ReviewableDiffTargetKeyInput): string {
+  return `${input.filePath}:${input.side}:${input.lineNumber}`;
+}
+
+export interface NumberedDiffCell extends ReviewableDiffTarget {
+  line: DiffLine;
+}
+
+export interface NumberedDiffLine {
+  key: string;
+  filePath: string;
+  hunkHeader: string;
+  hunkIndex: number;
+  lineIndex: number;
+  line: DiffLine;
+  oldLineNumber: number | null;
+  newLineNumber: number | null;
+  unifiedCell: NumberedDiffCell | null;
+  oldCell: NumberedDiffCell | null;
+  newCell: NumberedDiffCell | null;
+}
+
+export interface NumberedDiffHunk {
+  hunkIndex: number;
+  hunkHeader: string;
+  lines: NumberedDiffLine[];
+}
 
 export interface SplitDiffDisplayLine {
   type: DiffLine["type"];
   content: string;
   tokens?: DiffLine["tokens"];
   lineNumber: number | null;
+  reviewTarget: ReviewableDiffTarget | null;
 }
 
 export interface UnifiedDiffDisplayLine {
   key: string;
   line: DiffLine;
   lineNumber: number | null;
+  reviewTarget: ReviewableDiffTarget | null;
 }
 
 export type SplitDiffRow =
   | {
       kind: "header";
       content: string;
-      hunkIndex: number;
     }
   | {
       kind: "pair";
-      hunkIndex: number;
-      isFirstChangedLineInHunk: boolean;
-      chatReference: string;
       left: SplitDiffDisplayLine | null;
       right: SplitDiffDisplayLine | null;
     };
 
-function toDisplayLine(input: {
-  line: DiffLine;
-  position: DiffHunkLinePosition;
-  side: "left" | "right";
-}): SplitDiffDisplayLine | null {
-  const { line, position, side } = input;
-  if (line.type === "header") {
+function toSplitDisplayLine(cell: NumberedDiffCell | null): SplitDiffDisplayLine | null {
+  if (!cell) {
     return null;
   }
 
-  if (line.type === "remove") {
-    if (side !== "left") {
-      return null;
-    }
-    return {
-      type: "remove",
-      content: line.content,
-      tokens: line.tokens,
-      lineNumber: position.oldLineNumber,
-    };
-  }
-
-  if (line.type === "add") {
-    if (side !== "right") {
-      return null;
-    }
-    return {
-      type: "add",
-      content: line.content,
-      tokens: line.tokens,
-      lineNumber: position.newLineNumber,
-    };
-  }
-
   return {
-    type: "context",
-    content: line.content,
-    tokens: line.tokens,
-    lineNumber: side === "left" ? position.oldLineNumber : position.newLineNumber,
+    type: cell.lineType,
+    content: cell.content,
+    ...(cell.line.tokens ? { tokens: cell.line.tokens } : {}),
+    lineNumber: cell.lineNumber,
+    reviewTarget: toReviewTarget(cell),
   };
 }
 
-export function buildUnifiedDiffLines(file: ParsedDiffFile): UnifiedDiffDisplayLine[] {
-  const lines: UnifiedDiffDisplayLine[] = [];
+function toReviewTarget(cell: NumberedDiffCell): ReviewableDiffTarget {
+  return {
+    key: cell.key,
+    filePath: cell.filePath,
+    hunkHeader: cell.hunkHeader,
+    hunkIndex: cell.hunkIndex,
+    lineIndex: cell.lineIndex,
+    oldLineNumber: cell.oldLineNumber,
+    newLineNumber: cell.newLineNumber,
+    side: cell.side,
+    lineNumber: cell.lineNumber,
+    lineType: cell.lineType,
+    content: cell.content,
+  };
+}
 
+function getHunkHeader(hunk: ParsedDiffFile["hunks"][number]): string {
+  const headerLine = hunk.lines.find((line) => line.type === "header");
+  return headerLine?.content ?? "@@";
+}
+
+export function buildNumberedDiffHunks(file: ParsedDiffFile): NumberedDiffHunk[] {
+  const numberedHunks: NumberedDiffHunk[] = [];
   for (const [hunkIndex, hunk] of file.hunks.entries()) {
     let oldLineNo = hunk.oldStart;
     let newLineNo = hunk.newStart;
+    const hunkHeader = getHunkHeader(hunk);
+    const lines: NumberedDiffLine[] = [];
 
     for (const [lineIndex, line] of hunk.lines.entries()) {
-      let lineNumber: number | null = null;
+      let oldLineNumber: number | null = null;
+      let newLineNumber: number | null = null;
 
       if (line.type === "remove") {
-        lineNumber = oldLineNo;
+        oldLineNumber = oldLineNo;
         oldLineNo += 1;
       } else if (line.type === "add") {
-        lineNumber = newLineNo;
+        newLineNumber = newLineNo;
         newLineNo += 1;
       } else if (line.type === "context") {
-        lineNumber = newLineNo;
+        oldLineNumber = oldLineNo;
+        newLineNumber = newLineNo;
         oldLineNo += 1;
         newLineNo += 1;
       }
 
+      const oldCell = buildNumberedCell({
+        filePath: file.path,
+        hunkHeader,
+        hunkIndex,
+        lineIndex,
+        line,
+        oldLineNumber,
+        newLineNumber,
+        side: "old",
+      });
+      const newCell = buildNumberedCell({
+        filePath: file.path,
+        hunkHeader,
+        hunkIndex,
+        lineIndex,
+        line,
+        oldLineNumber,
+        newLineNumber,
+        side: "new",
+      });
+
       lines.push({
         key: `${hunkIndex}-${lineIndex}`,
+        filePath: file.path,
+        hunkHeader,
+        hunkIndex,
+        lineIndex,
         line,
-        lineNumber,
+        oldLineNumber,
+        newLineNumber,
+        unifiedCell: line.type === "remove" ? oldCell : newCell,
+        oldCell,
+        newCell,
       });
     }
+
+    numberedHunks.push({ hunkIndex, hunkHeader, lines });
   }
 
-  return lines;
+  return numberedHunks;
+}
+
+function buildNumberedCell(input: {
+  filePath: string;
+  hunkHeader: string;
+  hunkIndex: number;
+  lineIndex: number;
+  line: DiffLine;
+  oldLineNumber: number | null;
+  newLineNumber: number | null;
+  side: ReviewSide;
+}): NumberedDiffCell | null {
+  if (input.line.type === "header") {
+    return null;
+  }
+  if (input.line.type === "remove" && input.side !== "old") {
+    return null;
+  }
+  if (input.line.type === "add" && input.side !== "new") {
+    return null;
+  }
+
+  const lineNumber = input.side === "old" ? input.oldLineNumber : input.newLineNumber;
+  if (lineNumber === null) {
+    return null;
+  }
+
+  return {
+    key: buildReviewableDiffTargetKey({
+      filePath: input.filePath,
+      side: input.side,
+      lineNumber,
+    }),
+    filePath: input.filePath,
+    hunkHeader: input.hunkHeader,
+    hunkIndex: input.hunkIndex,
+    lineIndex: input.lineIndex,
+    oldLineNumber: input.oldLineNumber,
+    newLineNumber: input.newLineNumber,
+    side: input.side,
+    lineNumber,
+    lineType: input.line.type,
+    content: input.line.content,
+    line: input.line,
+  };
+}
+
+export function buildUnifiedDiffLines(file: ParsedDiffFile): UnifiedDiffDisplayLine[] {
+  return buildNumberedDiffHunks(file).flatMap((hunk) =>
+    hunk.lines.map((numberedLine) => ({
+      key: numberedLine.key,
+      line: numberedLine.line,
+      lineNumber: numberedLine.unifiedCell?.lineNumber ?? null,
+      reviewTarget: numberedLine.unifiedCell ? toReviewTarget(numberedLine.unifiedCell) : null,
+    })),
+  );
 }
 
 export function buildSplitDiffRows(file: ParsedDiffFile): SplitDiffRow[] {
   const rows: SplitDiffRow[] = [];
 
-  for (const [hunkIndex, hunk] of file.hunks.entries()) {
-    const positions = buildHunkLinePositions(hunk);
-    let hasChangedLine = false;
+  for (const hunk of buildNumberedDiffHunks(file)) {
     rows.push({
       kind: "header",
-      content: hunk.lines[0]?.type === "header" ? hunk.lines[0].content : "@@",
-      hunkIndex,
+      content: hunk.hunkHeader,
     });
 
-    let pendingRemovalIndices: number[] = [];
-    let pendingAdditionIndices: number[] = [];
-
-    const pushPairRow = (input: {
-      chatReference: string;
-      hasChanges: boolean;
-      left: SplitDiffDisplayLine | null;
-      right: SplitDiffDisplayLine | null;
-    }) => {
-      rows.push({
-        kind: "pair",
-        hunkIndex,
-        isFirstChangedLineInHunk: input.hasChanges && !hasChangedLine,
-        chatReference: input.chatReference,
-        left: input.left,
-        right: input.right,
-      });
-      if (input.hasChanges) {
-        hasChangedLine = true;
-      }
-    };
+    let pendingRemovals: NumberedDiffCell[] = [];
+    let pendingAdditions: NumberedDiffCell[] = [];
 
     const flushPendingRows = () => {
-      const pairCount = Math.max(pendingRemovalIndices.length, pendingAdditionIndices.length);
-      if (pairCount === 0) {
-        return;
-      }
-
-      const range = buildChangeBlockReferenceRange({
-        hunk,
-        positions,
-        startIndex:
-          Math.min(
-            pendingRemovalIndices[0] ?? Number.POSITIVE_INFINITY,
-            pendingAdditionIndices[0] ?? Number.POSITIVE_INFINITY,
-          ) || 0,
-        endIndex:
-          Math.max(
-            pendingRemovalIndices[pendingRemovalIndices.length - 1] ?? Number.NEGATIVE_INFINITY,
-            pendingAdditionIndices[pendingAdditionIndices.length - 1] ?? Number.NEGATIVE_INFINITY,
-          ) || 0,
-      });
-      const chatReference = buildDiffRangeChatReference({
-        path: file.path,
-        ...(range ?? {
-          oldStart: hunk.oldStart,
-          oldCount: hunk.oldCount,
-          newStart: hunk.newStart,
-          newCount: hunk.newCount,
-        }),
-      });
-
+      const pairCount = Math.max(pendingRemovals.length, pendingAdditions.length);
       for (let index = 0; index < pairCount; index += 1) {
-        const removalIndex = pendingRemovalIndices[index];
-        const additionIndex = pendingAdditionIndices[index];
-        const removalLine = removalIndex != null ? hunk.lines[removalIndex] : null;
-        const additionLine = additionIndex != null ? hunk.lines[additionIndex] : null;
-        pushPairRow({
-          chatReference,
-          hasChanges: true,
-          left:
-            removalLine && removalIndex != null
-              ? toDisplayLine({
-                  line: removalLine,
-                  position: positions[removalIndex],
-                  side: "left",
-                })
-              : null,
-          right:
-            additionLine && additionIndex != null
-              ? toDisplayLine({
-                  line: additionLine,
-                  position: positions[additionIndex],
-                  side: "right",
-                })
-              : null,
+        const removal = pendingRemovals[index] ?? null;
+        const addition = pendingAdditions[index] ?? null;
+        rows.push({
+          kind: "pair",
+          left: toSplitDisplayLine(removal),
+          right: toSplitDisplayLine(addition),
         });
       }
-      pendingRemovalIndices = [];
-      pendingAdditionIndices = [];
+      pendingRemovals = [];
+      pendingAdditions = [];
     };
 
-    for (const [lineIndex, line] of hunk.lines.entries()) {
-      if (lineIndex === 0) {
+    for (const numberedLine of hunk.lines) {
+      if (numberedLine.line.type === "header") {
         continue;
       }
 
-      if (line.type === "remove") {
-        pendingRemovalIndices.push(lineIndex);
+      if (numberedLine.line.type === "remove") {
+        if (numberedLine.oldCell) {
+          pendingRemovals.push(numberedLine.oldCell);
+        }
         continue;
       }
 
-      if (line.type === "add") {
-        pendingAdditionIndices.push(lineIndex);
+      if (numberedLine.line.type === "add") {
+        if (numberedLine.newCell) {
+          pendingAdditions.push(numberedLine.newCell);
+        }
         continue;
       }
 
       flushPendingRows();
 
-      if (line.type === "context") {
-        const range = buildContextReferenceRange({
-          hunk,
-          positions,
-          lineIndex,
-        });
-        const position = positions[lineIndex];
-        if (!range || !position) {
-          continue;
-        }
-
-        pushPairRow({
-          chatReference: buildDiffRangeChatReference({
-            path: file.path,
-            ...range,
-          }),
-          hasChanges: false,
-          left: toDisplayLine({
-            line,
-            position,
-            side: "left",
-          }),
-          right: toDisplayLine({
-            line,
-            position,
-            side: "right",
-          }),
+      if (numberedLine.line.type === "context") {
+        rows.push({
+          kind: "pair",
+          left: toSplitDisplayLine(numberedLine.oldCell),
+          right: toSplitDisplayLine(numberedLine.newCell),
         });
       }
     }

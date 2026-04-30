@@ -23,6 +23,7 @@ function createWorkspace(
     workspaceKind: input.workspaceKind ?? "local_checkout",
     name: input.name ?? "main",
     status: input.status ?? "done",
+    archivingAt: input.archivingAt ?? null,
     diffStat: input.diffStat ?? null,
     scripts: input.scripts ?? [],
   };
@@ -73,6 +74,7 @@ describe("normalizeWorkspaceDescriptor", () => {
       projectKind: "git",
       workspaceKind: "checkout",
       name: "main",
+      archivingAt: null,
       status: "running",
       activityAt: "not-a-date",
       diffStat: null,
@@ -106,6 +108,7 @@ describe("normalizeWorkspaceDescriptor", () => {
       projectKind: "git",
       workspaceKind: "checkout",
       name: "main",
+      archivingAt: null,
       status: "done",
       activityAt: null,
       diffStat: null,
@@ -117,6 +120,73 @@ describe("normalizeWorkspaceDescriptor", () => {
 
     expect(workspace.scripts).toEqual([]);
   });
+
+  it("defaults missing archivingAt to null", () => {
+    const payload = {
+      id: "1",
+      projectId: "1",
+      projectDisplayName: "Project 1",
+      projectRootPath: "/repo",
+      workspaceDirectory: "/repo",
+      projectKind: "git",
+      workspaceKind: "checkout",
+      name: "main",
+      status: "done",
+      activityAt: null,
+      diffStat: null,
+      scripts: [],
+    } as unknown as WorkspaceDescriptorPayload;
+
+    const workspace = normalizeWorkspaceDescriptor(payload);
+
+    expect(workspace.archivingAt).toBeNull();
+  });
+
+  it("preserves project placement from workspace descriptor payloads", () => {
+    const workspace = normalizeWorkspaceDescriptor({
+      id: "1",
+      projectId: "remote:github.com/acme/app",
+      projectDisplayName: "acme/app",
+      projectRootPath: "/repo/app",
+      workspaceDirectory: "/repo/app",
+      projectKind: "git",
+      workspaceKind: "local_checkout",
+      name: "main",
+      archivingAt: null,
+      status: "done",
+      activityAt: null,
+      diffStat: null,
+      scripts: [],
+      project: {
+        projectKey: "remote:github.com/acme/app",
+        projectName: "acme/app",
+        checkout: {
+          cwd: "/repo/app",
+          isGit: true,
+          currentBranch: "main",
+          remoteUrl: "https://github.com/acme/app.git",
+          worktreeRoot: "/repo/app",
+          isPaseoOwnedWorktree: false,
+          mainRepoRoot: null,
+        },
+      },
+    });
+
+    expect(workspace.project).toEqual({
+      projectKey: "remote:github.com/acme/app",
+      projectName: "acme/app",
+      checkout: {
+        cwd: "/repo/app",
+        isGit: true,
+        currentBranch: "main",
+        remoteUrl: "https://github.com/acme/app.git",
+        worktreeRoot: "/repo/app",
+        isPaseoOwnedWorktree: false,
+        mainRepoRoot: null,
+      },
+    });
+  });
+
 });
 
 describe("mergeWorkspaces", () => {

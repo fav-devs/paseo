@@ -2247,9 +2247,6 @@ class ClaudeAgentSession implements AgentSession {
       this.input = null;
       this.queryPumpPromise = null;
       this.queryRestartNeeded = false;
-      // Reset session identity for explicit restarts so the new query starts
-      // a fresh session rather than resuming the previous one.
-      this.claudeSessionId = null;
       oldInput?.end();
       oldQuery.close?.();
       try {
@@ -2259,10 +2256,8 @@ class ClaudeAgentSession implements AgentSession {
       }
     }
 
-    // When the pump died unexpectedly (query became null, e.g. after a session
-    // ID overwrite error), preserve claudeSessionId so buildOptions() passes
-    // resume: sessionId and the new query auto-resumes the previous session.
-    // For explicit restarts above, claudeSessionId was already cleared.
+    // Preserve claudeSessionId across query recreation so buildOptions() passes
+    // resume: sessionId and the new query continues the existing conversation.
     this.persistence = null;
 
     const input = createAsyncMessageInput<SDKUserMessage>();
@@ -2445,11 +2440,8 @@ class ClaudeAgentSession implements AgentSession {
               data: chunk.data,
             },
           });
-        } else if (chunk.type === "github_pr" || chunk.type === "github_issue") {
-          content.push({
-            type: "text",
-            text: renderPromptAttachmentAsText(chunk),
-          });
+        } else {
+          content.push({ type: "text", text: renderPromptAttachmentAsText(chunk) });
         }
       }
     } else {
@@ -2935,7 +2927,6 @@ class ClaudeAgentSession implements AgentSession {
       this.query = null;
       this.input = null;
     }
-    this.claudeSessionId = null;
     this.persistence = null;
     this.persistedHistory = [];
     this.historyPending = false;
@@ -2980,12 +2971,19 @@ class ClaudeAgentSession implements AgentSession {
     }
 
     const events: AgentStreamEvent[] = [];
-    const fallbackThreadSessionId = this.captureSessionIdFromMessage(message);
-    if (fallbackThreadSessionId) {
+    const sessionCapture = this.captureSessionIdFromMessage(message);
+    if (sessionCapture.notice) {
+      events.push({
+        type: "timeline",
+        provider: "claude",
+        item: sessionCapture.notice,
+      });
+    }
+    if (sessionCapture.threadStartedSessionId) {
       events.push({
         type: "thread_started",
         provider: "claude",
-        sessionId: fallbackThreadSessionId,
+        sessionId: sessionCapture.threadStartedSessionId,
       });
     }
 
@@ -3036,12 +3034,19 @@ class ClaudeAgentSession implements AgentSession {
     events: AgentStreamEvent[],
   ): void {
     if (message.subtype === "init") {
-      const threadSessionId = this.handleSystemMessage(message);
-      if (threadSessionId) {
+      const sessionUpdate = this.handleSystemMessage(message);
+      if (sessionUpdate.notice) {
+        events.push({
+          type: "timeline",
+          provider: "claude",
+          item: sessionUpdate.notice,
+        });
+      }
+      if (sessionUpdate.threadStartedSessionId) {
         events.push({
           type: "thread_started",
           provider: "claude",
-          sessionId: threadSessionId,
+          sessionId: sessionUpdate.threadStartedSessionId,
         });
       }
       return;
@@ -3198,7 +3203,20 @@ class ClaudeAgentSession implements AgentSession {
     events.push(this.buildTurnFailedEvent(errorMessage));
   }
 
-  private captureSessionIdFromMessage(message: SDKMessage): string | null {
+  private createClaudeSessionChangedNotice(
+    oldSessionId: string,
+    newSessionId: string,
+  ): AgentTimelineItem {
+    return {
+      type: "assistant_message",
+      text: `Claude switched to a new session: ${oldSessionId} -> ${newSessionId}`,
+    };
+  }
+
+  private captureSessionIdFromMessage(message: SDKMessage): {
+    threadStartedSessionId: string | null;
+    notice: AgentTimelineItem | null;
+  } {
     const msg = message as unknown as {
       session_id?: unknown;
       sessionId?: unknown;
@@ -3206,16 +3224,17 @@ class ClaudeAgentSession implements AgentSession {
     };
     const sessionId = extractSessionIdRaw(msg).trim();
     if (!sessionId) {
-      return null;
+      return { threadStartedSessionId: null, notice: null };
     }
     if (this.claudeSessionId === null) {
       this.claudeSessionId = sessionId;
       this.persistence = null;
-      return sessionId;
+      return { threadStartedSessionId: sessionId, notice: null };
     }
     if (this.claudeSessionId === sessionId) {
-      return null;
+      return { threadStartedSessionId: null, notice: null };
     }
+    const oldSessionId = this.claudeSessionId;
     // Session ID changed mid-stream (e.g. a hook caused Claude to restart
     // with a new session). Accept the new ID and continue — the turn should
     // not be failed just because the underlying subprocess cycled.
@@ -3225,12 +3244,18 @@ class ClaudeAgentSession implements AgentSession {
     );
     this.claudeSessionId = sessionId;
     this.persistence = null;
-    return sessionId;
+    return {
+      threadStartedSessionId: sessionId,
+      notice: this.createClaudeSessionChangedNotice(oldSessionId, sessionId),
+    };
   }
 
-  private handleSystemMessage(message: SDKSystemMessage): string | null {
+  private handleSystemMessage(message: SDKSystemMessage): {
+    threadStartedSessionId: string | null;
+    notice: AgentTimelineItem | null;
+  } {
     if (message.subtype !== "init") {
-      return null;
+      return { threadStartedSessionId: null, notice: null };
     }
 
     const msg = message as unknown as {
@@ -3240,10 +3265,11 @@ class ClaudeAgentSession implements AgentSession {
     };
     const newSessionId = extractSessionIdRaw(msg).trim();
     if (!newSessionId) {
-      return null;
+      return { threadStartedSessionId: null, notice: null };
     }
     const existingSessionId = this.claudeSessionId;
     let threadStartedSessionId: string | null = null;
+    let notice: AgentTimelineItem | null = null;
 
     if (existingSessionId === null) {
       this.claudeSessionId = newSessionId;
@@ -3260,6 +3286,7 @@ class ClaudeAgentSession implements AgentSession {
       );
       this.claudeSessionId = newSessionId;
       threadStartedSessionId = newSessionId;
+      notice = this.createClaudeSessionChangedNotice(existingSessionId, newSessionId);
     }
     this.availableModes = DEFAULT_MODES;
     this.currentMode = message.permissionMode;
@@ -3281,7 +3308,7 @@ class ClaudeAgentSession implements AgentSession {
       this.lastRuntimeModel = message.model;
       this.cachedRuntimeInfo = null;
     }
-    return threadStartedSessionId;
+    return { threadStartedSessionId, notice };
   }
 
   private readMissingResumedConversationError(message: SDKMessage): string | null {

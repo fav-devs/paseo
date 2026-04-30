@@ -1,8 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { buildSplitDiffRows, buildUnifiedDiffLines } from "./diff-layout";
+import {
+  buildReviewableDiffTargetKey,
+  buildSplitDiffRows,
+  buildUnifiedDiffLines,
+} from "./diff-layout";
 import type { ParsedDiffFile } from "@/hooks/use-checkout-diff-query";
+import type { ReviewableDiffTarget } from "./diff-layout";
 
-function makeFile(lines: ParsedDiffFile["hunks"][number]["lines"]): ParsedDiffFile {
+function makeFile(
+  lines: ParsedDiffFile["hunks"][number]["lines"],
+  options: { oldStart?: number; newStart?: number } = {},
+): ParsedDiffFile {
+  const oldStart = options.oldStart ?? 10;
+  const newStart = options.newStart ?? 10;
   return {
     path: "example.ts",
     isNew: false,
@@ -12,9 +22,9 @@ function makeFile(lines: ParsedDiffFile["hunks"][number]["lines"]): ParsedDiffFi
     status: "ok",
     hunks: [
       {
-        oldStart: 10,
+        oldStart,
         oldCount: 4,
-        newStart: 10,
+        newStart,
         newCount: 5,
         lines,
       },
@@ -22,7 +32,39 @@ function makeFile(lines: ParsedDiffFile["hunks"][number]["lines"]): ParsedDiffFi
   };
 }
 
+function expectReviewTarget(
+  target: ReviewableDiffTarget | null | undefined,
+  expected: Omit<ReviewableDiffTarget, "key" | "filePath">,
+) {
+  expect(target).toMatchObject({
+    filePath: "example.ts",
+    ...expected,
+  });
+  expect(target?.key).toBe(
+    buildReviewableDiffTargetKey({
+      filePath: "example.ts",
+      side: expected.side,
+      lineNumber: expected.lineNumber,
+    }),
+  );
+}
+
 describe("buildSplitDiffRows", () => {
+  it("uses one canonical persisted key for rendered review targets", () => {
+    const rows = buildSplitDiffRows(
+      makeFile([
+        { type: "header", content: "@@ -10,1 +20,1 @@" },
+        { type: "context", content: "same line" },
+      ]),
+    );
+
+    if (rows[1]?.kind !== "pair") {
+      throw new Error("Expected split pair row");
+    }
+    expect(rows[1].left?.reviewTarget?.key).toBe("example.ts:old:10");
+    expect(rows[1].right?.reviewTarget?.key).toBe("example.ts:new:10");
+  });
+
   it("pairs replacement runs by index", () => {
     const rows = buildSplitDiffRows(
       makeFile([
@@ -37,17 +79,11 @@ describe("buildSplitDiffRows", () => {
     expect(rows).toHaveLength(3);
     expect(rows[1]).toMatchObject({
       kind: "pair",
-      hunkIndex: 0,
-      isFirstChangedLineInHunk: true,
-      chatReference: "example.ts:10-11",
       left: { type: "remove", content: "before one", lineNumber: 10 },
       right: { type: "add", content: "after one", lineNumber: 10 },
     });
     expect(rows[2]).toMatchObject({
       kind: "pair",
-      hunkIndex: 0,
-      isFirstChangedLineInHunk: false,
-      chatReference: "example.ts:10-11",
       left: { type: "remove", content: "before two", lineNumber: 11 },
       right: { type: "add", content: "after two", lineNumber: 11 },
     });
@@ -65,9 +101,6 @@ describe("buildSplitDiffRows", () => {
 
     expect(rows[2]).toMatchObject({
       kind: "pair",
-      hunkIndex: 0,
-      isFirstChangedLineInHunk: false,
-      chatReference: "example.ts:10-11",
       left: null,
       right: { type: "add", content: "after two", lineNumber: 11 },
     });
@@ -83,79 +116,88 @@ describe("buildSplitDiffRows", () => {
 
     expect(rows[1]).toMatchObject({
       kind: "pair",
-      hunkIndex: 0,
-      isFirstChangedLineInHunk: false,
-      chatReference: "example.ts:10",
       left: { type: "context", content: "same line", lineNumber: 10 },
       right: { type: "context", content: "same line", lineNumber: 10 },
     });
   });
 
-  it("marks the first changed row instead of leading context", () => {
+  it("emits old and new review targets for split context cells", () => {
+    const rows = buildSplitDiffRows(
+      makeFile(
+        [
+          { type: "header", content: "@@ -10,1 +20,1 @@" },
+          { type: "context", content: "same line" },
+        ],
+        { newStart: 20 },
+      ),
+    );
+
+    expect(rows[0]).toEqual({
+      kind: "header",
+      content: "@@ -10,1 +20,1 @@",
+    });
+    expect(rows[1]).toMatchObject({
+      kind: "pair",
+      left: { type: "context", content: "same line", lineNumber: 10 },
+      right: { type: "context", content: "same line", lineNumber: 20 },
+    });
+    if (rows[1]?.kind !== "pair") {
+      throw new Error("Expected split pair row");
+    }
+    expectReviewTarget(rows[1].left?.reviewTarget, {
+      hunkHeader: "@@ -10,1 +20,1 @@",
+      hunkIndex: 0,
+      lineIndex: 1,
+      oldLineNumber: 10,
+      newLineNumber: 20,
+      side: "old",
+      lineNumber: 10,
+      lineType: "context",
+      content: "same line",
+    });
+    expectReviewTarget(rows[1].right?.reviewTarget, {
+      hunkHeader: "@@ -10,1 +20,1 @@",
+      hunkIndex: 0,
+      lineIndex: 1,
+      oldLineNumber: 10,
+      newLineNumber: 20,
+      side: "new",
+      lineNumber: 20,
+      lineType: "context",
+      content: "same line",
+    });
+  });
+
+  it("does not emit review targets for split headers or empty cells", () => {
     const rows = buildSplitDiffRows(
       makeFile([
-        { type: "header", content: "@@ -10,3 +10,3 @@" },
-        { type: "context", content: "same line" },
-        { type: "remove", content: "before" },
+        { type: "header", content: "@@ -10,1 +10,2 @@" },
         { type: "add", content: "after" },
       ]),
     );
 
+    expect(rows[0]).toEqual({
+      kind: "header",
+      content: "@@ -10,1 +10,2 @@",
+    });
     expect(rows[1]).toMatchObject({
       kind: "pair",
-      isFirstChangedLineInHunk: false,
-      left: { type: "context", content: "same line", lineNumber: 10 },
-      right: { type: "context", content: "same line", lineNumber: 10 },
+      left: null,
+      right: { type: "add", content: "after", lineNumber: 10 },
     });
-    expect(rows[2]).toMatchObject({
-      kind: "pair",
-      isFirstChangedLineInHunk: true,
-      chatReference: "example.ts:11",
-      left: { type: "remove", content: "before", lineNumber: 11 },
-      right: { type: "add", content: "after", lineNumber: 11 },
-    });
-  });
-
-  it("uses surrounding new-side context for delete-only split rows", () => {
-    const rows = buildSplitDiffRows({
-      path: "example.ts",
-      isNew: false,
-      isDeleted: false,
-      additions: 0,
-      deletions: 6,
-      status: "ok",
-      hunks: [
-        {
-          oldStart: 237,
-          oldCount: 8,
-          newStart: 239,
-          newCount: 2,
-          lines: [
-            { type: "header", content: "@@ -237,8 +239,2 @@" },
-            { type: "context", content: "before" },
-            { type: "remove", content: "deleted one" },
-            { type: "remove", content: "deleted two" },
-            { type: "remove", content: "deleted three" },
-            { type: "remove", content: "deleted four" },
-            { type: "remove", content: "deleted five" },
-            { type: "remove", content: "deleted six" },
-            { type: "context", content: "after" },
-          ],
-        },
-      ],
-    });
-
-    expect(rows[2]).toMatchObject({
-      kind: "pair",
-      chatReference: "example.ts:239-240",
-      left: { type: "remove", content: "deleted one", lineNumber: 238 },
-      right: null,
-    });
-    expect(rows[7]).toMatchObject({
-      kind: "pair",
-      chatReference: "example.ts:239-240",
-      left: { type: "remove", content: "deleted six", lineNumber: 243 },
-      right: null,
+    if (rows[1]?.kind !== "pair") {
+      throw new Error("Expected split pair row");
+    }
+    expectReviewTarget(rows[1].right?.reviewTarget, {
+      hunkHeader: "@@ -10,1 +10,2 @@",
+      hunkIndex: 0,
+      lineIndex: 1,
+      oldLineNumber: null,
+      newLineNumber: 10,
+      side: "new",
+      lineNumber: 10,
+      lineType: "add",
+      content: "after",
     });
   });
 });
@@ -230,5 +272,54 @@ describe("buildUnifiedDiffLines", () => {
     expect(lines[4]?.lineNumber).toBeNull();
     expect(lines[5]?.lineNumber).toBe(166);
     expect(lines[6]?.lineNumber).toBe(167);
+  });
+
+  it("emits canonical review targets for unified add, remove, and context lines", () => {
+    const lines = buildUnifiedDiffLines(
+      makeFile(
+        [
+          { type: "header", content: "@@ -10,2 +20,2 @@" },
+          { type: "context", content: "before" },
+          { type: "remove", content: "removed" },
+          { type: "add", content: "inserted" },
+        ],
+        { newStart: 20 },
+      ),
+    );
+
+    expect(lines[0]?.reviewTarget).toBeNull();
+    expectReviewTarget(lines[1]?.reviewTarget, {
+      hunkHeader: "@@ -10,2 +20,2 @@",
+      hunkIndex: 0,
+      lineIndex: 1,
+      oldLineNumber: 10,
+      newLineNumber: 20,
+      side: "new",
+      lineNumber: 20,
+      lineType: "context",
+      content: "before",
+    });
+    expectReviewTarget(lines[2]?.reviewTarget, {
+      hunkHeader: "@@ -10,2 +20,2 @@",
+      hunkIndex: 0,
+      lineIndex: 2,
+      oldLineNumber: 11,
+      newLineNumber: null,
+      side: "old",
+      lineNumber: 11,
+      lineType: "remove",
+      content: "removed",
+    });
+    expectReviewTarget(lines[3]?.reviewTarget, {
+      hunkHeader: "@@ -10,2 +20,2 @@",
+      hunkIndex: 0,
+      lineIndex: 3,
+      oldLineNumber: null,
+      newLineNumber: 21,
+      side: "new",
+      lineNumber: 21,
+      lineType: "add",
+      content: "inserted",
+    });
   });
 });

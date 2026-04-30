@@ -191,13 +191,11 @@ import {
 } from "./file-explorer/service.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { PushTokenStore } from "./push/token-store.js";
-import { type WorktreeConfig } from "../utils/worktree.js";
 import {
   readPaseoConfigForEdit,
   writePaseoConfigForEdit,
   type ProjectConfigRpcError,
 } from "../utils/paseo-config-file.js";
-import { runAsyncWorktreeBootstrap } from "./worktree-bootstrap.js";
 import { archivePersistedWorkspaceRecord } from "./workspace-archive-service.js";
 import { WorkspaceReconciliationService } from "./workspace-reconciliation-service.js";
 import type { ScriptRouteStore } from "./script-proxy.js";
@@ -234,6 +232,7 @@ import {
   type PullRequestTimelineItem,
 } from "../services/github-service.js";
 import {
+  attemptFirstAgentBranchAutoName,
   createPaseoWorktree,
   type CreatePaseoWorktreeInput,
   type CreatePaseoWorktreeResult,
@@ -242,7 +241,10 @@ import { createWorktreeCoreDeps } from "./worktree-core.js";
 import {
   assertSafeGitRef as assertWorktreeSafeGitRef,
   buildAgentSessionConfig as buildWorktreeAgentSessionConfig,
-  runWorktreeSetupInBackground as runWorktreeSetupInBackgroundSession,
+  buildAgentWorktreeNameContext,
+  createPaseoWorktreeWorkflow as createWorktreeWorkflow,
+  type CreatePaseoWorktreeSetupContinuationInput,
+  type CreatePaseoWorktreeWorkflowResult,
   handleCreatePaseoWorktreeRequest as handleCreateWorktreeRequest,
   handlePaseoWorktreeArchiveRequest as handleWorktreeArchiveRequest,
   handlePaseoWorktreeListRequest as handleWorktreeListRequest,
@@ -302,6 +304,7 @@ type GitMutationRefreshReason =
   | "create-pr"
   | "switch-branch"
   | "create-branch"
+  | "rename-branch"
   | "stash-push"
   | "stash-pop"
   | "create-worktree";
@@ -788,6 +791,45 @@ class VoiceFeatureUnavailableError extends Error {
   }
 }
 
+interface BuildImportPersistenceHandleInput {
+  provider: AgentProvider;
+  sessionId: string;
+  cwd?: string;
+}
+
+function buildImportPersistenceHandle(
+  input: BuildImportPersistenceHandleInput,
+): AgentPersistenceHandle {
+  const cwd = input.cwd ?? process.cwd();
+  return {
+    provider: input.provider,
+    sessionId: input.sessionId,
+    nativeHandle: input.sessionId,
+    metadata: {
+      provider: input.provider,
+      cwd,
+    },
+  };
+}
+
+function applyImportCwdOverride(
+  handle: AgentPersistenceHandle,
+  cwd: string | undefined,
+): AgentPersistenceHandle {
+  if (!cwd) {
+    return handle;
+  }
+
+  return {
+    ...handle,
+    metadata: {
+      ...handle.metadata,
+      provider: handle.provider,
+      cwd,
+    },
+  };
+}
+
 function convertPCMToWavBuffer(
   pcmBuffer: Buffer,
   sampleRate: number,
@@ -936,6 +978,7 @@ export class Session {
   private readonly workspaceSetupSnapshots: Map<string, WorkspaceSetupSnapshot>;
   private readonly workspaceGitFetchSubscriptions = new Map<string, () => void>();
   private readonly workspaceGitSubscriptions = new Map<string, () => void>();
+  private readonly archivingByWorkspaceId = new Map<string, string>();
   private registerVoiceSpeakHandler?: (agentId: string, handler: VoiceSpeakHandler) => void;
   private unregisterVoiceSpeakHandler?: (agentId: string) => void;
   private registerVoiceCallerContext?: (agentId: string, context: VoiceCallerContext) => void;
@@ -1068,8 +1111,23 @@ export class Session {
     await this.archiveWorkspaceRecord(workspaceId);
   }
 
+  markWorkspaceArchivingForExternalMutation(
+    workspaceIds: Iterable<string>,
+    archivingAt: string,
+  ): void {
+    this.markWorkspaceArchiving(workspaceIds, archivingAt);
+  }
+
+  clearWorkspaceArchivingForExternalMutation(workspaceIds: Iterable<string>): void {
+    this.clearWorkspaceArchiving(workspaceIds);
+  }
+
+  async emitWorkspaceUpdatesForExternalWorkspaceIds(workspaceIds: Iterable<string>): Promise<void> {
+    await this.emitWorkspaceUpdatesForWorkspaceIds(workspaceIds);
+  }
+
   async emitWorkspaceUpdatesForExternalCwds(cwds: Iterable<string>): Promise<void> {
-    await this.emitWorkspaceUpdatesForCwds(cwds);
+    await Promise.all(Array.from(cwds, (cwd) => this.emitWorkspaceUpdateForCwd(cwd)));
   }
 
   async warmWorkspaceGitDataForWorkspace(workspace: PersistedWorkspaceRecord): Promise<void> {
@@ -1892,6 +1950,8 @@ export class Session {
         return this.handleCreateAgentRequest(msg);
       case "resume_agent_request":
         return this.handleResumeAgentRequest(msg);
+      case "import_agent_request":
+        return this.handleImportAgentRequest(msg);
       case "refresh_agent_request":
         return this.handleRefreshAgentRequest(msg);
       case "cancel_agent_request":
@@ -3156,19 +3216,28 @@ export class Session {
         ...(provisionalTitle ? { title: provisionalTitle } : {}),
       };
 
-      const { sessionConfig, worktreeBootstrap } = await this.buildAgentSessionConfig(
+      const agentNameContext = buildAgentWorktreeNameContext({
+        initialPrompt: trimmedPrompt,
+        attachments,
+      });
+      const { sessionConfig, setupContinuation } = await this.buildAgentSessionConfig(
         resolvedConfig,
         git,
         worktreeName,
         attachments,
+        agentNameContext,
       );
-      const resolvedWorkspace = msg.workspaceId
+      let resolvedWorkspace = msg.workspaceId
         ? await this.workspaceRegistry.get(msg.workspaceId)
         : ((await this.findWorkspaceByDirectory(sessionConfig.cwd)) ??
           (await this.findOrCreateWorkspaceForDirectory(sessionConfig.cwd)));
       if (!resolvedWorkspace) {
         throw new Error(`Workspace not found: ${msg.workspaceId}`);
       }
+      resolvedWorkspace = await this.maybeAutoNameWorkspaceBranchForFirstAgent({
+        workspace: resolvedWorkspace,
+        nameContext: agentNameContext,
+      });
       const snapshot = await this.agentManager.createAgent(
         {
           ...sessionConfig,
@@ -3206,27 +3275,9 @@ export class Session {
         });
       }
 
-      if (worktreeBootstrap) {
-        void runAsyncWorktreeBootstrap({
-          agentId: snapshot.id,
-          worktree: worktreeBootstrap.worktree,
-          shouldBootstrap: worktreeBootstrap.shouldBootstrap,
-          terminalManager: this.terminalManager,
-          appendTimelineItem: (item) =>
-            appendTimelineItemIfAgentKnown({
-              agentManager: this.agentManager,
-              agentId: snapshot.id,
-              item,
-            }),
-          emitLiveTimelineItem: (item) =>
-            emitLiveTimelineItemIfAgentKnown({
-              agentManager: this.agentManager,
-              agentId: snapshot.id,
-              item,
-            }),
-          logger: this.sessionLogger,
-        });
-      }
+      setupContinuation?.startAfterAgentCreate({
+        agentId: snapshot.id,
+      });
 
       this.sessionLogger.info(
         { agentId: snapshot.id, provider: snapshot.provider },
@@ -3282,9 +3333,6 @@ export class Session {
       explicitTitle: params.explicitTitle,
       paseoHome: this.paseoHome,
       logger: this.sessionLogger,
-      deps: {
-        workspaceGitService: this.workspaceGitService,
-      },
     });
 
     const started = await this.handleSendAgentMessage(
@@ -3350,6 +3398,72 @@ export class Session {
           timestamp: new Date(),
           type: "error",
           content: `Failed to resume agent: ${(error as Error).message}`,
+        },
+      });
+    }
+  }
+
+  private async handleImportAgentRequest(
+    msg: Extract<SessionInboundMessage, { type: "import_agent_request" }>,
+  ): Promise<void> {
+    const { provider, sessionId, cwd, labels, requestId } = msg;
+    this.sessionLogger.info({ sessionId, provider }, `Importing agent ${sessionId} (${provider})`);
+
+    try {
+      const descriptor = await this.agentManager.findPersistedAgent(provider, sessionId);
+      if (!descriptor && provider === "opencode" && !cwd) {
+        throw new Error(
+          "OpenCode sessions require --cwd when the session cannot be found in persisted agents",
+        );
+      }
+
+      const handle = descriptor
+        ? applyImportCwdOverride(descriptor.persistence, cwd)
+        : buildImportPersistenceHandle({ provider, sessionId, cwd });
+      const overrides = cwd ? ({ cwd } satisfies Partial<AgentSessionConfig>) : undefined;
+
+      await this.unarchiveAgentByHandle(handle);
+      const snapshot = await this.agentManager.resumeAgentFromPersistence(
+        handle,
+        overrides,
+        undefined,
+        {
+          labels,
+        },
+      );
+      await unarchiveAgentState(this.agentStorage, this.agentManager, snapshot.id);
+      await this.agentManager.hydrateTimelineFromProvider(snapshot.id);
+      await this.forwardAgentUpdate(snapshot);
+      const timelineSize = this.agentManager.getTimeline(snapshot.id).length;
+      const agentPayload = await this.buildAgentPayload(snapshot);
+      this.emit({
+        type: "status",
+        payload: {
+          status: "agent_resumed",
+          agentId: snapshot.id,
+          requestId,
+          timelineSize,
+          agent: agentPayload,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.sessionLogger.error({ err: error }, "Failed to import agent");
+      this.emit({
+        type: "status",
+        payload: {
+          status: "agent_create_failed",
+          requestId,
+          error: message,
+        },
+      });
+      this.emit({
+        type: "activity_log",
+        payload: {
+          id: uuidv4(),
+          timestamp: new Date(),
+          type: "error",
+          content: `Failed to import agent: ${message}`,
         },
       });
     }
@@ -3445,9 +3559,10 @@ export class Session {
     gitOptions?: GitSetupOptions,
     legacyWorktreeName?: string,
     attachments?: AgentAttachment[],
+    nameContext?: string,
   ): Promise<{
     sessionConfig: AgentSessionConfig;
-    worktreeBootstrap?: { worktree: WorktreeConfig; shouldBootstrap: boolean };
+    setupContinuation?: CreatePaseoWorktreeWorkflowResult["setupContinuation"];
   }> {
     return buildWorktreeAgentSessionConfig(
       {
@@ -3455,7 +3570,26 @@ export class Session {
         sessionLogger: this.sessionLogger,
         workspaceGitService: this.workspaceGitService,
         createPaseoWorktree: (input, serviceOptions) =>
-          this.createPaseoWorktree(input, serviceOptions),
+          this.createPaseoWorktreeWorkflow(input, {
+            ...serviceOptions,
+            setupContinuation: {
+              kind: "agent",
+              terminalManager: this.terminalManager,
+              appendTimelineItem: ({ agentId, item }) =>
+                appendTimelineItemIfAgentKnown({
+                  agentManager: this.agentManager,
+                  agentId,
+                  item,
+                }),
+              emitLiveTimelineItem: ({ agentId, item }) =>
+                emitLiveTimelineItemIfAgentKnown({
+                  agentManager: this.agentManager,
+                  agentId,
+                  item,
+                }),
+              logger: this.sessionLogger,
+            },
+          }),
         checkoutExistingBranch: (cwd, branch) => this.checkoutExistingBranch(cwd, branch),
         createBranchFromBase: (params) => this.createBranchFromBase(params),
         github: this.github,
@@ -3464,7 +3598,33 @@ export class Session {
       gitOptions,
       legacyWorktreeName,
       attachments,
+      nameContext,
     );
+  }
+
+  private async maybeAutoNameWorkspaceBranchForFirstAgent(input: {
+    workspace: PersistedWorkspaceRecord;
+    nameContext?: string;
+  }): Promise<PersistedWorkspaceRecord> {
+    const coreDeps = createWorktreeCoreDeps(this.github);
+    const result = await attemptFirstAgentBranchAutoName({
+      cwd: input.workspace.cwd,
+      nameContext: input.nameContext,
+      generateBranchName: coreDeps.generateBranchName,
+    });
+    if (!result.renamed || !result.branchName) {
+      return input.workspace;
+    }
+
+    const updatedWorkspace: PersistedWorkspaceRecord = {
+      ...input.workspace,
+      displayName: result.branchName,
+      updatedAt: new Date().toISOString(),
+    };
+    await this.workspaceRegistry.upsert(updatedWorkspace);
+    await this.notifyGitMutation(input.workspace.cwd, "rename-branch");
+    await this.emitWorkspaceUpdateForCwd(input.workspace.cwd);
+    return updatedWorkspace;
   }
 
   private emitProviderDisabledResponse(
@@ -5465,14 +5625,13 @@ export class Session {
         workspaceGitService: this.workspaceGitService,
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
-        archiveWorkspaceRecord: async (workspaceDirectory) => {
-          const workspace = await this.findWorkspaceByDirectory(workspaceDirectory);
-          if (workspace) {
-            await this.archiveWorkspaceRecord(workspace.workspaceId);
-          }
-        },
+        archiveWorkspaceRecord: (workspaceId) => this.archiveWorkspaceRecord(workspaceId),
         emit: (message) => this.emit(message),
-        emitWorkspaceUpdatesForCwds: (cwds) => this.emitWorkspaceUpdatesForCwds(cwds),
+        emitWorkspaceUpdatesForWorkspaceIds: (workspaceIds) =>
+          this.emitWorkspaceUpdatesForWorkspaceIds(workspaceIds),
+        markWorkspaceArchiving: (workspaceIds, archivingAt) =>
+          this.markWorkspaceArchiving(workspaceIds, archivingAt),
+        clearWorkspaceArchiving: (workspaceIds) => this.clearWorkspaceArchiving(workspaceIds),
         isPathWithinRoot: (rootPath, candidatePath) =>
           this.isPathWithinRoot(rootPath, candidatePath),
         killTerminalsUnderPath: (rootPath) => this.killTerminalsUnderPath(rootPath),
@@ -6168,6 +6327,7 @@ export class Session {
       projectKind: (resolvedProjectRecord?.kind ?? "directory") === "git" ? "git" : "non_git",
       workspaceKind: workspace.kind,
       name: workspace.displayName,
+      archivingAt: null,
       status: "done",
       activityAt: null,
       diffStat,
@@ -6256,6 +6416,7 @@ export class Session {
       projectKind: "git",
       workspaceKind: result.workspace.kind,
       name: result.worktree.branchName || result.workspace.displayName,
+      archivingAt: null,
       status: "done",
       activityAt: null,
       diffStat: { additions: 0, deletions: 0 },
@@ -6283,6 +6444,18 @@ export class Session {
       return this.describeWorkspaceRecordWithGitData(input.workspace, input.projectRecord);
     }
     return this.describeWorkspaceRecord(input.workspace, input.projectRecord);
+  }
+
+  markWorkspaceArchiving(workspaceIds: Iterable<string>, archivingAt: string): void {
+    for (const workspaceId of workspaceIds) {
+      this.archivingByWorkspaceId.set(workspaceId, archivingAt);
+    }
+  }
+
+  clearWorkspaceArchiving(workspaceIds: Iterable<string>): void {
+    for (const workspaceId of workspaceIds) {
+      this.archivingByWorkspaceId.delete(workspaceId);
+    }
   }
 
   private async buildWorkspaceDescriptorMap(options: {
@@ -6331,8 +6504,8 @@ export class Session {
     );
 
     for (const [id, descriptor] of descriptorEntries) {
-      descriptorsByWorkspaceId.set(id, descriptor);
-    }
+      descriptorsByWorkspaceId.set(id, { ...descriptor, archivingAt: this.archivingByWorkspaceId.get(id) ?? null });
+
 
     for (const agent of agents) {
       if (agent.archivedAt) {
@@ -7021,15 +7194,6 @@ export class Session {
     await this.emitWorkspaceUpdatesForWorkspaceIds([workspaceId], options);
   }
 
-  private async emitWorkspaceUpdatesForCwds(cwds: Iterable<string>): Promise<void> {
-    const workspaces = await this.workspaceRegistry.list();
-    const uniqueWorkspaceIds = new Set<string>();
-    for (const cwd of cwds) {
-      uniqueWorkspaceIds.add(this.resolveRegisteredWorkspaceIdForCwd(cwd, workspaces));
-    }
-    await this.emitWorkspaceUpdatesForWorkspaceIds(uniqueWorkspaceIds);
-  }
-
   private async handleFetchAgents(
     request: Extract<SessionInboundMessage, { type: "fetch_agents_request" }>,
   ): Promise<void> {
@@ -7429,27 +7593,26 @@ export class Session {
         paseoHome: this.paseoHome,
         describeWorkspaceRecord: (result) => this.describeCreatedWorktreeWorkspace(result),
         emit: (message) => this.emit(message),
-        createPaseoWorktree: (input) => this.createPaseoWorktree(input),
-        warmWorkspaceGitData: (workspace) => this.warmWorkspaceGitDataForWorkspace(workspace),
         sessionLogger: this.sessionLogger,
-        runWorktreeSetupInBackground: (options) => this.runWorktreeSetupInBackground(options),
+        createPaseoWorktreeWorkflow: (input) => this.createPaseoWorktreeWorkflow(input),
       },
       request,
     );
   }
 
-  private async runWorktreeSetupInBackground(options: {
-    requestCwd: string;
-    repoRoot: string;
-    workspaceId: string;
-    worktree: { branchName: string; worktreePath: string };
-    shouldBootstrap: boolean;
-    slug: string;
-    worktreePath: string;
-  }): Promise<void> {
-    return runWorktreeSetupInBackgroundSession(
+  private async createPaseoWorktreeWorkflow(
+    input: CreatePaseoWorktreeInput,
+    options?: {
+      resolveDefaultBranch?: (repoRoot: string) => Promise<string>;
+      setupContinuation?: CreatePaseoWorktreeSetupContinuationInput;
+    },
+  ): Promise<CreatePaseoWorktreeWorkflowResult> {
+    return createWorktreeWorkflow(
       {
         paseoHome: this.paseoHome,
+        createPaseoWorktree: (workflowInput, serviceOptions) =>
+          this.createPaseoWorktree(workflowInput, serviceOptions),
+        warmWorkspaceGitData: (workspace) => this.warmWorkspaceGitDataForWorkspace(workspace),
         emitWorkspaceUpdateForCwd: (cwd, emitOptions) =>
           this.emitWorkspaceUpdateForCwd(cwd, emitOptions),
         cacheWorkspaceSetupSnapshot: (workspaceId, snapshot) => {
@@ -7467,6 +7630,7 @@ export class Session {
           this.emitWorkspaceScriptStatusUpdate(workspaceId, workspaceDirectory);
         },
       },
+      input,
       options,
     );
   }

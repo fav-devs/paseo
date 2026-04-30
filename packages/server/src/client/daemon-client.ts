@@ -124,6 +124,25 @@ const consoleLogger: Logger = {
   error: (obj, msg) => console.error(msg, obj),
 };
 
+const perfNow: () => number =
+  typeof performance !== "undefined" && typeof performance.now === "function"
+    ? () => performance.now()
+    : () => Date.now();
+
+export interface ImportAgentInput {
+  provider: AgentProvider;
+  sessionId: string;
+  cwd?: string;
+  labels?: Record<string, string>;
+}
+
+function normalizePassword(value: string | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  return value.length > 0 ? value : null;
+}
+
 export type {
   DaemonTransport,
   DaemonTransportFactory,
@@ -200,6 +219,7 @@ export interface DaemonClientConfig {
   clientType?: "mobile" | "browser" | "cli" | "mcp";
   appVersion?: string;
   runtimeGeneration?: number | null;
+  password?: string;
   authHeader?: string;
   suppressSendErrors?: boolean;
   transportFactory?: DaemonTransportFactory;
@@ -244,7 +264,7 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
 export interface CreatePaseoWorktreeInput
   extends Pick<
     CreatePaseoWorktreeRequest,
-    "cwd" | "worktreeSlug" | "attachments" | "refName" | "action" | "githubPrNumber"
+    "cwd" | "worktreeSlug" | "nameContext" | "attachments" | "refName" | "action" | "githubPrNumber"
   > {}
 
 export interface ForkAgentOptions {
@@ -830,9 +850,13 @@ export class DaemonClient {
     }
 
     const headers: Record<string, string> = {};
-    if (this.config.authHeader) {
-      headers["Authorization"] = this.config.authHeader;
+    const password = normalizePassword(this.config.password);
+    if (password) {
+      headers.Authorization = `Bearer ${password}`;
+    } else if (this.config.authHeader) {
+      headers.Authorization = this.config.authHeader;
     }
+    const protocols = password ? [`paseo.bearer.${password}`] : undefined;
 
     try {
       // Reconnect can overlap with browser close/error delivery ordering.
@@ -857,7 +881,11 @@ export class DaemonClient {
         });
       }
       const transportUrl = this.resolveTransportUrlForAttempt();
-      const transport = transportFactory({ url: transportUrl, headers });
+      const transport = transportFactory({
+        url: transportUrl,
+        headers,
+        ...(protocols ? { protocols } : {}),
+      });
       this.transport = transport;
       this.lastServerInfoMessage = null;
 
@@ -1874,6 +1902,47 @@ export class DaemonClient {
     return status.agent;
   }
 
+  async importAgent(input: ImportAgentInput): Promise<AgentSnapshotPayload> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "import_agent_request",
+      requestId,
+      provider: input.provider,
+      sessionId: input.sessionId,
+      ...(input.cwd ? { cwd: input.cwd } : {}),
+      ...(input.labels && Object.keys(input.labels).length > 0 ? { labels: input.labels } : {}),
+    });
+
+    const status = await this.sendRequest({
+      requestId,
+      message,
+      timeout: 15000,
+      options: { skipQueue: true },
+      select: (msg) => {
+        if (msg.type !== "status") {
+          return null;
+        }
+        const resumed = AgentResumedStatusPayloadSchema.safeParse(msg.payload);
+        if (resumed.success && resumed.data.requestId === requestId) {
+          return resumed.data;
+        }
+
+        const failed = AgentCreateFailedStatusPayloadSchema.safeParse(msg.payload);
+        if (failed.success && failed.data.requestId === requestId) {
+          return failed.data;
+        }
+
+        return null;
+      },
+    });
+
+    if (status.status === "agent_create_failed") {
+      throw new Error(status.error);
+    }
+
+    return status.agent;
+  }
+
   async refreshAgent(agentId: string, requestId?: string): Promise<AgentRefreshedStatusPayload> {
     const resolvedRequestId = this.createRequestId(requestId);
     const message = SessionInboundMessageSchema.parse({
@@ -2839,6 +2908,7 @@ export class DaemonClient {
         type: "create_paseo_worktree_request",
         cwd: input.cwd,
         worktreeSlug: input.worktreeSlug,
+        ...(input.nameContext !== undefined ? { nameContext: input.nameContext } : {}),
         ...(input.attachments && input.attachments.length > 0
           ? { attachments: input.attachments }
           : {}),
