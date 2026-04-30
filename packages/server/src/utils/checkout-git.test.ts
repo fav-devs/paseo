@@ -1464,7 +1464,11 @@ const x = 1;
     execSync("git config branch.chethanuk/main.remote paseo-pr-345", { cwd: repoDir });
     execSync("git config branch.chethanuk/main.merge refs/heads/main", { cwd: repoDir });
 
-    const requestedTargets: Array<{ headRef: string; headRepositoryOwner?: string }> = [];
+    const requestedTargets: Array<{
+      headRef: string;
+      headRepositoryOwner?: string;
+      repository?: string;
+    }> = [];
     const github = createGitHubServiceForStatus(
       createPullRequestStatus({
         number: 345,
@@ -1481,6 +1485,7 @@ const x = 1;
         ...(options.headRepositoryOwner
           ? { headRepositoryOwner: options.headRepositoryOwner }
           : {}),
+        ...(options.repository ? { repository: options.repository } : {}),
       });
       return createPullRequestStatus({
         number: 345,
@@ -1491,7 +1496,13 @@ const x = 1;
 
     const status = await getPullRequestStatus(repoDir, github);
 
-    expect(requestedTargets).toEqual([{ headRef: "main", headRepositoryOwner: "chethanuk" }]);
+    expect(requestedTargets).toEqual([
+      {
+        headRef: "main",
+        headRepositoryOwner: "chethanuk",
+        repository: "getpaseo/paseo",
+      },
+    ]);
     expect(status.status?.number).toBe(345);
     expect(status.status?.headRefName).toBe("main");
   });

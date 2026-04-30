@@ -1080,6 +1080,58 @@ describe("GitHubService", () => {
     });
   });
 
+  it("uses explicit repository context for current PR status when provided", async () => {
+    const runner = createScriptedRunner([
+      { error: noPullRequestError() },
+      JSON.stringify({
+        owner: { login: "fav-devs" },
+        name: "paseo",
+        parent: { owner: { login: "getpaseo" }, name: "paseo" },
+      }),
+      "[]",
+    ]);
+    const service = createGitHubService({
+      runner: runner.runner,
+      resolveGhPath: async () => "/usr/bin/gh",
+      now: () => 100,
+    });
+
+    await expect(
+      service.getCurrentPullRequestStatus({
+        cwd: "/repo",
+        headRef: "main",
+        repository: "fav-devs/paseo",
+      }),
+    ).resolves.toBeNull();
+
+    expect(runner.calls.map((call) => call.args)).toEqual([
+      [
+        "pr",
+        "view",
+        "main",
+        "--repo",
+        "fav-devs/paseo",
+        "--json",
+        "number,url,title,state,isDraft,baseRefName,headRefName,mergedAt,statusCheckRollup,reviewDecision,headRepositoryOwner",
+      ],
+      ["repo", "view", "fav-devs/paseo", "--json", "owner,name,parent"],
+      [
+        "pr",
+        "list",
+        "--repo",
+        "getpaseo/paseo",
+        "--state",
+        "all",
+        "--head",
+        "fav-devs:main",
+        "--json",
+        "number,url,title,state,isDraft,baseRefName,headRefName,mergedAt,statusCheckRollup,reviewDecision,headRepositoryOwner",
+        "--limit",
+        "10",
+      ],
+    ]);
+  });
+
   it("resolves fork PR heads to the parent repository when gh pr view returns a stale branch match", async () => {
     const runner = createScriptedRunner([
       currentPullRequestJson({

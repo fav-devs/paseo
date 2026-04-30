@@ -42,6 +42,7 @@ interface CheckoutReadCacheOptions {
 interface PullRequestStatusLookupTarget {
   headRef: string;
   headRepositoryOwner?: string;
+  repository?: string;
 }
 
 function createPullRequestStatusCache(ttlMs: number) {
@@ -993,15 +994,23 @@ async function resolvePullRequestStatusLookupTarget(
   cwd: string,
   currentBranch: string,
 ): Promise<PullRequestStatusLookupTarget> {
+  const originRemoteUrl = await getOriginRemoteUrl(cwd);
+  const originRepo = originRemoteUrl ? parseGitHubRepoFromRemote(originRemoteUrl) : null;
   const remoteName = await getGitConfigValue(cwd, `branch.${currentBranch}.remote`);
   if (!remoteName?.startsWith("paseo-pr-")) {
-    return { headRef: currentBranch };
+    return {
+      headRef: currentBranch,
+      ...(originRepo ? { repository: originRepo } : {}),
+    };
   }
 
   const mergeRef = await getGitConfigValue(cwd, `branch.${currentBranch}.merge`);
   const trackedHeadRef = parseBranchMergeHeadRef(mergeRef);
   if (!trackedHeadRef) {
-    return { headRef: currentBranch };
+    return {
+      headRef: currentBranch,
+      ...(originRepo ? { repository: originRepo } : {}),
+    };
   }
 
   const remoteUrl = await getGitConfigValue(cwd, `remote.${remoteName}.url`);
@@ -1010,6 +1019,7 @@ async function resolvePullRequestStatusLookupTarget(
   return {
     headRef: trackedHeadRef,
     ...(headRepositoryOwner ? { headRepositoryOwner } : {}),
+    ...(originRepo ? { repository: originRepo } : {}),
   };
 }
 

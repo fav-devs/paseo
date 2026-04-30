@@ -483,6 +483,7 @@ export interface GitHubService {
       cwd: string;
       headRef: string;
       headRepositoryOwner?: string;
+      repository?: string;
     } & GitHubReadOptions,
   ): Promise<GitHubCurrentPullRequestStatus | null>;
   getPullRequestTimeline(
@@ -859,6 +860,7 @@ export function createGitHubService(options: CreateGitHubServiceOptions = {}): G
         args: {
           headRef: input.headRef,
           headRepositoryOwner: input.headRepositoryOwner,
+          repository: input.repository,
         },
         readOptions: input,
         load: async () => {
@@ -866,6 +868,7 @@ export function createGitHubService(options: CreateGitHubServiceOptions = {}): G
             cwd: input.cwd,
             headRef: input.headRef,
             headRepositoryOwner: input.headRepositoryOwner,
+            repository: input.repository,
             run,
           });
         },
@@ -1281,6 +1284,7 @@ async function resolveCurrentPullRequestView(options: {
   cwd: string;
   headRef: string;
   headRepositoryOwner?: string;
+  repository?: string;
   run: (args: string[], options: GitHubCommandRunnerOptions) => Promise<string>;
 }): Promise<GitHubCurrentPullRequestStatus | null> {
   const viewCandidate = await tryCurrentPullRequestView(options);
@@ -1296,7 +1300,7 @@ async function resolveCurrentPullRequestView(options: {
   }
 
   let listHeadRef = options.headRef;
-  let listRepo: string | undefined;
+  let listRepo = options.repository;
   let headRepositoryOwner = options.headRepositoryOwner;
 
   if (!headRepositoryOwner) {
@@ -1330,10 +1334,17 @@ async function resolveCurrentPullRequestView(options: {
 async function tryCurrentPullRequestView(options: {
   cwd: string;
   headRef: string;
+  repository?: string;
   run: (args: string[], options: GitHubCommandRunnerOptions) => Promise<string>;
 }): Promise<ResolvedPullRequestCandidate | null> {
   try {
-    const stdout = await options.run(["pr", "view", "--json", CURRENT_PR_STATUS_FIELDS], {
+    const args = ["pr", "view"];
+    if (options.repository) {
+      args.push(options.headRef, "--repo", options.repository);
+    }
+    args.push("--json", CURRENT_PR_STATUS_FIELDS);
+
+    const stdout = await options.run(args, {
       cwd: options.cwd,
     });
     return parseCurrentPullRequestCandidate(stdout, options.headRef);
@@ -1378,10 +1389,17 @@ async function listCurrentPullRequestCandidates(options: {
 
 async function getGitHubRepoView(options: {
   cwd: string;
+  repository?: string;
   run: (args: string[], options: GitHubCommandRunnerOptions) => Promise<string>;
 }): Promise<z.infer<typeof GitHubRepoViewSchema> | null> {
   try {
-    const stdout = await options.run(["repo", "view", "--json", "owner,name,parent"], {
+    const args = ["repo", "view"];
+    if (options.repository) {
+      args.push(options.repository);
+    }
+    args.push("--json", "owner,name,parent");
+
+    const stdout = await options.run(args, {
       cwd: options.cwd,
     });
     return GitHubRepoViewSchema.parse(JSON.parse(stdout || "{}"));

@@ -37,26 +37,58 @@ function ForwardRow({
 }: {
   entry: PortForwardEntry;
   isClosing: boolean;
-  onClose: (id: string) => void;
+  onClose: (entry: PortForwardEntry) => void;
 }) {
   const { theme } = useUnistyles();
   const localLabel = entry.tunneled
     ? `localhost:${entry.localPort}`
     : `${entry.bindHost}:${entry.localPort}`;
+
+  const handlePress = useCallback(() => onClose(entry), [onClose, entry]);
+
+  const rowStyle = useMemo(
+    () => [styles.forwardRow, { borderColor: theme.colors.border }],
+    [theme.colors.border],
+  );
+  const nameStyle = useMemo(
+    () => [styles.forwardName, { color: theme.colors.foreground }],
+    [theme.colors.foreground],
+  );
+  const badgeStyle = useMemo(
+    () => [styles.portBadge, { backgroundColor: theme.colors.surface2 }],
+    [theme.colors.surface2],
+  );
+  const badgeTextStyle = useMemo(
+    () => [styles.portBadgeText, { color: theme.colors.foreground }],
+    [theme.colors.foreground],
+  );
+  const targetStyle = useMemo(
+    () => [styles.forwardTarget, { color: theme.colors.foregroundMuted }],
+    [theme.colors.foregroundMuted],
+  );
+  const closeButtonStyle = useCallback(
+    ({ pressed, hovered = false }: { pressed: boolean; hovered?: boolean }) => [
+      styles.closeButton,
+      {
+        opacity: isClosing ? theme.opacity[50] : 1,
+        backgroundColor: hovered || pressed ? theme.colors.surface2 : "transparent",
+      },
+    ],
+    [isClosing, theme.opacity, theme.colors.surface2],
+  );
+
   return (
-    <View style={[styles.forwardRow, { borderColor: theme.colors.border }]}>
+    <View style={rowStyle}>
       <View style={styles.forwardMeta}>
         <View style={styles.forwardHeader}>
-          <Text style={[styles.forwardName, { color: theme.colors.foreground }]} numberOfLines={1}>
+          <Text style={nameStyle} numberOfLines={1}>
             {entry.name}
           </Text>
-          <View style={[styles.portBadge, { backgroundColor: theme.colors.surface2 }]}>
-            <Text style={[styles.portBadgeText, { color: theme.colors.foreground }]}>
-              {localLabel}
-            </Text>
+          <View style={badgeStyle}>
+            <Text style={badgeTextStyle}>{localLabel}</Text>
           </View>
         </View>
-        <Text style={[styles.forwardTarget, { color: theme.colors.foregroundMuted }]}>
+        <Text style={targetStyle}>
           → {entry.targetHost}:{entry.targetPort}
         </Text>
       </View>
@@ -64,14 +96,8 @@ function ForwardRow({
         accessibilityRole="button"
         accessibilityLabel={`Close ${entry.name}`}
         disabled={isClosing}
-        onPress={() => onClose(entry.id)}
-        style={({ pressed, hovered = false }) => [
-          styles.closeButton,
-          {
-            opacity: isClosing ? theme.opacity[50] : 1,
-            backgroundColor: hovered || pressed ? theme.colors.surface2 : "transparent",
-          },
-        ]}
+        onPress={handlePress}
+        style={closeButtonStyle}
       >
         <X size={16} color={theme.colors.foregroundMuted} />
       </Pressable>
@@ -113,35 +139,48 @@ function TunneledForm({ workspaceId, onCreated }: { workspaceId: string; onCreat
     },
   });
 
+  const handleSubmit = useCallback(() => createMutation.mutate(), [createMutation]);
+
+  const labelStyle = useMemo(
+    () => [styles.label, { color: theme.colors.foregroundMuted }],
+    [theme.colors.foregroundMuted],
+  );
+  const inputStyle = useMemo(
+    () => [
+      styles.input,
+      {
+        backgroundColor: theme.colors.surface1,
+        borderColor: theme.colors.border,
+        color: theme.colors.foreground,
+      },
+    ],
+    [theme.colors.surface1, theme.colors.border, theme.colors.foreground],
+  );
+  const errorStyle = useMemo(
+    () => [styles.errorText, { color: theme.colors.destructive }],
+    [theme.colors.destructive],
+  );
+
   return (
     <View style={styles.fieldGrid}>
       <View style={styles.field}>
-        <Text style={[styles.label, { color: theme.colors.foregroundMuted }]}>Port</Text>
+        <Text style={labelStyle}>Port</Text>
         <TextInput
           value={port}
           onChangeText={setPort}
           keyboardType="number-pad"
           placeholder="3000"
           placeholderTextColor={theme.colors.foregroundMuted}
-          style={[
-            styles.input,
-            {
-              backgroundColor: theme.colors.surface1,
-              borderColor: theme.colors.border,
-              color: theme.colors.foreground,
-            },
-          ]}
+          style={inputStyle}
         />
       </View>
-      {formError ? (
-        <Text style={[styles.errorText, { color: theme.colors.destructive }]}>{formError}</Text>
-      ) : null}
+      {formError ? <Text style={errorStyle}>{formError}</Text> : null}
       <View style={styles.actionRow}>
         <Button
           size="sm"
           variant="default"
           disabled={createMutation.isPending}
-          onPress={() => createMutation.mutate()}
+          onPress={handleSubmit}
         >
           Forward port
         </Button>
@@ -205,27 +244,42 @@ function LocalForm({ workspaceId, onCreated }: { workspaceId: string; onCreated:
     },
   });
 
+  const handleSubmit = useCallback(() => createMutation.mutate(), [createMutation]);
+
+  const labelStyle = useMemo(
+    () => [styles.label, { color: theme.colors.foregroundMuted }],
+    [theme.colors.foregroundMuted],
+  );
+  const inputStyle = useMemo(
+    () => [
+      styles.input,
+      {
+        backgroundColor: theme.colors.surface1,
+        borderColor: theme.colors.border,
+        color: theme.colors.foreground,
+      },
+    ],
+    [theme.colors.surface1, theme.colors.border, theme.colors.foreground],
+  );
+  const errorStyle = useMemo(
+    () => [styles.errorText, { color: theme.colors.destructive }],
+    [theme.colors.destructive],
+  );
+
   return (
     <View style={styles.fieldGrid}>
       <View style={styles.field}>
-        <Text style={[styles.label, { color: theme.colors.foregroundMuted }]}>Name</Text>
+        <Text style={labelStyle}>Name</Text>
         <TextInput
           value={name}
           onChangeText={setName}
           placeholder="Optional label"
           placeholderTextColor={theme.colors.foregroundMuted}
-          style={[
-            styles.input,
-            {
-              backgroundColor: theme.colors.surface1,
-              borderColor: theme.colors.border,
-              color: theme.colors.foreground,
-            },
-          ]}
+          style={inputStyle}
         />
       </View>
       <View style={styles.field}>
-        <Text style={[styles.label, { color: theme.colors.foregroundMuted }]}>Bind host</Text>
+        <Text style={labelStyle}>Bind host</Text>
         <TextInput
           value={bindHost}
           onChangeText={setBindHost}
@@ -233,36 +287,22 @@ function LocalForm({ workspaceId, onCreated }: { workspaceId: string; onCreated:
           autoCorrect={false}
           placeholder="127.0.0.1"
           placeholderTextColor={theme.colors.foregroundMuted}
-          style={[
-            styles.input,
-            {
-              backgroundColor: theme.colors.surface1,
-              borderColor: theme.colors.border,
-              color: theme.colors.foreground,
-            },
-          ]}
+          style={inputStyle}
         />
       </View>
       <View style={styles.field}>
-        <Text style={[styles.label, { color: theme.colors.foregroundMuted }]}>Local port</Text>
+        <Text style={labelStyle}>Local port</Text>
         <TextInput
           value={localPort}
           onChangeText={setLocalPort}
           keyboardType="number-pad"
           placeholder="3000"
           placeholderTextColor={theme.colors.foregroundMuted}
-          style={[
-            styles.input,
-            {
-              backgroundColor: theme.colors.surface1,
-              borderColor: theme.colors.border,
-              color: theme.colors.foreground,
-            },
-          ]}
+          style={inputStyle}
         />
       </View>
       <View style={styles.field}>
-        <Text style={[styles.label, { color: theme.colors.foregroundMuted }]}>Target host</Text>
+        <Text style={labelStyle}>Target host</Text>
         <TextInput
           value={targetHost}
           onChangeText={setTargetHost}
@@ -270,43 +310,27 @@ function LocalForm({ workspaceId, onCreated }: { workspaceId: string; onCreated:
           autoCorrect={false}
           placeholder="127.0.0.1"
           placeholderTextColor={theme.colors.foregroundMuted}
-          style={[
-            styles.input,
-            {
-              backgroundColor: theme.colors.surface1,
-              borderColor: theme.colors.border,
-              color: theme.colors.foreground,
-            },
-          ]}
+          style={inputStyle}
         />
       </View>
       <View style={styles.field}>
-        <Text style={[styles.label, { color: theme.colors.foregroundMuted }]}>Target port</Text>
+        <Text style={labelStyle}>Target port</Text>
         <TextInput
           value={targetPort}
           onChangeText={setTargetPort}
           keyboardType="number-pad"
           placeholder="3000"
           placeholderTextColor={theme.colors.foregroundMuted}
-          style={[
-            styles.input,
-            {
-              backgroundColor: theme.colors.surface1,
-              borderColor: theme.colors.border,
-              color: theme.colors.foreground,
-            },
-          ]}
+          style={inputStyle}
         />
       </View>
-      {formError ? (
-        <Text style={[styles.errorText, { color: theme.colors.destructive }]}>{formError}</Text>
-      ) : null}
+      {formError ? <Text style={errorStyle}>{formError}</Text> : null}
       <View style={styles.actionRow}>
         <Button
           size="sm"
           variant="default"
           disabled={createMutation.isPending}
-          onPress={() => createMutation.mutate()}
+          onPress={handleSubmit}
         >
           Create forward
         </Button>
@@ -334,7 +358,9 @@ export function PortForwardsPane({
   const activeConnectionType = runtimeSnapshot?.activeConnection?.type ?? null;
   // Tunneled forwarding requires a local socket/pipe transport (set via open_local_daemon_transport).
   // Relay and direct TCP connections don't have a local transport path, so fall back to LocalForm.
-  const useTunneledForm = isElectron && (activeConnectionType === "directSocket" || activeConnectionType === "directPipe");
+  const useTunneledForm =
+    isElectron &&
+    (activeConnectionType === "directSocket" || activeConnectionType === "directPipe");
 
   const queryKey = useMemo(
     () => ["port-forwards", serverId, workspaceId] as const,
@@ -412,18 +438,54 @@ export function PortForwardsPane({
     void queryClient.invalidateQueries({ queryKey });
   }, [queryClient, queryKey]);
 
+  const scrollStyle = useMemo(
+    () => ({ flex: 1, backgroundColor: theme.colors.background }),
+    [theme.colors.background],
+  );
+  const centeredStyle = useMemo(
+    () => [styles.centered, { backgroundColor: theme.colors.background }],
+    [theme.colors.background],
+  );
+  const loadingTextStyle = useMemo(
+    () => ({ color: theme.colors.foregroundMuted }),
+    [theme.colors.foregroundMuted],
+  );
+  const errorTextStyle = useMemo(
+    () => ({ color: theme.colors.destructive }),
+    [theme.colors.destructive],
+  );
+  const formSectionStyle = useMemo(
+    () => [styles.section, { borderColor: theme.colors.border }],
+    [theme.colors.border],
+  );
+  const formTitleStyle = useMemo(
+    () => [styles.sectionTitle, { color: theme.colors.foreground }],
+    [theme.colors.foreground],
+  );
+  const formHelperStyle = useMemo(
+    () => [styles.helperText, { color: theme.colors.foregroundMuted }],
+    [theme.colors.foregroundMuted],
+  );
+  const listSectionStyle = formSectionStyle;
+  const listTitleStyle = formTitleStyle;
+  const countStyle = useMemo(
+    () => [styles.countText, { color: theme.colors.foregroundMuted }],
+    [theme.colors.foregroundMuted],
+  );
+  const emptyTextStyle = formHelperStyle;
+
   if (query.isLoading) {
     return (
-      <View style={[styles.centered, { backgroundColor: theme.colors.background }]}>
-        <Text style={{ color: theme.colors.foregroundMuted }}>Loading port forwards…</Text>
+      <View style={centeredStyle}>
+        <Text style={loadingTextStyle}>Loading port forwards…</Text>
       </View>
     );
   }
 
   if (query.isError) {
     return (
-      <View style={[styles.centered, { backgroundColor: theme.colors.background }]}>
-        <Text style={{ color: theme.colors.destructive }}>
+      <View style={centeredStyle}>
+        <Text style={errorTextStyle}>
           {query.error instanceof Error ? query.error.message : "Unable to load port forwards."}
         </Text>
       </View>
@@ -431,20 +493,17 @@ export function PortForwardsPane({
   }
 
   return (
-    <ScrollView
-      style={{ flex: 1, backgroundColor: theme.colors.background }}
-      contentContainerStyle={styles.scrollContent}
-    >
-      <View style={[styles.section, { borderColor: theme.colors.border }]}>
+    <ScrollView style={scrollStyle} contentContainerStyle={styles.scrollContent}>
+      <View style={formSectionStyle}>
         <View style={styles.sectionHeader}>
           <Network size={14} color={theme.colors.foregroundMuted} />
-          <Text style={[styles.sectionTitle, { color: theme.colors.foreground }]}>
+          <Text style={formTitleStyle}>
             {useTunneledForm ? "Forward port" : "New port forward"}
           </Text>
         </View>
         {useTunneledForm ? (
           <>
-            <Text style={[styles.helperText, { color: theme.colors.foregroundMuted }]}>
+            <Text style={formHelperStyle}>
               Enter a port running on the daemon machine. It will be available at the same port
               locally (or the next free port).
             </Text>
@@ -452,7 +511,7 @@ export function PortForwardsPane({
           </>
         ) : (
           <>
-            <Text style={[styles.helperText, { color: theme.colors.foregroundMuted }]}>
+            <Text style={formHelperStyle}>
               Forward a daemon-side TCP port to a target host and port.
             </Text>
             <LocalForm workspaceId={workspaceId} onCreated={handleCreated} />
@@ -460,20 +519,14 @@ export function PortForwardsPane({
         )}
       </View>
 
-      <View style={[styles.section, { borderColor: theme.colors.border }]}>
+      <View style={listSectionStyle}>
         <View style={styles.sectionHeader}>
           <Network size={14} color={theme.colors.foregroundMuted} />
-          <Text style={[styles.sectionTitle, { color: theme.colors.foreground }]}>
-            Active forwards
-          </Text>
-          <Text style={[styles.countText, { color: theme.colors.foregroundMuted }]}>
-            {portForwards.length}
-          </Text>
+          <Text style={listTitleStyle}>Active forwards</Text>
+          <Text style={countStyle}>{portForwards.length}</Text>
         </View>
         {portForwards.length === 0 ? (
-          <Text style={[styles.helperText, { color: theme.colors.foregroundMuted }]}>
-            No active port forwards for this workspace.
-          </Text>
+          <Text style={emptyTextStyle}>No active port forwards for this workspace.</Text>
         ) : (
           <View style={styles.forwardList}>
             {portForwards.map((entry) => (
@@ -484,7 +537,7 @@ export function PortForwardsPane({
                   closeMutation.isPending &&
                   (closeMutation.variables as PortForwardEntry | undefined)?.id === entry.id
                 }
-                onClose={() => handleCloseForward(entry)}
+                onClose={handleCloseForward}
               />
             ))}
           </View>
