@@ -6505,7 +6505,7 @@ export class Session {
 
     for (const [id, descriptor] of descriptorEntries) {
       descriptorsByWorkspaceId.set(id, { ...descriptor, archivingAt: this.archivingByWorkspaceId.get(id) ?? null });
-
+    }
 
     for (const agent of agents) {
       if (agent.archivedAt) {

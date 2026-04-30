@@ -124,11 +124,6 @@ const consoleLogger: Logger = {
   error: (obj, msg) => console.error(msg, obj),
 };
 
-const perfNow: () => number =
-  typeof performance !== "undefined" && typeof performance.now === "function"
-    ? () => performance.now()
-    : () => Date.now();
-
 export interface ImportAgentInput {
   provider: AgentProvider;
   sessionId: string;

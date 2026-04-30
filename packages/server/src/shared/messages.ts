@@ -2494,6 +2494,7 @@ export const WorkspaceDescriptorPayloadSchema = z
       })
       .nullable()
       .optional(),
+    projectActions: z.array(ProjectActionPayloadSchema).optional().default([]),
     scripts: z.array(WorkspaceScriptPayloadSchema).default([]),
     gitRuntime: WorkspaceGitRuntimePayloadSchema,
     githubRuntime: WorkspaceGitHubRuntimePayloadSchema,
